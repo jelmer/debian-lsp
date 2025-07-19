@@ -36,11 +36,16 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "watch": "tsc -p . -w"
+    "watch": "tsc -p . -w",
+    "test": "jest",
+    "test:watch": "jest --watch"
   },
   "devDependencies": {
     "@types/node": "^12.12.0",
+    "@types/jest": "^29.0.0",
     "coc.nvim": "^0.0.82",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
     "typescript": "^4.9.0"
   }
 }

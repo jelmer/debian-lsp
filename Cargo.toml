@@ -2,6 +2,7 @@
 name = "debian-lsp"
 version = "0.1.0"
 edition = "2021"
+author = "Jelmer Vernooĳ <jelmer@debian.org>"
 
 [dependencies]
 # debian-analyzer = "0.159.0"
@@ -16,3 +17,7 @@ tower-lsp-macros = "0.9"
 tokio-test = "0.4"
 tower = "0.4"
 tower-service = "0.3"
+
+[[bin]]
+name = "debian-lsp"
+test = true
