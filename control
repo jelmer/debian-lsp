@@ -1,0 +1,10 @@
+Source: test-package
+Section: utils
+Priority: optional
+Maintainer: Test Maintainer <test@example.com>
+Build-Depends: 
+
+Package: test-package
+Architecture: any
+Description: A test package
+ This is a test package for the debian-lsp.
