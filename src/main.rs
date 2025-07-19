@@ -1,3 +1,8 @@
+//! Debian Language Server Protocol implementation.
+
+#![deny(missing_docs)]
+#![deny(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
