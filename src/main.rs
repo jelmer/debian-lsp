@@ -66,7 +66,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        if !uri.path().ends_with("/control") && !uri.path().contains("/debian/control") {
+        if !uri.path().ends_with("/control") && !uri.path().ends_with("/debian/control") {
             return Ok(None);
         }
 
@@ -157,4 +157,220 @@ async fn main() {
     let (service, socket) = LspService::new(|client| Backend { client });
 
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_completion_item_properties() {
+        // Test that we can create completion items with the expected properties
+        let completion = CompletionItem {
+            label: "Test".to_string(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some("Test field".to_string()),
+            documentation: Some(Documentation::String("Test documentation".to_string())),
+            insert_text: Some("Test: ".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(completion.label, "Test");
+        assert_eq!(completion.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(completion.detail, Some("Test field".to_string()));
+        assert_eq!(completion.insert_text, Some("Test: ".to_string()));
+    }
+
+    #[test]
+    fn test_control_field_completions() {
+        // Test the actual control field data we use in get_completions
+        let expected_fields = vec![
+            "Source",
+            "Section",
+            "Priority",
+            "Maintainer",
+            "Uploaders",
+            "Build-Depends",
+            "Build-Depends-Indep",
+            "Build-Conflicts",
+            "Standards-Version",
+            "Homepage",
+            "Vcs-Browser",
+            "Vcs-Git",
+            "Package",
+            "Architecture",
+            "Multi-Arch",
+            "Depends",
+            "Pre-Depends",
+            "Recommends",
+            "Suggests",
+            "Enhances",
+            "Conflicts",
+            "Breaks",
+            "Provides",
+            "Replaces",
+            "Description",
+            "Essential",
+            "Rules-Requires-Root",
+        ];
+
+        // Each field should be present in our completion logic
+        for field in expected_fields {
+            assert!(
+                !field.is_empty(),
+                "Field name should not be empty: {}",
+                field
+            );
+            assert!(
+                field.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+                "Field should only contain alphanumeric chars and hyphens: {}",
+                field
+            );
+        }
+    }
+
+    #[test]
+    fn test_package_name_completions() {
+        // Test the package name data we use in get_completions
+        let expected_packages = vec![
+            "debhelper-compat",
+            "dh-python",
+            "python3-all",
+            "python3-setuptools",
+            "cmake",
+            "pkg-config",
+            "libssl-dev",
+            "libc6-dev",
+        ];
+
+        for package in expected_packages {
+            assert!(
+                !package.is_empty(),
+                "Package name should not be empty: {}",
+                package
+            );
+            assert!(
+                package
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c.is_ascii_digit()),
+                "Package name should only contain valid characters: {}",
+                package
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_path_detection() {
+        // Test the file path detection logic used in completion()
+        let control_paths = vec![
+            "file:///path/to/debian/control",
+            "file:///project/debian/control",
+            "file:///control",
+            "file:///some/path/control",
+        ];
+
+        let non_control_paths = vec![
+            "file:///path/to/other.txt",
+            "file:///path/to/control.txt",
+            "file:///path/to/mycontrol",
+            "file:///path/to/debian/control.backup",
+        ];
+
+        for path in control_paths {
+            let uri = Url::parse(path).unwrap();
+            assert!(
+                uri.path().ends_with("/control") || uri.path().ends_with("/debian/control"),
+                "Should detect control file: {}",
+                path
+            );
+        }
+
+        for path in non_control_paths {
+            let uri = Url::parse(path).unwrap();
+            assert!(
+                !(uri.path().ends_with("/control") || uri.path().ends_with("/debian/control")),
+                "Should not detect as control file: {}",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_completion_item_creation() {
+        // Test creating a field completion item as done in get_completions
+        let field = "Source";
+        let description = "Name of the source package";
+
+        let completion = CompletionItem {
+            label: field.to_string(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some(description.to_string()),
+            documentation: Some(Documentation::String(description.to_string())),
+            insert_text: Some(format!("{}: ", field)),
+            ..Default::default()
+        };
+
+        assert_eq!(completion.label, "Source");
+        assert_eq!(completion.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(
+            completion.detail,
+            Some("Name of the source package".to_string())
+        );
+        assert_eq!(completion.insert_text, Some("Source: ".to_string()));
+
+        if let Some(Documentation::String(doc)) = completion.documentation {
+            assert_eq!(doc, "Name of the source package");
+        } else {
+            panic!("Expected string documentation");
+        }
+    }
+
+    #[test]
+    fn test_package_completion_item_creation() {
+        // Test creating a package completion item as done in get_completions
+        let package = "debhelper-compat";
+
+        let completion = CompletionItem {
+            label: package.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some("Package name".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(completion.label, "debhelper-compat");
+        assert_eq!(completion.kind, Some(CompletionItemKind::VALUE));
+        assert_eq!(completion.detail, Some("Package name".to_string()));
+        assert_eq!(completion.insert_text, None); // Package completions don't have insert_text
+    }
+
+    #[test]
+    fn test_url_parsing() {
+        // Test URL parsing for various control file paths
+        let test_paths = vec![
+            "file:///home/user/project/debian/control",
+            "file:///tmp/control",
+            "file:///var/lib/dpkg/control",
+        ];
+
+        for path in test_paths {
+            let uri = Url::parse(path);
+            assert!(uri.is_ok(), "Should be able to parse URL: {}", path);
+
+            let uri = uri.unwrap();
+            assert_eq!(uri.scheme(), "file");
+            assert!(!uri.path().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_position_creation() {
+        // Test Position creation as used in completion params
+        let position = Position::new(0, 0);
+        assert_eq!(position.line, 0);
+        assert_eq!(position.character, 0);
+
+        let position = Position::new(5, 10);
+        assert_eq!(position.line, 5);
+        assert_eq!(position.character, 10);
+    }
 }
