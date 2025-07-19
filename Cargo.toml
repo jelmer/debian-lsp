@@ -1,0 +1,18 @@
+[package]
+name = "debian-lsp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# debian-analyzer = "0.159.0"
+# debian-control = "0.1.45"
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tower-lsp-macros = "0.9"
+tokio-test = "0.4"
+tower = "0.4"
+tower-service = "0.3"
