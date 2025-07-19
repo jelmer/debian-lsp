@@ -1,0 +1,46 @@
+{
+  "name": "coc-debian",
+  "version": "0.1.0",
+  "description": "Debian control file support for coc.nvim",
+  "main": "lib/index.js",
+  "engines": {
+    "coc": "^0.0.80"
+  },
+  "keywords": [
+    "coc.nvim",
+    "debian",
+    "control"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "activationEvents": [
+    "onLanguage:debian-control"
+  ],
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "coc-debian configuration",
+      "properties": {
+        "debian.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable debian language server"
+        },
+        "debian.serverPath": {
+          "type": "string",
+          "default": "debian-lsp",
+          "description": "Path to debian-lsp executable"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -p . -w"
+  },
+  "devDependencies": {
+    "@types/node": "^12.12.0",
+    "coc.nvim": "^0.0.82",
+    "typescript": "^4.9.0"
+  }
+}
