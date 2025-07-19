@@ -2,3 +2,13 @@
 /target
 Cargo.lock
 *~
+
+# Node.js
+node_modules/
+coc-debian/lib/
+coc-debian/node_modules/
+*.log
+
+# Editor
+*.swp
+*.swo
