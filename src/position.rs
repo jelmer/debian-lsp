@@ -1,30 +1,33 @@
+use text_size::{TextRange, TextSize};
 use tower_lsp::lsp_types::{Position, Range};
 
-/// Convert byte offset to LSP position
-pub fn offset_to_position(text: &str, offset: usize) -> Position {
+/// Convert TextSize to LSP Position
+pub fn offset_to_position(text: &str, offset: TextSize) -> Position {
     let mut line = 0;
-    let mut character = 0;
+    let mut line_start_offset = TextSize::from(0);
 
     for (i, ch) in text.char_indices() {
-        if i >= offset {
+        let current_offset = TextSize::try_from(i).unwrap();
+
+        if current_offset >= offset {
             break;
         }
 
         if ch == '\n' {
             line += 1;
-            character = 0;
-        } else {
-            character += 1;
+            line_start_offset = TextSize::try_from(i + 1).unwrap();
         }
     }
+
+    let character = (offset - line_start_offset).into();
 
     Position { line, character }
 }
 
-/// Convert byte range to LSP range
-pub fn range_to_lsp_range(text: &str, range: std::ops::Range<usize>) -> Range {
+/// Convert TextRange to LSP Range
+pub fn text_range_to_lsp_range(text: &str, range: TextRange) -> Range {
     Range {
-        start: offset_to_position(text, range.start),
-        end: offset_to_position(text, range.end),
+        start: offset_to_position(text, range.start()),
+        end: offset_to_position(text, range.end()),
     }
 }

@@ -14,8 +14,9 @@ mod control;
 mod position;
 mod workspace;
 
-use position::range_to_lsp_range;
+use position::text_range_to_lsp_range;
 use std::collections::HashMap;
+use text_size::{TextRange, TextSize};
 use workspace::Workspace;
 
 struct Backend {
@@ -142,9 +143,11 @@ impl LanguageServer for Backend {
                             if field_name != standard_name {
                                 // Get the field's position from the entry
                                 let entry_range = entry.text_range();
-                                let field_range = usize::from(entry_range.start())
-                                    ..usize::from(entry_range.start()) + field_name.len();
-                                let lsp_range = range_to_lsp_range(&source_text, field_range);
+                                let field_range = TextRange::new(
+                                    entry_range.start(),
+                                    entry_range.start() + TextSize::of(field_name.as_str()),
+                                );
+                                let lsp_range = text_range_to_lsp_range(&source_text, field_range);
 
                                 // Create a code action to fix the casing
                                 let edit = TextEdit {
