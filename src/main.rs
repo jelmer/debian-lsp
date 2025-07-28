@@ -4,15 +4,24 @@
 #![deny(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 mod control;
+mod position;
+mod workspace;
 
-#[derive(Debug)]
+use position::range_to_lsp_range;
+use std::collections::HashMap;
+use workspace::Workspace;
+
 struct Backend {
     client: Client,
+    workspace: Arc<Mutex<Workspace>>,
+    files: Arc<Mutex<HashMap<Url, workspace::SourceFile>>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -35,6 +44,7 @@ impl LanguageServer for Backend {
                     all_commit_characters: None,
                     completion_item: None,
                 }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -58,6 +68,16 @@ impl LanguageServer for Backend {
                 format!("file opened: {}", params.text_document.uri),
             )
             .await;
+
+        if control::is_control_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let file = workspace.update_file(
+                params.text_document.uri.clone(),
+                params.text_document.text.clone(),
+            );
+            let mut files = self.files.lock().await;
+            files.insert(params.text_document.uri.clone(), file);
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -67,6 +87,19 @@ impl LanguageServer for Backend {
                 format!("file changed: {}", params.text_document.uri),
             )
             .await;
+
+        if control::is_control_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let mut files = self.files.lock().await;
+
+            // Apply the content changes
+            if let Some(changes) = params.content_changes.first() {
+                // Update or create the file
+                let file =
+                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
+                files.insert(params.text_document.uri.clone(), file);
+            }
+        }
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -81,6 +114,77 @@ impl LanguageServer for Backend {
             Ok(Some(CompletionResponse::Array(completions)))
         }
     }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        if !control::is_control_file(&params.text_document.uri) {
+            return Ok(None);
+        }
+
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+
+        let file = match files.get(&params.text_document.uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+
+        let parsed = workspace.get_parsed_control(file);
+        let source_text = workspace.source_text(file);
+
+        let mut actions = Vec::new();
+
+        // Check for field casing issues
+        if let Ok(control) = parsed.to_result() {
+            for paragraph in control.as_deb822().paragraphs() {
+                for entry in paragraph.entries() {
+                    if let Some(field_name) = entry.key() {
+                        if let Some(standard_name) = control::get_standard_field_name(&field_name) {
+                            if field_name != standard_name {
+                                // Get the field's position from the entry
+                                let entry_range = entry.text_range();
+                                let field_range = usize::from(entry_range.start())
+                                    ..usize::from(entry_range.start()) + field_name.len();
+                                let lsp_range = range_to_lsp_range(&source_text, field_range);
+
+                                // Create a code action to fix the casing
+                                let edit = TextEdit {
+                                    range: lsp_range,
+                                    new_text: standard_name.to_string(),
+                                };
+
+                                let workspace_edit = WorkspaceEdit {
+                                    changes: Some(
+                                        vec![(params.text_document.uri.clone(), vec![edit])]
+                                            .into_iter()
+                                            .collect(),
+                                    ),
+                                    ..Default::default()
+                                };
+
+                                let action = CodeAction {
+                                    title: format!(
+                                        "Fix field casing: {} -> {}",
+                                        field_name, standard_name
+                                    ),
+                                    kind: Some(CodeActionKind::QUICKFIX),
+                                    edit: Some(workspace_edit),
+                                    ..Default::default()
+                                };
+
+                                actions.push(CodeActionOrCommand::CodeAction(action));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
+    }
 }
 
 #[tokio::main]
@@ -88,7 +192,11 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(|client| Backend { client });
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        workspace: Arc::new(Mutex::new(Workspace::new())),
+        files: Arc::new(Mutex::new(HashMap::new())),
+    });
 
     Server::new(stdin, stdout, socket).serve(service).await;
 }
@@ -145,5 +253,53 @@ mod tests {
         // Non-control file should return no completions
         let completions = control::get_completions(&non_control_uri, position);
         assert!(completions.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_integration() {
+        // Test that the workspace can parse control files
+        let mut workspace = workspace::Workspace::new();
+        let url = Url::parse("file:///debian/control").unwrap();
+        let content = "source: test-package\nMaintainer: Test <test@example.com>\n";
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_control(file);
+
+        // Should parse correctly
+        assert!(parsed.errors().is_empty());
+
+        if let Ok(control) = parsed.to_result() {
+            let mut field_names = Vec::new();
+            for paragraph in control.as_deb822().paragraphs() {
+                for entry in paragraph.entries() {
+                    if let Some(name) = entry.key() {
+                        field_names.push(name);
+                    }
+                }
+            }
+            assert!(field_names.contains(&"source".to_string()));
+            assert!(field_names.contains(&"Maintainer".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_field_casing_detection() {
+        // Test that we can detect incorrect field casing
+        use control::get_standard_field_name;
+
+        // Test correct casing - should return the same
+        assert_eq!(get_standard_field_name("Source"), Some("Source"));
+        assert_eq!(get_standard_field_name("Package"), Some("Package"));
+        assert_eq!(get_standard_field_name("Maintainer"), Some("Maintainer"));
+
+        // Test incorrect casing - should return the standard form
+        assert_eq!(get_standard_field_name("source"), Some("Source"));
+        assert_eq!(get_standard_field_name("package"), Some("Package"));
+        assert_eq!(get_standard_field_name("maintainer"), Some("Maintainer"));
+        assert_eq!(get_standard_field_name("MAINTAINER"), Some("Maintainer"));
+
+        // Test unknown fields - should return None
+        assert_eq!(get_standard_field_name("UnknownField"), None);
+        assert_eq!(get_standard_field_name("random"), None);
     }
 }

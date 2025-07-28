@@ -44,6 +44,17 @@ pub const CONTROL_FIELDS: &[ControlField] = &[
     ControlField::new("Rules-Requires-Root", "Root privileges requirement"),
 ];
 
+/// Get the standard casing for a field name
+pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
+    let lowercase = field_name.to_lowercase();
+    for field in CONTROL_FIELDS {
+        if field.name.to_lowercase() == lowercase {
+            return Some(field.name);
+        }
+    }
+    None
+}
+
 /// Common package names for completion
 pub const COMMON_PACKAGES: &[&str] = &[
     "debhelper-compat",
