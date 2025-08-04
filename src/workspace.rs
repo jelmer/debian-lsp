@@ -13,7 +13,10 @@ pub struct FieldCasingIssue {
 #[derive(Debug, Clone)]
 pub enum DiagnosticIssue {
     FieldCasing(FieldCasingIssue),
-    ParseError { message: String, range: Option<TextRange> },
+    ParseError {
+        message: String,
+        range: Option<TextRange>,
+    },
 }
 
 #[salsa::input]
