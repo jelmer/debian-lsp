@@ -3,6 +3,12 @@ name = "debian-lsp"
 version = "0.1.0"
 edition = "2021"
 authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
+description = "Language Server Protocol implementation for Debian control files with field completion, diagnostics, and quickfixes"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jelmer/debian-lsp"
+keywords = ["lsp", "debian", "control", "language-server"]
+categories = ["development-tools", "text-editors"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"

@@ -10,6 +10,23 @@ Language Server Protocol implementation for Debian control files.
 - Field name completion for Debian control files
 - Common package name suggestions
 - Works with debian/control files
+- Diagnostic analysis for Debian control files
+- Quick fixes for common issues
+
+### Diagnostics
+
+The LSP provides the following diagnostic capabilities:
+
+- **Field casing validation**: Detects incorrectly cased field names (e.g., `source` instead of `Source`)
+- **Parse error reporting**: Reports parsing errors in control file syntax
+
+### Quick Fixes
+
+The LSP offers automatic fixes for detected issues:
+
+- **Field casing corrections**: Automatically fix field names to use proper Debian control file casing
+  - Example: `source` → `Source`, `maintainer` → `Maintainer`
+  - Available as code actions in your editor
 
 ## Installation
 
