@@ -38,6 +38,42 @@ cargo build --release
 
 The binary will be available at `target/release/debian-lsp`.
 
+### Using with VS Code
+
+Add the following configuration to your VS Code `settings.json`:
+
+```json
+{
+  "languageServerProtocols.debian-lsp.command": [
+    "/path/to/debian-lsp/target/release/debian-lsp"
+  ],
+  "languageServerProtocols.debian-lsp.filetypes": [
+    "debcontrol"
+  ],
+  "files.associations": {
+    "control": "debcontrol",
+    "**/debian/control": "debcontrol"
+  }
+}
+```
+
+Alternatively, you can use the generic LSP client extension:
+
+1. Install the "Generic LSP Client" extension
+2. Add to your `settings.json`:
+
+```json
+{
+  "genericLanguageServer.configurations": {
+    "debian-lsp": {
+      "command": ["/path/to/debian-lsp/target/release/debian-lsp"],
+      "filePatterns": ["**/debian/control", "control"],
+      "languageId": "debcontrol"
+    }
+  }
+}
+```
+
 ### Using with Vim/Neovim
 
 #### coc.nvim
