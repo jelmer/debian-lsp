@@ -82,6 +82,48 @@ call ale#linter#Define('debcontrol', {
 
 Note: Adjust the `executable` path to match your installation location. You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
 
+#### Native Neovim LSP
+
+Add the following configuration to your Neovim config (init.lua):
+
+```lua
+-- Configure debian-lsp
+vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
+  pattern = {'*/debian/control', 'control'},
+  callback = function()
+    vim.lsp.start({
+      name = 'debian-lsp',
+      cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
+      root_dir = vim.fn.getcwd(),
+    })
+  end,
+})
+```
+
+Or if you prefer using lspconfig:
+
+```lua
+local lspconfig = require('lspconfig')
+local configs = require('lspconfig.configs')
+
+-- Define the debian-lsp configuration
+if not configs.debian_lsp then
+  configs.debian_lsp = {
+    default_config = {
+      cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
+      filetypes = {'debcontrol'},
+      root_dir = lspconfig.util.root_pattern('debian/control', '.git'),
+      settings = {},
+    },
+  }
+end
+
+-- Enable debian-lsp
+lspconfig.debian_lsp.setup{}
+```
+
+Note: Adjust the `cmd` path to match your installation location.
+
 ## Usage
 
 Open any `debian/control` or `control` file in your configured editor. The LSP will automatically provide completions for:
