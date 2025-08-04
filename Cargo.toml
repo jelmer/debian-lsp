@@ -12,7 +12,7 @@ categories = ["development-tools", "text-editors"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
-debian-control = { git = "https://github.com/jelmer/deb822-rs", branch = "parse" }
+debian-control = "0.1.47"
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

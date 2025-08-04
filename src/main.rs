@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::NumberOrString;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -14,10 +15,19 @@ mod control;
 mod position;
 mod workspace;
 
-use position::text_range_to_lsp_range;
+use position::{lsp_range_to_text_range, text_range_to_lsp_range};
 use std::collections::HashMap;
-use text_size::{TextRange, TextSize};
+// Removed unused imports - TextRange and TextSize are no longer used in main.rs
 use workspace::Workspace;
+
+/// Check if two LSP ranges overlap
+fn range_overlaps(a: &Range, b: &Range) -> bool {
+    // Check if range a starts before b ends and b starts before a ends
+    (a.start.line < b.end.line
+        || (a.start.line == b.end.line && a.start.character <= b.end.character))
+        && (b.start.line < a.end.line
+            || (b.start.line == a.end.line && b.start.character <= a.end.character))
+}
 
 struct Backend {
     client: Client,
@@ -78,6 +88,12 @@ impl LanguageServer for Backend {
             );
             let mut files = self.files.lock().await;
             files.insert(params.text_document.uri.clone(), file);
+
+            // Publish diagnostics
+            let diagnostics = workspace.get_diagnostics(file);
+            self.client
+                .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
         }
     }
 
@@ -99,6 +115,12 @@ impl LanguageServer for Backend {
                 let file =
                     workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
                 files.insert(params.text_document.uri.clone(), file);
+
+                // Publish diagnostics
+                let diagnostics = workspace.get_diagnostics(file);
+                self.client
+                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                    .await;
             }
         }
     }
@@ -129,56 +151,61 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let parsed = workspace.get_parsed_control(file);
         let source_text = workspace.source_text(file);
 
         let mut actions = Vec::new();
 
-        // Check for field casing issues
-        if let Ok(control) = parsed.to_result() {
-            for paragraph in control.as_deb822().paragraphs() {
-                for entry in paragraph.entries() {
-                    if let Some(field_name) = entry.key() {
-                        if let Some(standard_name) = control::get_standard_field_name(&field_name) {
-                            if field_name != standard_name {
-                                // Get the field's position from the entry
-                                let entry_range = entry.text_range();
-                                let field_range = TextRange::new(
-                                    entry_range.start(),
-                                    entry_range.start() + TextSize::of(field_name.as_str()),
-                                );
-                                let lsp_range = text_range_to_lsp_range(&source_text, field_range);
+        // Check for field casing issues - only process fields in the requested range
+        let text_range = lsp_range_to_text_range(&source_text, &params.range);
 
-                                // Create a code action to fix the casing
-                                let edit = TextEdit {
-                                    range: lsp_range,
-                                    new_text: standard_name.to_string(),
-                                };
+        for issue in workspace.find_field_casing_issues(file, Some(text_range)) {
+            let lsp_range = text_range_to_lsp_range(&source_text, issue.field_range);
 
-                                let workspace_edit = WorkspaceEdit {
-                                    changes: Some(
-                                        vec![(params.text_document.uri.clone(), vec![edit])]
-                                            .into_iter()
-                                            .collect(),
-                                    ),
-                                    ..Default::default()
-                                };
+            // Double-check it's within the requested range (should always be true)
+            if range_overlaps(&lsp_range, &params.range) {
+                // Check if there's a matching diagnostic in the context
+                let matching_diagnostics = params
+                    .context
+                    .diagnostics
+                    .iter()
+                    .filter(|d| {
+                        d.range == lsp_range
+                            && d.code == Some(NumberOrString::String("field-casing".to_string()))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
 
-                                let action = CodeAction {
-                                    title: format!(
-                                        "Fix field casing: {} -> {}",
-                                        field_name, standard_name
-                                    ),
-                                    kind: Some(CodeActionKind::QUICKFIX),
-                                    edit: Some(workspace_edit),
-                                    ..Default::default()
-                                };
+                // Create a code action to fix the casing
+                let edit = TextEdit {
+                    range: lsp_range,
+                    new_text: issue.standard_name.clone(),
+                };
 
-                                actions.push(CodeActionOrCommand::CodeAction(action));
-                            }
-                        }
-                    }
-                }
+                let workspace_edit = WorkspaceEdit {
+                    changes: Some(
+                        vec![(params.text_document.uri.clone(), vec![edit])]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    ..Default::default()
+                };
+
+                let action = CodeAction {
+                    title: format!(
+                        "Fix field casing: {} -> {}",
+                        issue.field_name, issue.standard_name
+                    ),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(workspace_edit),
+                    diagnostics: if !matching_diagnostics.is_empty() {
+                        Some(matching_diagnostics)
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                };
+
+                actions.push(CodeActionOrCommand::CodeAction(action));
             }
         }
 

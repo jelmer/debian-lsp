@@ -31,3 +31,33 @@ pub fn text_range_to_lsp_range(text: &str, range: TextRange) -> Range {
         end: offset_to_position(text, range.end()),
     }
 }
+
+/// Convert LSP Position to TextSize
+pub fn position_to_offset(text: &str, position: Position) -> TextSize {
+    let mut line = 0;
+    let mut offset = TextSize::from(0);
+
+    for (i, ch) in text.char_indices() {
+        if line == position.line {
+            // We're on the target line, add the character offset
+            let line_offset = TextSize::try_from(position.character).unwrap_or(TextSize::from(0));
+            return offset + line_offset;
+        }
+
+        offset = TextSize::try_from(i).unwrap();
+
+        if ch == '\n' {
+            line += 1;
+        }
+    }
+
+    // If we're beyond the last line, return the end of the text
+    TextSize::try_from(text.len()).unwrap()
+}
+
+/// Convert LSP Range to TextRange
+pub fn lsp_range_to_text_range(text: &str, range: &Range) -> TextRange {
+    let start = position_to_offset(text, range.start);
+    let end = position_to_offset(text, range.end);
+    TextRange::new(start, end)
+}
