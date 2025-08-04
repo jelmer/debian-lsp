@@ -38,7 +38,45 @@ cargo build --release
 
 The binary will be available at `target/release/debian-lsp`.
 
-### Installing the coc.nvim plugin
+### Using with VS Code
+
+Add the following configuration to your VS Code `settings.json`:
+
+```json
+{
+  "languageServerProtocols.debian-lsp.command": [
+    "/path/to/debian-lsp/target/release/debian-lsp"
+  ],
+  "languageServerProtocols.debian-lsp.filetypes": [
+    "debcontrol"
+  ],
+  "files.associations": {
+    "control": "debcontrol",
+    "**/debian/control": "debcontrol"
+  }
+}
+```
+
+Alternatively, you can use the generic LSP client extension:
+
+1. Install the "Generic LSP Client" extension
+2. Add to your `settings.json`:
+
+```json
+{
+  "genericLanguageServer.configurations": {
+    "debian-lsp": {
+      "command": ["/path/to/debian-lsp/target/release/debian-lsp"],
+      "filePatterns": ["**/debian/control", "control"],
+      "languageId": "debcontrol"
+    }
+  }
+}
+```
+
+### Using with Vim/Neovim
+
+#### coc.nvim
 
 1. Build the coc plugin:
    ```bash
@@ -59,9 +97,72 @@ The binary will be available at `target/release/debian-lsp`.
    }
    ```
 
+#### ALE
+
+Add the following configuration to your `.vimrc` or `init.vim`:
+
+```vim
+" Register debian-lsp with ALE
+let g:ale_linters = get(g:, 'ale_linters', {})
+let g:ale_linters.debcontrol = ['debian-lsp']
+
+" Configure the debian-lsp executable
+call ale#linter#Define('debcontrol', {
+\   'name': 'debian-lsp',
+\   'lsp': 'stdio',
+\   'executable': expand('~/src/debian-lsp/target/release/debian-lsp'),
+\   'command': '%e',
+\   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
+\})
+```
+
+Note: Adjust the `executable` path to match your installation location. You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
+
+#### Native Neovim LSP
+
+Add the following configuration to your Neovim config (init.lua):
+
+```lua
+-- Configure debian-lsp
+vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
+  pattern = {'*/debian/control', 'control'},
+  callback = function()
+    vim.lsp.start({
+      name = 'debian-lsp',
+      cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
+      root_dir = vim.fn.getcwd(),
+    })
+  end,
+})
+```
+
+Or if you prefer using lspconfig:
+
+```lua
+local lspconfig = require('lspconfig')
+local configs = require('lspconfig.configs')
+
+-- Define the debian-lsp configuration
+if not configs.debian_lsp then
+  configs.debian_lsp = {
+    default_config = {
+      cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
+      filetypes = {'debcontrol'},
+      root_dir = lspconfig.util.root_pattern('debian/control', '.git'),
+      settings = {},
+    },
+  }
+end
+
+-- Enable debian-lsp
+lspconfig.debian_lsp.setup{}
+```
+
+Note: Adjust the `cmd` path to match your installation location.
+
 ## Usage
 
-Open any `debian/control` or `control` file in Vim with coc.nvim installed. The LSP will automatically provide completions for:
+Open any `debian/control` or `control` file in your configured editor. The LSP will automatically provide completions for:
 - Field names (Source, Package, Depends, etc.)
 - Common package names
 
