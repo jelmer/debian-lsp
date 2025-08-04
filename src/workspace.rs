@@ -64,15 +64,33 @@ impl Workspace {
         file.text(self).clone()
     }
 
-    /// Find all field casing issues in the document, optionally within a specific range
-    pub fn find_field_casing_issues(
+    /// Find all diagnostic issues in the document, optionally within a specific range
+    pub fn find_all_issues(
         &self,
         file: SourceFile,
         range: Option<TextRange>,
-    ) -> Vec<FieldCasingIssue> {
+    ) -> Vec<DiagnosticIssue> {
         let mut issues = Vec::new();
         let parsed = self.get_parsed_control(file);
 
+        // Add parse errors with position information
+        for error in parsed.positioned_errors() {
+            // If we have a range filter, check if this error is in range
+            if let Some(filter_range) = range {
+                if error.range.start() >= filter_range.end()
+                    || error.range.end() <= filter_range.start()
+                {
+                    continue; // Skip errors outside the range
+                }
+            }
+
+            issues.push(DiagnosticIssue::ParseError {
+                message: error.message.to_string(),
+                range: Some(error.range),
+            });
+        }
+
+        // Add field casing issues
         if let Ok(control) = parsed.to_result() {
             for paragraph in control.as_deb822().paragraphs() {
                 for entry in paragraph.entries() {
@@ -98,11 +116,11 @@ impl Workspace {
                                         + text_size::TextSize::of(field_name.as_str()),
                                 );
 
-                                issues.push(FieldCasingIssue {
+                                issues.push(DiagnosticIssue::FieldCasing(FieldCasingIssue {
                                     field_name,
                                     standard_name: standard_name.to_string(),
                                     field_range,
-                                });
+                                }));
                             }
                         }
                     }
@@ -113,78 +131,84 @@ impl Workspace {
         issues
     }
 
+    /// Convert a DiagnosticIssue to an LSP Diagnostic
+    fn issue_to_diagnostic(&self, issue: DiagnosticIssue, source_text: &str) -> Diagnostic {
+        match issue {
+            DiagnosticIssue::ParseError { message, range } => {
+                let lsp_range = if let Some(range) = range {
+                    crate::position::text_range_to_lsp_range(source_text, range)
+                } else {
+                    // Fallback to (0,0) if no range is available
+                    Range {
+                        start: tower_lsp::lsp_types::Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: tower_lsp::lsp_types::Position {
+                            line: 0,
+                            character: 0,
+                        },
+                    }
+                };
+
+                Diagnostic {
+                    range: lsp_range,
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    message,
+                    ..Default::default()
+                }
+            }
+            DiagnosticIssue::FieldCasing(casing) => {
+                let lsp_range =
+                    crate::position::text_range_to_lsp_range(source_text, casing.field_range);
+
+                Diagnostic {
+                    range: lsp_range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "field-casing".to_string(),
+                    )),
+                    source: Some("debian-lsp".to_string()),
+                    message: format!(
+                        "Field name '{}' should be '{}'",
+                        casing.field_name, casing.standard_name
+                    ),
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
+    /// Find all field casing issues in the document, optionally within a specific range
+    /// (convenience method that filters only field casing issues)
+    pub fn find_field_casing_issues(
+        &self,
+        file: SourceFile,
+        range: Option<TextRange>,
+    ) -> Vec<FieldCasingIssue> {
+        self.find_all_issues(file, range)
+            .into_iter()
+            .filter_map(|issue| match issue {
+                DiagnosticIssue::FieldCasing(casing) => Some(casing),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn get_diagnostics(&self, file: SourceFile) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        let parsed = self.get_parsed_control(file);
         let source_text = self.source_text(file);
-
-        // Report parse errors
-        for error in parsed.errors() {
-            diagnostics.push(Diagnostic {
-                range: Range {
-                    start: tower_lsp::lsp_types::Position {
-                        line: 0,
-                        character: 0,
-                    },
-                    end: tower_lsp::lsp_types::Position {
-                        line: 0,
-                        character: 0,
-                    },
-                },
-                severity: Some(DiagnosticSeverity::ERROR),
-                message: error.clone(),
-                ..Default::default()
-            });
-        }
-
-        // Check for field casing issues using centralized logic
-        for issue in self.find_field_casing_issues(file, None) {
-            let lsp_range =
-                crate::position::text_range_to_lsp_range(&source_text, issue.field_range);
-
-            diagnostics.push(Diagnostic {
-                range: lsp_range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(tower_lsp::lsp_types::NumberOrString::String(
-                    "field-casing".to_string(),
-                )),
-                source: Some("debian-lsp".to_string()),
-                message: format!(
-                    "Field name '{}' should be '{}'",
-                    issue.field_name, issue.standard_name
-                ),
-                ..Default::default()
-            });
-        }
-
-        diagnostics
+        self.find_all_issues(file, None)
+            .into_iter()
+            .map(|issue| self.issue_to_diagnostic(issue, &source_text))
+            .collect()
     }
 
     pub fn get_diagnostics_in_range(&self, file: SourceFile, range: TextRange) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
         let source_text = self.source_text(file);
-
-        // Check for field casing issues only in the given range using centralized logic
-        for issue in self.find_field_casing_issues(file, Some(range)) {
-            let lsp_range =
-                crate::position::text_range_to_lsp_range(&source_text, issue.field_range);
-
-            diagnostics.push(Diagnostic {
-                range: lsp_range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(tower_lsp::lsp_types::NumberOrString::String(
-                    "field-casing".to_string(),
-                )),
-                source: Some("debian-lsp".to_string()),
-                message: format!(
-                    "Field name '{}' should be '{}'",
-                    issue.field_name, issue.standard_name
-                ),
-                ..Default::default()
-            });
-        }
-
-        diagnostics
+        self.find_all_issues(file, Some(range))
+            .into_iter()
+            .map(|issue| self.issue_to_diagnostic(issue, &source_text))
+            .collect()
     }
 }
 
