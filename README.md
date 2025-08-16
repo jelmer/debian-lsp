@@ -5,6 +5,13 @@
 
 Language Server Protocol implementation for Debian control files.
 
+At the moment this is fairly basic, but the goal is to provide a useful LSP server for editing Debian control files (`debian/control`) with features like:
+- Field name completion
+- Common package name suggestions
+- Diagnostics for common issues
+- Quick fixes for common issues
+- Integration with lintian-brush, apply-multiarch-hints, etc
+
 ## Features
 
 - Field name completion for Debian control files
