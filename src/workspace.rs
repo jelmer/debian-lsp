@@ -202,14 +202,6 @@ impl Workspace {
             .map(|issue| self.issue_to_diagnostic(issue, &source_text))
             .collect()
     }
-
-    pub fn get_diagnostics_in_range(&self, file: SourceFile, range: TextRange) -> Vec<Diagnostic> {
-        let source_text = self.source_text(file);
-        self.find_all_issues(file, Some(range))
-            .into_iter()
-            .map(|issue| self.issue_to_diagnostic(issue, &source_text))
-            .collect()
-    }
 }
 
 #[cfg(test)]

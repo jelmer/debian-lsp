@@ -40,7 +40,7 @@ pub fn position_to_offset(text: &str, position: Position) -> TextSize {
     for (i, ch) in text.char_indices() {
         if line == position.line {
             // We're on the target line, add the character offset
-            let line_offset = TextSize::try_from(position.character).unwrap_or(TextSize::from(0));
+            let line_offset = TextSize::from(position.character);
             return offset + line_offset;
         }
 

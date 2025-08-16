@@ -23,7 +23,7 @@ text-size = "1.1"
 [dev-dependencies]
 tower-lsp-macros = "0.9"
 tokio-test = "0.4"
-tower = "0.4"
+tower = "0.5"
 tower-service = "0.3"
 
 [[bin]]
