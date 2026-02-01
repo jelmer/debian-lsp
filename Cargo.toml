@@ -1,6 +1,6 @@
 [package]
 name = "debian-lsp"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
 description = "Language Server Protocol implementation for Debian control files with field completion, diagnostics, and quickfixes"
@@ -17,7 +17,7 @@ tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-salsa = "0.25"
+salsa = ">=0.23,<0.26"
 text-size = "1.1"
 
 [dev-dependencies]
