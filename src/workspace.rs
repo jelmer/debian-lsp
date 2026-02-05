@@ -1,5 +1,7 @@
 use text_size::TextRange;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Range, Url};
+use tower_lsp_server::ls_types::{
+    Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
+};
 
 /// Information about a field casing issue
 #[derive(Debug, Clone)]
@@ -21,7 +23,7 @@ pub enum DiagnosticIssue {
 
 #[salsa::input]
 pub struct SourceFile {
-    pub url: Url,
+    pub url: Uri,
     pub text: String,
 }
 
@@ -49,7 +51,7 @@ impl Workspace {
         Self::default()
     }
 
-    pub fn update_file(&mut self, url: Url, text: String) -> SourceFile {
+    pub fn update_file(&mut self, url: Uri, text: String) -> SourceFile {
         SourceFile::new(self, url, text)
     }
 
@@ -140,11 +142,11 @@ impl Workspace {
                 } else {
                     // Fallback to (0,0) if no range is available
                     Range {
-                        start: tower_lsp::lsp_types::Position {
+                        start: Position {
                             line: 0,
                             character: 0,
                         },
-                        end: tower_lsp::lsp_types::Position {
+                        end: Position {
                             line: 0,
                             character: 0,
                         },
@@ -165,9 +167,7 @@ impl Workspace {
                 Diagnostic {
                     range: lsp_range,
                     severity: Some(DiagnosticSeverity::WARNING),
-                    code: Some(tower_lsp::lsp_types::NumberOrString::String(
-                        "field-casing".to_string(),
-                    )),
+                    code: Some(NumberOrString::String("field-casing".to_string())),
                     source: Some("debian-lsp".to_string()),
                     message: format!(
                         "Field name '{}' should be '{}'",
@@ -207,12 +207,11 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp::lsp_types::Url;
 
     #[test]
     fn test_parse_control_with_correct_casing() {
         let mut workspace = Workspace::new();
-        let url = Url::parse("file:///debian/control").unwrap();
+        let url = str::parse("file:///debian/control").unwrap();
         let content = "Source: test-package\nMaintainer: Test <test@example.com>\n\nPackage: test-package\nArchitecture: amd64\nDescription: A test package\n";
 
         let file = workspace.update_file(url, content.to_string());
@@ -235,7 +234,7 @@ mod tests {
     #[test]
     fn test_parse_control_with_incorrect_casing() {
         let mut workspace = Workspace::new();
-        let url = Url::parse("file:///debian/control").unwrap();
+        let url = str::parse("file:///debian/control").unwrap();
         let content = "source: test-package\nmaintainer: Test <test@example.com>\n\npackage: test-package\narchitecture: amd64\ndescription: A test package\n";
 
         let file = workspace.update_file(url, content.to_string());
@@ -261,7 +260,7 @@ mod tests {
     #[test]
     fn test_parse_control_with_invalid_content() {
         let mut workspace = Workspace::new();
-        let url = Url::parse("file:///debian/control").unwrap();
+        let url = str::parse("file:///debian/control").unwrap();
         let content = "invalid debian control content without proper format";
 
         let file = workspace.update_file(url, content.to_string());
