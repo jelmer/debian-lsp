@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::ls_types::NumberOrString;
-use tower_lsp_server::ls_types::*;
+use tower_lsp_server::lsp_types::NumberOrString;
+use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 mod control;

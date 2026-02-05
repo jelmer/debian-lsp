@@ -1,4 +1,4 @@
-use tower_lsp_server::ls_types::Uri;
+use tower_lsp_server::lsp_types::Uri;
 
 /// Check if a given URL represents a Debian control file
 pub fn is_control_file(uri: &Uri) -> bool {

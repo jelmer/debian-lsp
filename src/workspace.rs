@@ -1,5 +1,5 @@
 use text_size::TextRange;
-use tower_lsp_server::ls_types::{
+use tower_lsp_server::lsp_types::{
     Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
 };
 

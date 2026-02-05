@@ -1,4 +1,4 @@
-use tower_lsp_server::ls_types::{
+use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, Position, Uri,
 };
 
