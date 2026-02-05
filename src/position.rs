@@ -1,5 +1,5 @@
 use text_size::{TextRange, TextSize};
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 /// Convert TextSize to LSP Position
 pub fn offset_to_position(text: &str, offset: TextSize) -> Position {

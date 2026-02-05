@@ -1,8 +1,9 @@
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 /// Check if a given URL represents a Debian control file
-pub fn is_control_file(uri: &Url) -> bool {
-    uri.path().ends_with("/control") || uri.path().ends_with("/debian/control")
+pub fn is_control_file(uri: &Uri) -> bool {
+    let path = uri.as_str();
+    path.ends_with("/control") || path.ends_with("/debian/control")
 }
 
 #[cfg(test)]
@@ -26,7 +27,7 @@ mod tests {
         ];
 
         for path in control_paths {
-            let uri = Url::parse(path).unwrap();
+            let uri = path.parse::<Uri>().unwrap();
             assert!(
                 is_control_file(&uri),
                 "Should detect control file: {}",
@@ -35,7 +36,7 @@ mod tests {
         }
 
         for path in non_control_paths {
-            let uri = Url::parse(path).unwrap();
+            let uri = path.parse::<Uri>().unwrap();
             assert!(
                 !is_control_file(&uri),
                 "Should not detect as control file: {}",

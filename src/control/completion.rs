@@ -1,10 +1,12 @@
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Documentation, Position, Url};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, Documentation, Position, Uri,
+};
 
 use super::detection::is_control_file;
 use super::fields::{COMMON_PACKAGES, CONTROL_FIELDS};
 
 /// Get completion items for a given position in a control file
-pub fn get_completions(uri: &Url, _position: Position) -> Vec<CompletionItem> {
+pub fn get_completions(uri: &Uri, _position: Position) -> Vec<CompletionItem> {
     if !is_control_file(uri) {
         return Vec::new();
     }
@@ -49,7 +51,7 @@ mod tests {
 
     #[test]
     fn test_get_completions_for_control_file() {
-        let uri = Url::parse("file:///path/to/debian/control").unwrap();
+        let uri = str::parse("file:///path/to/debian/control").unwrap();
         let position = Position::new(0, 0);
 
         let completions = get_completions(&uri, position);
@@ -71,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_get_completions_for_non_control_file() {
-        let uri = Url::parse("file:///path/to/other.txt").unwrap();
+        let uri = str::parse("file:///path/to/other.txt").unwrap();
         let position = Position::new(0, 0);
 
         let completions = get_completions(&uri, position);

@@ -6,10 +6,10 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::NumberOrString;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::NumberOrString;
+use tower_lsp_server::ls_types::*;
+use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 mod control;
 mod position;
@@ -32,7 +32,7 @@ fn range_overlaps(a: &Range, b: &Range) -> bool {
 struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
-    files: Arc<Mutex<HashMap<Url, workspace::SourceFile>>>,
+    files: Arc<Mutex<HashMap<Uri, workspace::SourceFile>>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -40,7 +40,6 @@ struct InlayHintParams {
     path: String,
 }
 
-#[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
@@ -76,7 +75,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("file opened: {}", params.text_document.uri),
+                format!("file opened: {:?}", params.text_document.uri),
             )
             .await;
 
@@ -101,7 +100,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("file changed: {}", params.text_document.uri),
+                format!("file changed: {:?}", params.text_document.uri),
             )
             .await;
 
@@ -238,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn test_completion_returns_control_completions() {
         // Test that the completion method properly uses the control module
-        let uri = Url::parse("file:///path/to/debian/control").unwrap();
+        let uri = str::parse("file:///path/to/debian/control").unwrap();
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri },
@@ -260,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completion_returns_none_for_non_control_files() {
-        let uri = Url::parse("file:///path/to/other.txt").unwrap();
+        let uri = str::parse("file:///path/to/other.txt").unwrap();
         let position = Position::new(0, 0);
 
         let completions = control::get_completions(&uri, position);
@@ -270,8 +269,8 @@ mod tests {
     #[test]
     fn test_control_module_integration() {
         // Test that the control module is properly integrated
-        let control_uri = Url::parse("file:///path/to/debian/control").unwrap();
-        let non_control_uri = Url::parse("file:///path/to/other.txt").unwrap();
+        let control_uri = str::parse("file:///path/to/debian/control").unwrap();
+        let non_control_uri = str::parse("file:///path/to/other.txt").unwrap();
         let position = Position::new(0, 0);
 
         // Control file should return completions
@@ -289,7 +288,7 @@ mod tests {
     fn test_workspace_integration() {
         // Test that the workspace can parse control files
         let mut workspace = workspace::Workspace::new();
-        let url = Url::parse("file:///debian/control").unwrap();
+        let url = str::parse("file:///debian/control").unwrap();
         let content = "source: test-package\nMaintainer: Test <test@example.com>\n";
 
         let file = workspace.update_file(url, content.to_string());
