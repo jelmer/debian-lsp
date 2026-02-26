@@ -37,6 +37,15 @@ pub fn parse_control(
     debian_control::lossless::Control::parse(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_copyright(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> debian_copyright::lossless::Parse {
+    let text = file.text(db);
+    debian_copyright::lossless::Parse::parse_relaxed(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -202,6 +211,136 @@ impl Workspace {
             .map(|issue| self.issue_to_diagnostic(issue, &source_text))
             .collect()
     }
+
+    pub fn get_parsed_copyright(&self, file: SourceFile) -> debian_copyright::lossless::Parse {
+        parse_copyright(self, file)
+    }
+
+    /// Find field casing issues in copyright files, optionally within a specific range
+    pub fn find_copyright_field_casing_issues(
+        &self,
+        file: SourceFile,
+        range: Option<TextRange>,
+    ) -> Vec<FieldCasingIssue> {
+        let mut issues = Vec::new();
+        let copyright_parse = self.get_parsed_copyright(file);
+        let copyright = copyright_parse.to_copyright();
+
+        // Check header fields
+        if let Some(header) = copyright.header() {
+            for entry in header.as_deb822().entries() {
+                let entry_range = entry.text_range();
+
+                // If a range is specified, check if this entry is within it
+                if let Some(filter_range) = range {
+                    if entry_range.start() >= filter_range.end()
+                        || entry_range.end() <= filter_range.start()
+                    {
+                        continue; // Skip entries outside the range
+                    }
+                }
+
+                if let Some(key) = entry.key() {
+                    if let Some(standard_name) = crate::copyright::get_standard_field_name(&key) {
+                        if key != standard_name {
+                            if let Some(field_range) = entry.key_range() {
+                                issues.push(FieldCasingIssue {
+                                    field_name: key.to_string(),
+                                    standard_name: standard_name.to_string(),
+                                    field_range,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check files paragraphs
+        for files_para in copyright.iter_files() {
+            for entry in files_para.as_deb822().entries() {
+                let entry_range = entry.text_range();
+
+                if let Some(filter_range) = range {
+                    if entry_range.start() >= filter_range.end()
+                        || entry_range.end() <= filter_range.start()
+                    {
+                        continue;
+                    }
+                }
+
+                if let Some(key) = entry.key() {
+                    if let Some(standard_name) = crate::copyright::get_standard_field_name(&key) {
+                        if key != standard_name {
+                            if let Some(field_range) = entry.key_range() {
+                                issues.push(FieldCasingIssue {
+                                    field_name: key.to_string(),
+                                    standard_name: standard_name.to_string(),
+                                    field_range,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check license paragraphs
+        for license_para in copyright.iter_licenses() {
+            for entry in license_para.as_deb822().entries() {
+                let entry_range = entry.text_range();
+
+                if let Some(filter_range) = range {
+                    if entry_range.start() >= filter_range.end()
+                        || entry_range.end() <= filter_range.start()
+                    {
+                        continue;
+                    }
+                }
+
+                if let Some(key) = entry.key() {
+                    if let Some(standard_name) = crate::copyright::get_standard_field_name(&key) {
+                        if key != standard_name {
+                            if let Some(field_range) = entry.key_range() {
+                                issues.push(FieldCasingIssue {
+                                    field_name: key.to_string(),
+                                    standard_name: standard_name.to_string(),
+                                    field_range,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        issues
+    }
+
+    pub fn get_copyright_diagnostics(&self, file: SourceFile) -> Vec<Diagnostic> {
+        let source_text = self.source_text(file);
+        let mut diagnostics = Vec::new();
+
+        // Add field casing diagnostics
+        for issue in self.find_copyright_field_casing_issues(file, None) {
+            let lsp_range =
+                crate::position::text_range_to_lsp_range(&source_text, issue.field_range);
+
+            diagnostics.push(Diagnostic {
+                range: lsp_range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String("field-casing".to_string())),
+                source: Some("debian-lsp".to_string()),
+                message: format!(
+                    "Field name '{}' should be '{}'",
+                    issue.field_name, issue.standard_name
+                ),
+                ..Default::default()
+            });
+        }
+
+        diagnostics
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +415,101 @@ mod tests {
                 .sum();
             // But it should have minimal fields
             assert!(field_count <= 1);
+        }
+    }
+
+    #[test]
+    fn test_parse_copyright_with_correct_casing() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/copyright").unwrap();
+        let content = r#"Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: test-package
+Source: https://example.com/test
+
+Files: *
+Copyright: 2024 Test Author
+License: MIT
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_copyright(file);
+
+        assert!(parsed.errors().is_empty());
+
+        let copyright = parsed.to_copyright();
+        assert!(copyright.header().is_some());
+        assert_eq!(copyright.iter_files().count(), 1);
+    }
+
+    #[test]
+    fn test_parse_copyright_with_incorrect_casing() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/copyright").unwrap();
+        let content = r#"format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+upstream-name: test-package
+source: https://example.com/test
+
+files: *
+copyright: 2024 Test Author
+license: MIT
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_copyright(file);
+
+        assert!(parsed.errors().is_empty());
+
+        let copyright = parsed.to_copyright();
+        assert!(copyright.header().is_some());
+        assert_eq!(copyright.iter_files().count(), 1);
+    }
+
+    #[test]
+    fn test_copyright_field_casing_detection() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/copyright").unwrap();
+        let content = r#"format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+upstream-name: test-package
+
+files: *
+copyright: 2024 Test Author
+license: MIT
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let issues = workspace.find_copyright_field_casing_issues(file, None);
+
+        // Should detect incorrect casing for format, upstream-name, files, copyright, license
+        assert!(issues.len() >= 3, "Expected at least 3 field casing issues");
+
+        // Check that we detect specific fields
+        let field_names: Vec<_> = issues.iter().map(|i| i.field_name.as_str()).collect();
+        assert!(field_names.contains(&"format"));
+        assert!(field_names.contains(&"files"));
+        assert!(field_names.contains(&"license"));
+    }
+
+    #[test]
+    fn test_copyright_diagnostics() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/copyright").unwrap();
+        let content = r#"format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+upstream-name: test
+
+files: *
+copyright: 2024 Test
+license: MIT
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let diagnostics = workspace.get_copyright_diagnostics(file);
+
+        assert!(!diagnostics.is_empty(), "Should have diagnostics for field casing");
+
+        // All diagnostics should be warnings for field casing
+        for diag in &diagnostics {
+            assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+            assert_eq!(diag.code, Some(NumberOrString::String("field-casing".to_string())));
         }
     }
 }
