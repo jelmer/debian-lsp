@@ -504,12 +504,18 @@ license: MIT
         let file = workspace.update_file(url, content.to_string());
         let diagnostics = workspace.get_copyright_diagnostics(file);
 
-        assert!(!diagnostics.is_empty(), "Should have diagnostics for field casing");
+        assert!(
+            !diagnostics.is_empty(),
+            "Should have diagnostics for field casing"
+        );
 
         // All diagnostics should be warnings for field casing
         for diag in &diagnostics {
             assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
-            assert_eq!(diag.code, Some(NumberOrString::String("field-casing".to_string())));
+            assert_eq!(
+                diag.code,
+                Some(NumberOrString::String("field-casing".to_string()))
+            );
         }
     }
 }
