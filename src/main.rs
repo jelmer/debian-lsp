@@ -13,6 +13,7 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 mod control;
 mod copyright;
 mod position;
+mod watch;
 mod workspace;
 
 use position::{lsp_range_to_text_range, text_range_to_lsp_range};
@@ -102,6 +103,16 @@ impl LanguageServer for Backend {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
+        } else if watch::is_watch_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let file = workspace.update_file(
+                params.text_document.uri.clone(),
+                params.text_document.text.clone(),
+            );
+            let mut files = self.files.lock().await;
+            files.insert(params.text_document.uri.clone(), file);
+
+            // No diagnostics for watch files yet
         }
     }
 
@@ -147,6 +158,19 @@ impl LanguageServer for Backend {
                     .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                     .await;
             }
+        } else if watch::is_watch_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let mut files = self.files.lock().await;
+
+            // Apply the content changes
+            if let Some(changes) = params.content_changes.first() {
+                // Update or create the file
+                let file =
+                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
+                files.insert(params.text_document.uri.clone(), file);
+
+                // No diagnostics for watch files yet
+            }
         }
     }
 
@@ -159,6 +183,11 @@ impl LanguageServer for Backend {
         // If no control completions, try copyright completions
         if completions.is_empty() {
             completions = copyright::get_completions(&uri, position);
+        }
+
+        // If no copyright completions, try watch completions
+        if completions.is_empty() {
+            completions = watch::get_completions(&uri, position);
         }
 
         if completions.is_empty() {

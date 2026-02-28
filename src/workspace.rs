@@ -46,6 +46,12 @@ pub fn parse_copyright(
     debian_copyright::lossless::Parse::parse_relaxed(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_watch(db: &dyn salsa::Database, file: SourceFile) -> debian_watch::parse::Parse {
+    let text = file.text(db);
+    debian_watch::parse::Parse::parse(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -341,6 +347,10 @@ impl Workspace {
 
         diagnostics
     }
+
+    pub fn get_parsed_watch(&self, file: SourceFile) -> debian_watch::parse::Parse {
+        parse_watch(self, file)
+    }
 }
 
 #[cfg(test)]
@@ -517,5 +527,46 @@ license: MIT
                 Some(NumberOrString::String("field-casing".to_string()))
             );
         }
+    }
+
+    #[test]
+    fn test_parse_watch_linebased_v4() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/watch").unwrap();
+        let content = "version=4\nhttps://example.com/files .*/foo-(\\d[\\d.]*)/.tar\\.gz\n";
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_watch(file);
+
+        assert_eq!(parsed.version(), 4);
+    }
+
+    #[test]
+    fn test_parse_watch_deb822_v5() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/watch").unwrap();
+        let content = r#"Version: 5
+
+Source: https://github.com/owner/repo/tags
+Matching-Pattern: .*/v?(\d[\d.]*)\.tar\.gz
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_watch(file);
+
+        assert_eq!(parsed.version(), 5);
+    }
+
+    #[test]
+    fn test_parse_watch_auto_detect_v1() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/watch").unwrap();
+        let content = "https://example.com/files .*/foo-(\\d[\\d.]*).tar\\.gz\n";
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_watch(file);
+
+        // Should default to version 1
+        assert_eq!(parsed.version(), 1);
     }
 }

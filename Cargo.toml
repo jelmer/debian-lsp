@@ -14,6 +14,7 @@ categories = ["development-tools", "text-editors"]
 # debian-analyzer = "0.159.0"
 debian-control = "0.2"
 debian-copyright = { version = "0.1.41", features = ["lossless"] }
+debian-watch = { version = "0.4.1", features = ["linebased", "deb822"] }
 tower-lsp-server = "0.23"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
