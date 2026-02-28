@@ -68,7 +68,11 @@ mod tests {
             .count();
 
         assert!(field_count > 0);
-        assert!(license_count > 0);
+        // Only check for licenses if /usr/share/common-licenses exists
+        // On macOS/Windows this directory won't exist
+        if std::path::Path::new("/usr/share/common-licenses").exists() {
+            assert!(license_count > 0);
+        }
     }
 
     #[test]
@@ -108,22 +112,26 @@ mod tests {
     fn test_license_completions() {
         let completions = get_license_completions();
 
-        assert!(!completions.is_empty());
+        // Only check for licenses if /usr/share/common-licenses exists
+        // On macOS/Windows this directory won't exist
+        if std::path::Path::new("/usr/share/common-licenses").exists() {
+            assert!(!completions.is_empty());
 
-        // Check that all completions have required properties
-        for completion in &completions {
-            assert!(!completion.label.is_empty());
-            assert_eq!(completion.kind, Some(CompletionItemKind::VALUE));
-            assert_eq!(completion.detail, Some("License name".to_string()));
+            // Check that all completions have required properties
+            for completion in &completions {
+                assert!(!completion.label.is_empty());
+                assert_eq!(completion.kind, Some(CompletionItemKind::VALUE));
+                assert_eq!(completion.detail, Some("License name".to_string()));
+            }
+
+            // Check for specific licenses
+            let labels: Vec<_> = completions.iter().map(|c| &c.label).collect();
+            assert!(
+                labels
+                    .iter()
+                    .any(|l| l.contains("GPL") || l.contains("Apache")),
+                "Should contain common licenses"
+            );
         }
-
-        // Check for specific licenses
-        let labels: Vec<_> = completions.iter().map(|c| &c.label).collect();
-        assert!(
-            labels
-                .iter()
-                .any(|l| l.contains("GPL") || l.contains("Apache")),
-            "Should contain common licenses"
-        );
     }
 }

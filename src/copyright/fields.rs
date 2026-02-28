@@ -125,23 +125,33 @@ mod tests {
     #[test]
     fn test_get_common_licenses() {
         let licenses = get_common_licenses();
-        assert!(!licenses.is_empty());
 
-        // Should have common licenses from /usr/share/common-licenses
-        let license_strs: Vec<&str> = licenses.iter().map(|s| s.as_str()).collect();
-        assert!(
-            license_strs.contains(&"GPL-2") || license_strs.contains(&"Apache-2.0"),
-            "Should contain common licenses"
-        );
+        // Only check for licenses if /usr/share/common-licenses exists
+        // On macOS/Windows this directory won't exist
+        if std::path::Path::new("/usr/share/common-licenses").exists() {
+            assert!(!licenses.is_empty());
+
+            // Should have common licenses from /usr/share/common-licenses
+            let license_strs: Vec<&str> = licenses.iter().map(|s| s.as_str()).collect();
+            assert!(
+                license_strs.contains(&"GPL-2") || license_strs.contains(&"Apache-2.0"),
+                "Should contain common licenses"
+            );
+        }
     }
 
     #[test]
     fn test_load_common_licenses() {
         let licenses = load_common_licenses();
-        assert!(!licenses.is_empty());
 
-        for license in &licenses {
-            assert!(!license.is_empty());
+        // Only check for licenses if /usr/share/common-licenses exists
+        // On macOS/Windows this directory won't exist
+        if std::path::Path::new("/usr/share/common-licenses").exists() {
+            assert!(!licenses.is_empty());
+
+            for license in &licenses {
+                assert!(!license.is_empty());
+            }
         }
     }
 }
