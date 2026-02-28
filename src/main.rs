@@ -3,7 +3,6 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::Result;
@@ -34,11 +33,6 @@ struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
     files: Arc<Mutex<HashMap<Uri, workspace::SourceFile>>>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct InlayHintParams {
-    path: String,
 }
 
 impl LanguageServer for Backend {
