@@ -3,7 +3,6 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::Result;
@@ -12,6 +11,7 @@ use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 mod control;
+mod copyright;
 mod position;
 mod workspace;
 
@@ -33,11 +33,6 @@ struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
     files: Arc<Mutex<HashMap<Uri, workspace::SourceFile>>>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct InlayHintParams {
-    path: String,
 }
 
 impl LanguageServer for Backend {
@@ -93,6 +88,20 @@ impl LanguageServer for Backend {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
+        } else if copyright::is_copyright_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let file = workspace.update_file(
+                params.text_document.uri.clone(),
+                params.text_document.text.clone(),
+            );
+            let mut files = self.files.lock().await;
+            files.insert(params.text_document.uri.clone(), file);
+
+            // Publish diagnostics
+            let diagnostics = workspace.get_copyright_diagnostics(file);
+            self.client
+                .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
         }
     }
 
@@ -121,6 +130,23 @@ impl LanguageServer for Backend {
                     .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                     .await;
             }
+        } else if copyright::is_copyright_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let mut files = self.files.lock().await;
+
+            // Apply the content changes
+            if let Some(changes) = params.content_changes.first() {
+                // Update or create the file
+                let file =
+                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
+                files.insert(params.text_document.uri.clone(), file);
+
+                // Publish diagnostics
+                let diagnostics = workspace.get_copyright_diagnostics(file);
+                self.client
+                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                    .await;
+            }
         }
     }
 
@@ -128,7 +154,12 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let completions = control::get_completions(&uri, position);
+        let mut completions = control::get_completions(&uri, position);
+
+        // If no control completions, try copyright completions
+        if completions.is_empty() {
+            completions = copyright::get_completions(&uri, position);
+        }
 
         if completions.is_empty() {
             Ok(None)
@@ -138,7 +169,10 @@ impl LanguageServer for Backend {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        if !control::is_control_file(&params.text_document.uri) {
+        let is_control = control::is_control_file(&params.text_document.uri);
+        let is_copyright = copyright::is_copyright_file(&params.text_document.uri);
+
+        if !is_control && !is_copyright {
             return Ok(None);
         }
 
@@ -157,7 +191,13 @@ impl LanguageServer for Backend {
         // Check for field casing issues - only process fields in the requested range
         let text_range = lsp_range_to_text_range(&source_text, &params.range);
 
-        for issue in workspace.find_field_casing_issues(file, Some(text_range)) {
+        let issues = if is_control {
+            workspace.find_field_casing_issues(file, Some(text_range))
+        } else {
+            workspace.find_copyright_field_casing_issues(file, Some(text_range))
+        };
+
+        for issue in issues {
             let lsp_range = text_range_to_lsp_range(&source_text, issue.field_range);
 
             // Double-check it's within the requested range (should always be true)
