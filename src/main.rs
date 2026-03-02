@@ -6,13 +6,13 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::ls_types::NumberOrString;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 mod changelog;
 mod control;
 mod copyright;
+mod deb822;
 mod position;
 mod source_format;
 mod tests;
@@ -21,7 +21,6 @@ mod workspace;
 
 use position::{lsp_range_to_text_range, text_range_to_lsp_range};
 use std::collections::HashMap;
-// Removed unused imports - TextRange and TextSize are no longer used in main.rs
 use workspace::Workspace;
 
 /// Debian file type
@@ -63,6 +62,7 @@ impl FileType {
 }
 
 /// Information about an open file
+#[derive(Clone, Copy)]
 struct FileInfo {
     /// The workspace's source file ID
     source_file: workspace::SourceFile,
@@ -100,6 +100,24 @@ impl LanguageServer for Backend {
                     completion_item: None,
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: WorkDoneProgressOptions::default(),
+                            legend: SemanticTokensLegend {
+                                token_types: vec![
+                                    SemanticTokenType::new("debianField"),
+                                    SemanticTokenType::new("debianUnknownField"),
+                                    SemanticTokenType::new("debianValue"),
+                                    SemanticTokenType::new("debianComment"),
+                                ],
+                                token_modifiers: vec![SemanticTokenModifier::DECLARATION],
+                            },
+                            range: Some(false),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -401,6 +419,44 @@ impl LanguageServer for Backend {
             Ok(None)
         } else {
             Ok(Some(actions))
+        }
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let source_text = workspace.source_text(file.source_file);
+
+        let tokens = match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                // Use tree() instead of to_result() to get tokens even with parse errors
+                let control = parsed.tree();
+                control::generate_semantic_tokens(&control, &source_text)
+            }
+            // TODO: Implement semantic tokens for other file types
+            _ => vec![],
+        };
+
+        if tokens.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: tokens,
+            })))
         }
     }
 }
