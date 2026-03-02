@@ -6,13 +6,13 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::ls_types::NumberOrString;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 mod changelog;
 mod control;
 mod copyright;
+mod deb822;
 mod position;
 mod source_format;
 mod tests;
@@ -63,6 +63,7 @@ impl FileType {
 }
 
 /// Information about an open file
+#[derive(Clone, Copy)]
 struct FileInfo {
     /// The workspace's source file ID
     source_file: workspace::SourceFile,
@@ -100,6 +101,24 @@ impl LanguageServer for Backend {
                     completion_item: None,
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: WorkDoneProgressOptions::default(),
+                            legend: SemanticTokensLegend {
+                                token_types: vec![
+                                    SemanticTokenType::new("debianField"),
+                                    SemanticTokenType::new("debianUnknownField"),
+                                    SemanticTokenType::new("debianValue"),
+                                    SemanticTokenType::new("debianComment"),
+                                ],
+                                token_modifiers: vec![SemanticTokenModifier::DECLARATION],
+                            },
+                            range: Some(false),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -401,6 +420,103 @@ impl LanguageServer for Backend {
             Ok(None)
         } else {
             Ok(Some(actions))
+        }
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Semantic tokens requested for: {:?}", uri),
+            )
+            .await;
+
+        // Get the file from workspace
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => {
+                self.client
+                    .log_message(MessageType::WARNING, "File not found in workspace")
+                    .await;
+                return Ok(None);
+            }
+        };
+
+        let source_text = workspace.source_text(file.source_file);
+
+        // Generate tokens based on file type
+        let tokens = if control::is_control_file(uri) {
+            let parsed = workspace.get_parsed_control(file.source_file);
+            // Use tree() instead of to_result() to get tokens even with parse errors
+            let control = parsed.tree();
+            control::generate_semantic_tokens(&control, &source_text)
+        } else if copyright::is_copyright_file(uri) {
+            // TODO: Implement copyright semantic tokens
+            vec![]
+        } else if watch::is_watch_file(uri) {
+            // TODO: Implement watch semantic tokens
+            vec![]
+        } else if tests::is_tests_control_file(uri) {
+            // TODO: Implement tests/control semantic tokens
+            vec![]
+        } else {
+            vec![]
+        };
+
+        let token_count = tokens.len();
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Generated {} semantic tokens", token_count),
+            )
+            .await;
+
+        // Log first few tokens for debugging
+        if !tokens.is_empty() {
+            let sample = tokens
+                .iter()
+                .take(5)
+                .map(|t| {
+                    format!(
+                        "(line:{}, start:{}, len:{}, type:{}, mods:{})",
+                        t.delta_line,
+                        t.delta_start,
+                        t.length,
+                        t.token_type,
+                        t.token_modifiers_bitset
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.client
+                .log_message(MessageType::INFO, format!("Sample tokens: {}", sample))
+                .await;
+        }
+
+        if tokens.is_empty() {
+            self.client
+                .log_message(MessageType::INFO, "No tokens to return")
+                .await;
+            Ok(None)
+        } else {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Returning {} tokens", tokens.len()),
+                )
+                .await;
+            Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: tokens,
+            })))
         }
     }
 }

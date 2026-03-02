@@ -49,7 +49,8 @@
         ],
         "filenamePatterns": [
           "**/debian/control"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       },
       {
         "id": "debcopyright",
@@ -62,7 +63,8 @@
         ],
         "filenamePatterns": [
           "**/debian/copyright"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       },
       {
         "id": "debwatch",
@@ -75,7 +77,8 @@
         ],
         "filenamePatterns": [
           "**/debian/watch"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       },
       {
         "id": "debtestscontrol",
@@ -85,7 +88,8 @@
         ],
         "filenamePatterns": [
           "**/debian/tests/control"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       },
       {
         "id": "debchangelog",
@@ -98,7 +102,8 @@
         ],
         "filenamePatterns": [
           "**/debian/changelog"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       },
       {
         "id": "debsourceformat",
@@ -111,7 +116,8 @@
         ],
         "filenamePatterns": [
           "**/debian/source/format"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "configuration": {
@@ -139,7 +145,49 @@
           "description": "Traces the communication between VS Code and the language server."
         }
       }
-    }
+    },
+    "semanticTokenTypes": [
+      {
+        "id": "debianField",
+        "superType": "property",
+        "description": "Known Debian control field"
+      },
+      {
+        "id": "debianUnknownField",
+        "superType": "variable",
+        "description": "Unknown or custom Debian control field"
+      },
+      {
+        "id": "debianValue",
+        "superType": "string",
+        "description": "Field value"
+      },
+      {
+        "id": "debianComment",
+        "superType": "comment",
+        "description": "Comment line"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "debcontrol",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
+      },
+      {
+        "language": "debcopyright",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",
