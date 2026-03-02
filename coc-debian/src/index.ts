@@ -25,10 +25,18 @@ export async function activate(context: ExtensionContext): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: 'file', pattern: '**/debian/control' },
-      { scheme: 'file', pattern: '**/control' }
+      { scheme: 'file', pattern: '**/control' },
+      { scheme: 'file', pattern: '**/debian/copyright' },
+      { scheme: 'file', pattern: '**/copyright' },
+      { scheme: 'file', pattern: '**/debian/watch' },
+      { scheme: 'file', pattern: '**/watch' },
+      { scheme: 'file', pattern: '**/debian/tests/control' },
+      { scheme: 'file', pattern: '**/debian/changelog' },
+      { scheme: 'file', pattern: '**/changelog' },
+      { scheme: 'file', pattern: '**/debian/source/format' }
     ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/debian/control')
+      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,tests/control,source/format}')
     }
   };
 

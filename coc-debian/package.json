@@ -1,7 +1,7 @@
 {
   "name": "coc-debian",
   "version": "0.1.0",
-  "description": "Debian control file support for coc.nvim",
+  "description": "Debian language server support for coc.nvim (control, copyright, watch, changelog, tests/control, source/format)",
   "main": "lib/index.js",
   "engines": {
     "coc": "^0.0.80"
@@ -9,12 +9,21 @@
   "keywords": [
     "coc.nvim",
     "debian",
-    "control"
+    "control",
+    "copyright",
+    "watch",
+    "changelog",
+    "deb822"
   ],
   "author": "Your Name",
   "license": "MIT",
   "activationEvents": [
-    "onLanguage:debian-control"
+    "onLanguage:debian-control",
+    "onLanguage:debian-copyright",
+    "onLanguage:debian-watch",
+    "onLanguage:debian-changelog",
+    "onLanguage:debian-tests-control",
+    "onLanguage:debian-source-format"
   ],
   "contributes": {
     "configuration": {
