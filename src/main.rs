@@ -14,6 +14,7 @@ mod changelog;
 mod control;
 mod copyright;
 mod position;
+mod source_format;
 mod watch;
 mod workspace;
 
@@ -124,6 +125,16 @@ impl LanguageServer for Backend {
             files.insert(params.text_document.uri.clone(), file);
 
             // No diagnostics for changelog files yet
+        } else if source_format::is_source_format_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let file = workspace.update_file(
+                params.text_document.uri.clone(),
+                params.text_document.text.clone(),
+            );
+            let mut files = self.files.lock().await;
+            files.insert(params.text_document.uri.clone(), file);
+
+            // No diagnostics for source/format files yet
         }
     }
 
@@ -195,6 +206,19 @@ impl LanguageServer for Backend {
 
                 // No diagnostics for changelog files yet
             }
+        } else if source_format::is_source_format_file(&params.text_document.uri) {
+            let mut workspace = self.workspace.lock().await;
+            let mut files = self.files.lock().await;
+
+            // Apply the content changes
+            if let Some(changes) = params.content_changes.first() {
+                // Update or create the file
+                let file =
+                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
+                files.insert(params.text_document.uri.clone(), file);
+
+                // No diagnostics for source/format files yet
+            }
         }
     }
 
@@ -217,6 +241,11 @@ impl LanguageServer for Backend {
         // If no watch completions, try changelog completions
         if completions.is_empty() {
             completions = changelog::get_completions(&uri, position);
+        }
+
+        // If no changelog completions, try source/format completions
+        if completions.is_empty() {
+            completions = source_format::get_completions(&uri, position);
         }
 
         if completions.is_empty() {
