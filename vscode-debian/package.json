@@ -1,0 +1,116 @@
+{
+  "name": "vscode-debian",
+  "displayName": "Debian Language Support",
+  "description": "Language Server Protocol support for Debian control, copyright, and watch files",
+  "version": "0.1.0",
+  "publisher": "debian",
+  "license": "Apache-2.0+",
+  "icon": "images/debian-logo-256.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "debian",
+    "control",
+    "copyright",
+    "watch",
+    "deb822"
+  ],
+  "activationEvents": [
+    "onLanguage:debcontrol",
+    "onLanguage:debcopyright",
+    "onLanguage:debwatch"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "debcontrol",
+        "aliases": [
+          "Debian Control",
+          "debcontrol"
+        ],
+        "filenames": [
+          "control"
+        ],
+        "filenamePatterns": [
+          "**/debian/control"
+        ]
+      },
+      {
+        "id": "debcopyright",
+        "aliases": [
+          "Debian Copyright",
+          "debcopyright"
+        ],
+        "filenames": [
+          "copyright"
+        ],
+        "filenamePatterns": [
+          "**/debian/copyright"
+        ]
+      },
+      {
+        "id": "debwatch",
+        "aliases": [
+          "Debian Watch",
+          "debwatch"
+        ],
+        "filenames": [
+          "watch"
+        ],
+        "filenamePatterns": [
+          "**/debian/watch"
+        ]
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Debian Language Server",
+      "properties": {
+        "debian.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Debian language server"
+        },
+        "debian.serverPath": {
+          "type": "string",
+          "default": "debian-lsp",
+          "description": "Path to debian-lsp executable. If not in PATH, provide full path."
+        },
+        "debian.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^6.x",
+    "@typescript-eslint/parser": "^6.x",
+    "@vscode/vsce": "^2.x",
+    "eslint": "^8.x",
+    "typescript": "^5.x"
+  }
+}
