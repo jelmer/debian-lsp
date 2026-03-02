@@ -12,6 +12,7 @@ categories = ["development-tools", "text-editors"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
+chrono = "0.4"
 debian-changelog = "0.2"
 debian-control = "0.2"
 debian-copyright = { version = "0.1.41", features = ["lossless"] }

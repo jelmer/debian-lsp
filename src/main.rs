@@ -260,9 +260,9 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        // Only control and copyright files support code actions for now
+        // Only control, copyright, and changelog files support code actions for now
         match file_info.file_type {
-            FileType::Control | FileType::Copyright => {}
+            FileType::Control | FileType::Copyright | FileType::Changelog => {}
             _ => return Ok(None),
         }
 
@@ -273,64 +273,116 @@ impl LanguageServer for Backend {
         // Check for field casing issues - only process fields in the requested range
         let text_range = lsp_range_to_text_range(&source_text, &params.range);
 
-        let issues = match file_info.file_type {
-            FileType::Control => {
-                workspace.find_field_casing_issues(file_info.source_file, Some(text_range))
+        match file_info.file_type {
+            FileType::Control | FileType::Copyright => {
+                let issues = match file_info.file_type {
+                    FileType::Control => {
+                        workspace.find_field_casing_issues(file_info.source_file, Some(text_range))
+                    }
+                    FileType::Copyright => workspace.find_copyright_field_casing_issues(
+                        file_info.source_file,
+                        Some(text_range),
+                    ),
+                    _ => unreachable!(),
+                };
+
+                for issue in issues {
+                    let lsp_range = text_range_to_lsp_range(&source_text, issue.field_range);
+
+                    // Double-check it's within the requested range (should always be true)
+                    if range_overlaps(&lsp_range, &params.range) {
+                        // Check if there's a matching diagnostic in the context
+                        let matching_diagnostics = params
+                            .context
+                            .diagnostics
+                            .iter()
+                            .filter(|d| {
+                                d.range == lsp_range
+                                    && d.code
+                                        == Some(NumberOrString::String("field-casing".to_string()))
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+
+                        // Create a code action to fix the casing
+                        let edit = TextEdit {
+                            range: lsp_range,
+                            new_text: issue.standard_name.clone(),
+                        };
+
+                        let workspace_edit = WorkspaceEdit {
+                            changes: Some(
+                                vec![(params.text_document.uri.clone(), vec![edit])]
+                                    .into_iter()
+                                    .collect(),
+                            ),
+                            ..Default::default()
+                        };
+
+                        let action = CodeAction {
+                            title: format!(
+                                "Fix field casing: {} -> {}",
+                                issue.field_name, issue.standard_name
+                            ),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            edit: Some(workspace_edit),
+                            diagnostics: if !matching_diagnostics.is_empty() {
+                                Some(matching_diagnostics)
+                            } else {
+                                None
+                            },
+                            ..Default::default()
+                        };
+
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+                }
             }
-            FileType::Copyright => workspace
-                .find_copyright_field_casing_issues(file_info.source_file, Some(text_range)),
+            FileType::Changelog => {
+                // Add action to create a new changelog entry
+                let parsed = workspace.get_parsed_changelog(file_info.source_file);
+                let changelog = parsed.tree();
+                match changelog::generate_new_changelog_entry(&changelog) {
+                    Ok(new_entry) => {
+                        // Insert the new entry at the beginning of the file
+                        let edit = TextEdit {
+                            range: Range {
+                                start: Position {
+                                    line: 0,
+                                    character: 0,
+                                },
+                                end: Position {
+                                    line: 0,
+                                    character: 0,
+                                },
+                            },
+                            new_text: new_entry,
+                        };
+
+                        let workspace_edit = WorkspaceEdit {
+                            changes: Some(
+                                vec![(params.text_document.uri.clone(), vec![edit])]
+                                    .into_iter()
+                                    .collect(),
+                            ),
+                            ..Default::default()
+                        };
+
+                        let action = CodeAction {
+                            title: "Add new changelog entry".to_string(),
+                            kind: Some(CodeActionKind::REFACTOR),
+                            edit: Some(workspace_edit),
+                            ..Default::default()
+                        };
+
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+                    Err(_) => {
+                        // If we can't generate a new entry, don't add the action
+                    }
+                }
+            }
             _ => unreachable!(),
-        };
-
-        for issue in issues {
-            let lsp_range = text_range_to_lsp_range(&source_text, issue.field_range);
-
-            // Double-check it's within the requested range (should always be true)
-            if range_overlaps(&lsp_range, &params.range) {
-                // Check if there's a matching diagnostic in the context
-                let matching_diagnostics = params
-                    .context
-                    .diagnostics
-                    .iter()
-                    .filter(|d| {
-                        d.range == lsp_range
-                            && d.code == Some(NumberOrString::String("field-casing".to_string()))
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                // Create a code action to fix the casing
-                let edit = TextEdit {
-                    range: lsp_range,
-                    new_text: issue.standard_name.clone(),
-                };
-
-                let workspace_edit = WorkspaceEdit {
-                    changes: Some(
-                        vec![(params.text_document.uri.clone(), vec![edit])]
-                            .into_iter()
-                            .collect(),
-                    ),
-                    ..Default::default()
-                };
-
-                let action = CodeAction {
-                    title: format!(
-                        "Fix field casing: {} -> {}",
-                        issue.field_name, issue.standard_name
-                    ),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    edit: Some(workspace_edit),
-                    diagnostics: if !matching_diagnostics.is_empty() {
-                        Some(matching_diagnostics)
-                    } else {
-                        None
-                    },
-                    ..Default::default()
-                };
-
-                actions.push(CodeActionOrCommand::CodeAction(action));
-            }
         }
 
         if actions.is_empty() {
@@ -455,5 +507,86 @@ mod main_tests {
         // Test unknown fields - should return None
         assert_eq!(get_standard_field_name("UnknownField"), None);
         assert_eq!(get_standard_field_name("random"), None);
+    }
+
+    #[test]
+    fn test_changelog_action_generation() {
+        // Test that we can generate a new changelog entry
+        let changelog_content = r#"test-package (1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_content);
+        let changelog = parsed.tree();
+
+        let result = changelog::generate_new_changelog_entry(&changelog);
+        assert!(result.is_ok(), "Should successfully generate entry");
+
+        let new_entry = result.unwrap();
+
+        // Parse the lines to verify exact structure
+        let lines: Vec<&str> = new_entry.lines().collect();
+        assert!(lines.len() >= 5, "Should have at least 5 lines");
+
+        // Check the header line exactly (version is incremented, uses UNRELEASED)
+        assert_eq!(
+            lines[0], "test-package (1.0-2) UNRELEASED; urgency=medium",
+            "First line should be header with incremented version and UNRELEASED"
+        );
+
+        // Check empty line after header
+        assert_eq!(lines[1], "", "Second line should be empty");
+
+        // Check bullet point line
+        assert_eq!(lines[2], "  * ", "Third line should be bullet point");
+
+        // Check empty line before signature
+        assert_eq!(lines[3], "", "Fourth line should be empty");
+
+        // Check signature line starts with proper format
+        assert!(
+            lines[4].starts_with(" -- "),
+            "Fifth line should start with signature marker, got: {}",
+            lines[4]
+        );
+    }
+
+    #[test]
+    fn test_changelog_version_increment_multiple_revisions() {
+        // Test the version increment logic with different versions
+        let changelog_text = r#"mypackage (2.5-3) unstable; urgency=low
+
+  * Some changes.
+
+ -- Jane Smith <jane@example.com>  Tue, 15 Feb 2025 10:30:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let changelog = parsed.tree();
+
+        let result = changelog::generate_new_changelog_entry(&changelog);
+        assert!(result.is_ok(), "Should successfully generate entry");
+
+        let new_entry = result.unwrap();
+        let lines: Vec<&str> = new_entry.lines().collect();
+
+        // Check exact version increment (3 -> 4) with UNRELEASED
+        assert_eq!(
+            lines[0], "mypackage (2.5-4) UNRELEASED; urgency=medium",
+            "Should increment debian revision from 3 to 4 with UNRELEASED"
+        );
+    }
+
+    #[test]
+    fn test_changelog_file_type_detection() {
+        // Test that we correctly detect changelog files
+        let changelog_uri: Uri = str::parse("file:///path/to/debian/changelog").unwrap();
+        let control_uri: Uri = str::parse("file:///path/to/debian/control").unwrap();
+
+        assert_eq!(FileType::detect(&changelog_uri), Some(FileType::Changelog));
+        assert_eq!(FileType::detect(&control_uri), Some(FileType::Control));
     }
 }
