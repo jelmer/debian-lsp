@@ -1,3 +1,4 @@
+use rowan::ast::AstNode;
 use text_size::TextRange;
 use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
@@ -9,6 +10,13 @@ pub struct FieldCasingIssue {
     pub field_name: String,
     pub standard_name: String,
     pub field_range: TextRange,
+}
+
+/// Information about an UNRELEASED entry that can be marked for upload
+#[derive(Debug, Clone)]
+pub struct UnreleasedUploadInfo {
+    pub unreleased_range: TextRange,
+    pub target_distribution: String,
 }
 
 /// All types of diagnostic issues that can be found in a control file
@@ -367,6 +375,50 @@ impl Workspace {
     ) -> debian_changelog::Parse<debian_changelog::ChangeLog> {
         parse_changelog(self, file)
     }
+
+    /// Find UNRELEASED entries in the given range that can be marked for upload
+    pub fn find_unreleased_entries_in_range(
+        &self,
+        file: SourceFile,
+        range: TextRange,
+    ) -> Vec<UnreleasedUploadInfo> {
+        let parsed = self.get_parsed_changelog(file);
+        let changelog = parsed.tree();
+
+        // Determine target distribution from previous entries
+        let target_distribution = crate::changelog::get_target_distribution(&changelog);
+
+        let mut results = Vec::new();
+
+        // Use the new efficient entries_in_range API
+        for entry in changelog.entries_in_range(range) {
+            // Check if this entry has UNRELEASED
+            if let Some(dists) = entry.distributions() {
+                if !dists.is_empty() && dists[0] == "UNRELEASED" {
+                    // Find the exact position of "UNRELEASED" in the entry's syntax tree
+                    let entry_text = entry.syntax().text().to_string();
+                    if let Some(offset) = entry_text.find(") UNRELEASED;") {
+                        let unreleased_start = offset + 2; // +2 for ") "
+                        let unreleased_end = unreleased_start + "UNRELEASED".len();
+
+                        // Convert to absolute positions
+                        let entry_range = entry.syntax().text_range();
+                        let abs_start = entry_range.start()
+                            + text_size::TextSize::from(unreleased_start as u32);
+                        let abs_end =
+                            entry_range.start() + text_size::TextSize::from(unreleased_end as u32);
+
+                        results.push(UnreleasedUploadInfo {
+                            unreleased_range: TextRange::new(abs_start, abs_end),
+                            target_distribution: target_distribution.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        results
+    }
 }
 
 #[cfg(test)]
@@ -625,5 +677,127 @@ rust-foo (0.1.0-1) unstable; urgency=medium
         let parsed = workspace.get_parsed_changelog(file);
 
         assert!(parsed.errors().is_empty());
+    }
+
+    #[test]
+    fn test_find_unreleased_entries_in_range() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/changelog").unwrap();
+        let content = r#"rust-foo (0.2.0-1) UNRELEASED; urgency=medium
+
+  * New changes.
+
+ -- John Doe <john@example.com>  Tue, 02 Jan 2024 12:00:00 +0000
+
+rust-foo (0.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+
+        // Search the entire file
+        let full_range = TextRange::new(0.into(), (content.len() as u32).into());
+        let unreleased_entries = workspace.find_unreleased_entries_in_range(file, full_range);
+
+        assert_eq!(unreleased_entries.len(), 1);
+        assert_eq!(unreleased_entries[0].target_distribution, "unstable");
+
+        // Verify the range points to "UNRELEASED"
+        let unreleased_text = &content[unreleased_entries[0].unreleased_range.start().into()
+            ..unreleased_entries[0].unreleased_range.end().into()];
+        assert_eq!(unreleased_text, "UNRELEASED");
+    }
+
+    #[test]
+    fn test_find_unreleased_entries_multiple() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/changelog").unwrap();
+        let content = r#"rust-foo (0.3.0-1) UNRELEASED; urgency=medium
+
+  * More new changes.
+
+ -- John Doe <john@example.com>  Wed, 03 Jan 2024 12:00:00 +0000
+
+rust-foo (0.2.0-1) UNRELEASED; urgency=medium
+
+  * New changes.
+
+ -- John Doe <john@example.com>  Tue, 02 Jan 2024 12:00:00 +0000
+
+rust-foo (0.1.0-1) experimental; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+
+        // Search the entire file
+        let full_range = TextRange::new(0.into(), (content.len() as u32).into());
+        let unreleased_entries = workspace.find_unreleased_entries_in_range(file, full_range);
+
+        // Should find both UNRELEASED entries
+        assert_eq!(unreleased_entries.len(), 2);
+        // Target should be "experimental" from the first released entry
+        assert_eq!(unreleased_entries[0].target_distribution, "experimental");
+        assert_eq!(unreleased_entries[1].target_distribution, "experimental");
+    }
+
+    #[test]
+    fn test_find_unreleased_entries_partial_range() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/changelog").unwrap();
+        let content = r#"rust-foo (0.3.0-1) UNRELEASED; urgency=medium
+
+  * More new changes.
+
+ -- John Doe <john@example.com>  Wed, 03 Jan 2024 12:00:00 +0000
+
+rust-foo (0.2.0-1) UNRELEASED; urgency=medium
+
+  * New changes.
+
+ -- John Doe <john@example.com>  Tue, 02 Jan 2024 12:00:00 +0000
+
+rust-foo (0.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+
+        // Search only the first entry (first 100 characters should be enough)
+        let partial_range = TextRange::new(0.into(), 100.into());
+        let unreleased_entries = workspace.find_unreleased_entries_in_range(file, partial_range);
+
+        // Should find only the first UNRELEASED entry
+        assert_eq!(unreleased_entries.len(), 1);
+    }
+
+    #[test]
+    fn test_find_unreleased_entries_no_matches() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/changelog").unwrap();
+        let content = r#"rust-foo (0.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+
+        // Search the entire file
+        let full_range = TextRange::new(0.into(), (content.len() as u32).into());
+        let unreleased_entries = workspace.find_unreleased_entries_in_range(file, full_range);
+
+        // Should find no UNRELEASED entries
+        assert_eq!(unreleased_entries.len(), 0);
     }
 }
