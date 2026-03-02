@@ -1,9 +1,10 @@
 # Debian Language Support for VS Code
 
 Language Server Protocol extension for Debian package files, including:
-- `debian/control` files
-- `debian/copyright` files
-- `debian/watch` files
+- `debian/control` - Package control files
+- `debian/copyright` - DEP-5 copyright files
+- `debian/watch` - Upstream watch files
+- `debian/tests/control` - Autopkgtest control files
 
 ## Features
 
@@ -55,6 +56,7 @@ Simply open any Debian package file:
 - `debian/control`
 - `debian/copyright`
 - `debian/watch`
+- `debian/tests/control`
 
 The extension will automatically activate and provide language features.
 
