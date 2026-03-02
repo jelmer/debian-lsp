@@ -31,7 +31,9 @@
     "onLanguage:debcontrol",
     "onLanguage:debcopyright",
     "onLanguage:debwatch",
-    "onLanguage:debtestscontrol"
+    "onLanguage:debtestscontrol",
+    "onLanguage:debchangelog",
+    "onLanguage:debsourceformat"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -83,6 +85,32 @@
         ],
         "filenamePatterns": [
           "**/debian/tests/control"
+        ]
+      },
+      {
+        "id": "debchangelog",
+        "aliases": [
+          "Debian Changelog",
+          "debchangelog"
+        ],
+        "filenames": [
+          "changelog"
+        ],
+        "filenamePatterns": [
+          "**/debian/changelog"
+        ]
+      },
+      {
+        "id": "debsourceformat",
+        "aliases": [
+          "Debian Source Format",
+          "debsourceformat"
+        ],
+        "filenames": [
+          "format"
+        ],
+        "filenamePatterns": [
+          "**/debian/source/format"
         ]
       }
     ],
