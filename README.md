@@ -3,21 +3,28 @@
 [![CI](https://github.com/jelmer/debian-lsp/actions/workflows/ci.yml/badge.svg)](https://github.com/jelmer/debian-lsp/actions/workflows/ci.yml)
 [![Tests](https://github.com/jelmer/debian-lsp/actions/workflows/test.yml/badge.svg)](https://github.com/jelmer/debian-lsp/actions/workflows/test.yml)
 
-Language Server Protocol implementation for Debian control files.
+Language Server Protocol implementation for Debian packaging files.
 
-At the moment this is fairly basic, but the goal is to provide a useful LSP server for editing Debian control files (`debian/control`) with features like:
+At the moment this is fairly basic, but the goal is to provide a useful LSP server for editing Debian packaging files with features like:
 - Field name completion
 - Common package name suggestions
 - Diagnostics for common issues
 - Quick fixes for common issues
 - Integration with lintian-brush, apply-multiarch-hints, etc
 
+## Supported Files
+
+- `debian/control` - Package control files
+- `debian/copyright` - DEP-5 copyright files
+- `debian/watch` - Upstream watch files
+- `debian/tests/control` - Autopkgtest control files (basic support)
+
 ## Features
 
-- Field name completion for Debian control files
-- Common package name suggestions
-- Works with debian/control files
-- Diagnostic analysis for Debian control files
+- Field name completion for Debian packaging files
+- Common package name suggestions for dependencies
+- Works with `debian/control`, `debian/copyright`, `debian/watch`, and `debian/tests/control`
+- Diagnostic analysis for control and copyright files
 - Quick fixes for common issues
 
 ### Diagnostics

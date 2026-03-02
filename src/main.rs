@@ -15,6 +15,7 @@ mod control;
 mod copyright;
 mod position;
 mod source_format;
+mod tests;
 mod watch;
 mod workspace;
 
@@ -22,6 +23,52 @@ use position::{lsp_range_to_text_range, text_range_to_lsp_range};
 use std::collections::HashMap;
 // Removed unused imports - TextRange and TextSize are no longer used in main.rs
 use workspace::Workspace;
+
+/// Debian file type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileType {
+    /// debian/control file
+    Control,
+    /// debian/copyright file
+    Copyright,
+    /// debian/watch file
+    Watch,
+    /// debian/tests/control file
+    TestsControl,
+    /// debian/changelog file
+    Changelog,
+    /// debian/source/format file
+    SourceFormat,
+}
+
+impl FileType {
+    /// Detect the file type from a URI
+    fn detect(uri: &Uri) -> Option<Self> {
+        if control::is_control_file(uri) {
+            Some(Self::Control)
+        } else if copyright::is_copyright_file(uri) {
+            Some(Self::Copyright)
+        } else if watch::is_watch_file(uri) {
+            Some(Self::Watch)
+        } else if tests::is_tests_control_file(uri) {
+            Some(Self::TestsControl)
+        } else if changelog::is_changelog_file(uri) {
+            Some(Self::Changelog)
+        } else if source_format::is_source_format_file(uri) {
+            Some(Self::SourceFormat)
+        } else {
+            None
+        }
+    }
+}
+
+/// Information about an open file
+struct FileInfo {
+    /// The workspace's source file ID
+    source_file: workspace::SourceFile,
+    /// The detected file type
+    file_type: FileType,
+}
 
 /// Check if two LSP ranges overlap
 fn range_overlaps(a: &Range, b: &Range) -> bool {
@@ -35,7 +82,7 @@ fn range_overlaps(a: &Range, b: &Range) -> bool {
 struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
-    files: Arc<Mutex<HashMap<Uri, workspace::SourceFile>>>,
+    files: Arc<Mutex<HashMap<Uri, FileInfo>>>,
 }
 
 impl LanguageServer for Backend {
@@ -77,64 +124,46 @@ impl LanguageServer for Backend {
             )
             .await;
 
-        if control::is_control_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let file = workspace.update_file(
-                params.text_document.uri.clone(),
-                params.text_document.text.clone(),
-            );
-            let mut files = self.files.lock().await;
-            files.insert(params.text_document.uri.clone(), file);
+        // Detect file type once
+        let Some(file_type) = FileType::detect(&params.text_document.uri) else {
+            return;
+        };
 
-            // Publish diagnostics
-            let diagnostics = workspace.get_diagnostics(file);
-            self.client
-                .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
-                .await;
-        } else if copyright::is_copyright_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let file = workspace.update_file(
-                params.text_document.uri.clone(),
-                params.text_document.text.clone(),
-            );
-            let mut files = self.files.lock().await;
-            files.insert(params.text_document.uri.clone(), file);
+        let mut workspace = self.workspace.lock().await;
+        let source_file = workspace.update_file(
+            params.text_document.uri.clone(),
+            params.text_document.text.clone(),
+        );
 
-            // Publish diagnostics
-            let diagnostics = workspace.get_copyright_diagnostics(file);
-            self.client
-                .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
-                .await;
-        } else if watch::is_watch_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let file = workspace.update_file(
-                params.text_document.uri.clone(),
-                params.text_document.text.clone(),
-            );
-            let mut files = self.files.lock().await;
-            files.insert(params.text_document.uri.clone(), file);
+        let mut files = self.files.lock().await;
+        files.insert(
+            params.text_document.uri.clone(),
+            FileInfo {
+                source_file,
+                file_type,
+            },
+        );
 
-            // No diagnostics for watch files yet
-        } else if changelog::is_changelog_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let file = workspace.update_file(
-                params.text_document.uri.clone(),
-                params.text_document.text.clone(),
-            );
-            let mut files = self.files.lock().await;
-            files.insert(params.text_document.uri.clone(), file);
-
-            // No diagnostics for changelog files yet
-        } else if source_format::is_source_format_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let file = workspace.update_file(
-                params.text_document.uri.clone(),
-                params.text_document.text.clone(),
-            );
-            let mut files = self.files.lock().await;
-            files.insert(params.text_document.uri.clone(), file);
-
-            // No diagnostics for source/format files yet
+        // Publish diagnostics based on file type
+        match file_type {
+            FileType::Control => {
+                let diagnostics = workspace.get_diagnostics(source_file);
+                self.client
+                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                    .await;
+            }
+            FileType::Copyright => {
+                let diagnostics = workspace.get_copyright_diagnostics(source_file);
+                self.client
+                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                    .await;
+            }
+            FileType::Watch
+            | FileType::TestsControl
+            | FileType::Changelog
+            | FileType::SourceFormat => {
+                // No diagnostics for these file types yet
+            }
         }
     }
 
@@ -146,78 +175,52 @@ impl LanguageServer for Backend {
             )
             .await;
 
-        if control::is_control_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let mut files = self.files.lock().await;
+        // Get or detect the file type
+        let mut files = self.files.lock().await;
+        let file_type = files
+            .get(&params.text_document.uri)
+            .map(|info| info.file_type)
+            .or_else(|| FileType::detect(&params.text_document.uri));
 
-            // Apply the content changes
-            if let Some(changes) = params.content_changes.first() {
-                // Update or create the file
-                let file =
-                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
-                files.insert(params.text_document.uri.clone(), file);
+        let Some(file_type) = file_type else {
+            return;
+        };
 
-                // Publish diagnostics
-                let diagnostics = workspace.get_diagnostics(file);
+        // Apply the content changes
+        let Some(changes) = params.content_changes.first() else {
+            return;
+        };
+
+        let mut workspace = self.workspace.lock().await;
+        let source_file =
+            workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
+        files.insert(
+            params.text_document.uri.clone(),
+            FileInfo {
+                source_file,
+                file_type,
+            },
+        );
+
+        // Publish diagnostics based on file type
+        match file_type {
+            FileType::Control => {
+                let diagnostics = workspace.get_diagnostics(source_file);
                 self.client
                     .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                     .await;
             }
-        } else if copyright::is_copyright_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let mut files = self.files.lock().await;
-
-            // Apply the content changes
-            if let Some(changes) = params.content_changes.first() {
-                // Update or create the file
-                let file =
-                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
-                files.insert(params.text_document.uri.clone(), file);
-
-                // Publish diagnostics
-                let diagnostics = workspace.get_copyright_diagnostics(file);
+            FileType::Copyright => {
+                let diagnostics = workspace.get_copyright_diagnostics(source_file);
                 self.client
                     .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                     .await;
             }
-        } else if watch::is_watch_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let mut files = self.files.lock().await;
-
-            // Apply the content changes
-            if let Some(changes) = params.content_changes.first() {
-                // Update or create the file
-                let file =
-                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
-                files.insert(params.text_document.uri.clone(), file);
-
-                // No diagnostics for watch files yet
-            }
-        } else if changelog::is_changelog_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let mut files = self.files.lock().await;
-
-            // Apply the content changes
-            if let Some(changes) = params.content_changes.first() {
-                // Update or create the file
-                let file =
-                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
-                files.insert(params.text_document.uri.clone(), file);
-
-                // No diagnostics for changelog files yet
-            }
-        } else if source_format::is_source_format_file(&params.text_document.uri) {
-            let mut workspace = self.workspace.lock().await;
-            let mut files = self.files.lock().await;
-
-            // Apply the content changes
-            if let Some(changes) = params.content_changes.first() {
-                // Update or create the file
-                let file =
-                    workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
-                files.insert(params.text_document.uri.clone(), file);
-
-                // No diagnostics for source/format files yet
+            FileType::Watch
+            | FileType::TestsControl
+            | FileType::Changelog
+            | FileType::SourceFormat => {
+                // No diagnostics for these file types yet
             }
         }
     }
@@ -226,27 +229,20 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let mut completions = control::get_completions(&uri, position);
+        // Look up the file type from our cache
+        let files = self.files.lock().await;
+        let file_type = files.get(&uri).map(|info| info.file_type);
+        drop(files); // Release the lock
 
-        // If no control completions, try copyright completions
-        if completions.is_empty() {
-            completions = copyright::get_completions(&uri, position);
-        }
-
-        // If no copyright completions, try watch completions
-        if completions.is_empty() {
-            completions = watch::get_completions(&uri, position);
-        }
-
-        // If no watch completions, try changelog completions
-        if completions.is_empty() {
-            completions = changelog::get_completions(&uri, position);
-        }
-
-        // If no changelog completions, try source/format completions
-        if completions.is_empty() {
-            completions = source_format::get_completions(&uri, position);
-        }
+        let completions = match file_type {
+            Some(FileType::Control) => control::get_completions(&uri, position),
+            Some(FileType::Copyright) => copyright::get_completions(&uri, position),
+            Some(FileType::Watch) => watch::get_completions(&uri, position),
+            Some(FileType::TestsControl) => tests::get_completions(&uri, position),
+            Some(FileType::Changelog) => changelog::get_completions(&uri, position),
+            Some(FileType::SourceFormat) => source_format::get_completions(&uri, position),
+            None => Vec::new(),
+        };
 
         if completions.is_empty() {
             Ok(None)
@@ -256,32 +252,34 @@ impl LanguageServer for Backend {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let is_control = control::is_control_file(&params.text_document.uri);
-        let is_copyright = copyright::is_copyright_file(&params.text_document.uri);
-
-        if !is_control && !is_copyright {
-            return Ok(None);
-        }
-
         let workspace = self.workspace.lock().await;
         let files = self.files.lock().await;
 
-        let file = match files.get(&params.text_document.uri) {
-            Some(f) => *f,
+        let file_info = match files.get(&params.text_document.uri) {
+            Some(info) => info,
             None => return Ok(None),
         };
 
-        let source_text = workspace.source_text(file);
+        // Only control and copyright files support code actions for now
+        match file_info.file_type {
+            FileType::Control | FileType::Copyright => {}
+            _ => return Ok(None),
+        }
+
+        let source_text = workspace.source_text(file_info.source_file);
 
         let mut actions = Vec::new();
 
         // Check for field casing issues - only process fields in the requested range
         let text_range = lsp_range_to_text_range(&source_text, &params.range);
 
-        let issues = if is_control {
-            workspace.find_field_casing_issues(file, Some(text_range))
-        } else {
-            workspace.find_copyright_field_casing_issues(file, Some(text_range))
+        let issues = match file_info.file_type {
+            FileType::Control => {
+                workspace.find_field_casing_issues(file_info.source_file, Some(text_range))
+            }
+            FileType::Copyright => workspace
+                .find_copyright_field_casing_issues(file_info.source_file, Some(text_range)),
+            _ => unreachable!(),
         };
 
         for issue in issues {
@@ -358,7 +356,7 @@ async fn main() {
 }
 
 #[cfg(test)]
-mod tests {
+mod main_tests {
     use super::*;
 
     #[tokio::test]

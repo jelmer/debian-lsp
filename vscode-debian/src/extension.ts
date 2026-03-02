@@ -32,12 +32,14 @@ export function activate(context: ExtensionContext) {
       { scheme: 'file', language: 'debcontrol' },
       { scheme: 'file', language: 'debcopyright' },
       { scheme: 'file', language: 'debwatch' },
+      { scheme: 'file', language: 'debtestscontrol' },
       { scheme: 'file', pattern: '**/debian/control' },
       { scheme: 'file', pattern: '**/debian/copyright' },
-      { scheme: 'file', pattern: '**/debian/watch' }
+      { scheme: 'file', pattern: '**/debian/watch' },
+      { scheme: 'file', pattern: '**/debian/tests/control' }
     ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch}')
+      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,tests/control}')
     }
   };
 
