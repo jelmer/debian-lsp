@@ -52,6 +52,15 @@ pub fn parse_watch(db: &dyn salsa::Database, file: SourceFile) -> debian_watch::
     debian_watch::parse::Parse::parse(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_changelog(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> debian_changelog::Parse<debian_changelog::ChangeLog> {
+    let text = file.text(db);
+    debian_changelog::ChangeLog::parse(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -351,6 +360,13 @@ impl Workspace {
     pub fn get_parsed_watch(&self, file: SourceFile) -> debian_watch::parse::Parse {
         parse_watch(self, file)
     }
+
+    pub fn get_parsed_changelog(
+        &self,
+        file: SourceFile,
+    ) -> debian_changelog::Parse<debian_changelog::ChangeLog> {
+        parse_changelog(self, file)
+    }
 }
 
 #[cfg(test)]
@@ -568,5 +584,46 @@ Matching-Pattern: .*/v?(\d[\d.]*)\.tar\.gz
 
         // Should default to version 1
         assert_eq!(parsed.version(), 1);
+    }
+
+    #[test]
+    fn test_parse_changelog_basic() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/changelog").unwrap();
+        let content = r#"rust-foo (0.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_changelog(file);
+
+        assert!(parsed.errors().is_empty());
+    }
+
+    #[test]
+    fn test_parse_changelog_multiple_entries() {
+        let mut workspace = Workspace::new();
+        let url = str::parse("file:///debian/changelog").unwrap();
+        let content = r#"rust-foo (0.2.0-1) unstable; urgency=high
+
+  * New upstream release.
+  * Fix security vulnerability.
+
+ -- John Doe <john@example.com>  Tue, 02 Jan 2024 12:00:00 +0000
+
+rust-foo (0.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let file = workspace.update_file(url, content.to_string());
+        let parsed = workspace.get_parsed_changelog(file);
+
+        assert!(parsed.errors().is_empty());
     }
 }
