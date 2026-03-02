@@ -13,11 +13,12 @@ categories = ["development-tools", "text-editors"]
 [dependencies]
 # debian-analyzer = "0.159.0"
 chrono = "0.4"
-debian-changelog = "0.2"
+debian-changelog = "0.2.15"
 debian-control = "0.2"
 debian-copyright = { version = "0.1.41", features = ["lossless"] }
 debian-watch = { version = "0.4.1", features = ["linebased", "deb822"] }
 distro-info = "0.4"
+rowan = "0.16.1"
 tower-lsp-server = "0.23"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

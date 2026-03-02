@@ -1,6 +1,24 @@
 use chrono::Local;
 use std::env;
 
+/// Determine the appropriate distribution to use when marking an entry for upload
+pub fn get_target_distribution(changelog: &debian_changelog::ChangeLog) -> String {
+    // Look for the most recent released entry (not UNRELEASED)
+    changelog
+        .iter()
+        .skip(1) // Skip the first entry
+        .find_map(|entry| {
+            entry.distributions().and_then(|dists| {
+                if !dists.is_empty() && dists[0] != "UNRELEASED" {
+                    Some(dists[0].clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "unstable".to_string())
+}
+
 /// Generates a new changelog entry text with incremented debian revision
 pub fn generate_new_changelog_entry(
     current_changelog: &debian_changelog::ChangeLog,
@@ -102,5 +120,71 @@ mod tests {
         // Clean up environment
         env::remove_var("DEBFULLNAME");
         env::remove_var("DEBEMAIL");
+    }
+
+    #[test]
+    fn test_get_target_distribution_from_previous_entry() {
+        let changelog_text = r#"foo (1.0-2) UNRELEASED; urgency=medium
+
+  * New changes.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let changelog = parsed.tree();
+
+        let target = get_target_distribution(&changelog);
+        assert_eq!(target, "unstable");
+    }
+
+    #[test]
+    fn test_get_target_distribution_defaults_to_unstable() {
+        let changelog_text = r#"foo (1.0-1) UNRELEASED; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let changelog = parsed.tree();
+
+        let target = get_target_distribution(&changelog);
+        assert_eq!(target, "unstable");
+    }
+
+    #[test]
+    fn test_get_target_distribution_skips_unreleased_entries() {
+        let changelog_text = r#"foo (1.0-3) UNRELEASED; urgency=medium
+
+  * Latest changes.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+
+foo (1.0-2) UNRELEASED; urgency=medium
+
+  * More changes.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) experimental; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let changelog = parsed.tree();
+
+        let target = get_target_distribution(&changelog);
+        assert_eq!(target, "experimental");
     }
 }

@@ -381,6 +381,38 @@ impl LanguageServer for Backend {
                         // If we can't generate a new entry, don't add the action
                     }
                 }
+
+                // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
+                let text_range = lsp_range_to_text_range(&source_text, &params.range);
+                let unreleased_entries =
+                    workspace.find_unreleased_entries_in_range(file_info.source_file, text_range);
+
+                for info in unreleased_entries {
+                    let lsp_range = text_range_to_lsp_range(&source_text, info.unreleased_range);
+
+                    let edit = TextEdit {
+                        range: lsp_range,
+                        new_text: info.target_distribution.clone(),
+                    };
+
+                    let workspace_edit = WorkspaceEdit {
+                        changes: Some(
+                            vec![(params.text_document.uri.clone(), vec![edit])]
+                                .into_iter()
+                                .collect(),
+                        ),
+                        ..Default::default()
+                    };
+
+                    let action = CodeAction {
+                        title: format!("Mark for upload to {}", info.target_distribution),
+                        kind: Some(CodeActionKind::REFACTOR),
+                        edit: Some(workspace_edit),
+                        ..Default::default()
+                    };
+
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
             }
             _ => unreachable!(),
         }
