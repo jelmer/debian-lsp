@@ -113,24 +113,28 @@ Alternatively, you can use the generic LSP client extension:
 
 #### ALE
 
-Add the following configuration to your `.vimrc` or `init.vim`:
+Source the provided configuration file in your `.vimrc` or `init.vim`:
 
 ```vim
-" Register debian-lsp with ALE
-let g:ale_linters = get(g:, 'ale_linters', {})
-let g:ale_linters.debcontrol = ['debian-lsp']
-
-" Configure the debian-lsp executable
-call ale#linter#Define('debcontrol', {
-\   'name': 'debian-lsp',
-\   'lsp': 'stdio',
-\   'executable': expand('~/src/debian-lsp/target/release/debian-lsp'),
-\   'command': '%e',
-\   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
-\})
+source /path/to/debian-lsp/ale-debian-lsp.vim
 ```
 
-Note: Adjust the `executable` path to match your installation location. You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
+By default, the configuration will look for the `debian-lsp` executable in the same directory as the vim file. To use a custom path, set `g:debian_lsp_executable` before sourcing:
+
+```vim
+let g:debian_lsp_executable = '/custom/path/to/debian-lsp'
+source /path/to/debian-lsp/ale-debian-lsp.vim
+```
+
+This configuration enables debian-lsp for all supported file types:
+- `debian/control` (debcontrol filetype)
+- `debian/copyright` (debcopyright filetype)
+- `debian/changelog` (debchangelog filetype)
+- `debian/source/format` (debsources filetype)
+- `debian/watch` (make filetype)
+- `debian/tests/control` (make filetype)
+
+You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
 
 #### Native Neovim LSP
 
