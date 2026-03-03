@@ -112,6 +112,30 @@ These parsers preserve all whitespace and formatting, enabling:
 - Format-preserving edits (quick fixes)
 - Incremental reparsing
 
+### Error Tolerance
+
+**Parsers should be tolerant to errors and parse as much as possible.**
+
+When encountering malformed input, parsers should:
+
+1. **Continue parsing**: Don't abort on the first error. Parse as much of the file as possible to provide maximum utility to the user.
+
+2. **Record diagnostics**: Collect error information (invalid syntax, unexpected tokens, etc.) but keep processing subsequent content.
+
+3. **Recover gracefully**: When encountering invalid structure, make reasonable assumptions to continue:
+   - Skip invalid fields but continue with the next field
+   - Parse the next paragraph even if the current one is malformed
+   - Use partial/incomplete parse nodes rather than failing completely
+
+4. **Provide useful information**: Even with errors, the LSP should offer:
+   - Completions for valid parts of the file
+   - Hover information on successfully parsed elements
+   - Diagnostics that identify all issues, not just the first one
+
+**Why this matters**: Users edit files incrementally. At any moment, the file may be syntactically invalid (missing closing quote, incomplete field, etc.). The language server must remain functional during these transient invalid states to provide a good editing experience.
+
+Example: If `debian/control` has a malformed field in the Source paragraph, we should still parse and provide features for the binary package paragraphs that follow.
+
 ### Workspace Management
 
 The `Workspace` struct uses Salsa for incremental computation. When adding new LSP features:
