@@ -54,22 +54,7 @@ The binary will be available at `target/release/debian-lsp`.
 
 ### Using with VS Code
 
-Add the following configuration to your VS Code `settings.json`:
-
-```json
-{
-  "languageServerProtocols.debian-lsp.command": [
-    "/path/to/debian-lsp/target/release/debian-lsp"
-  ],
-  "languageServerProtocols.debian-lsp.filetypes": [
-    "debcontrol"
-  ],
-  "files.associations": {
-    "control": "debcontrol",
-    "**/debian/control": "debcontrol"
-  }
-}
-```
+A dedicated VS Code extension is available in the `vscode-debian` directory. See [vscode-debian/README.md](vscode-debian/README.md) for installation and configuration instructions.
 
 Alternatively, you can use the generic LSP client extension:
 
@@ -81,7 +66,7 @@ Alternatively, you can use the generic LSP client extension:
   "genericLanguageServer.configurations": {
     "debian-lsp": {
       "command": ["/path/to/debian-lsp/target/release/debian-lsp"],
-      "filePatterns": ["**/debian/control", "control"],
+      "filePatterns": ["**/debian/control", "**/debian/copyright", "**/debian/watch", "**/debian/tests/control"],
       "languageId": "debcontrol"
     }
   }
@@ -92,24 +77,7 @@ Alternatively, you can use the generic LSP client extension:
 
 #### coc.nvim
 
-1. Build the coc plugin:
-   ```bash
-   cd coc-debian
-   npm install
-   npm run build
-   ```
-
-2. Install the plugin in Vim with coc.nvim:
-   ```vim
-   :CocInstall /path/to/debian-lsp/coc-debian
-   ```
-
-3. Configure the LSP path in your coc-settings.json:
-   ```json
-   {
-     "debian.serverPath": "/path/to/debian-lsp/target/release/debian-lsp"
-   }
-   ```
+A coc.nvim extension is available in the `coc-debian` directory. See [coc-debian/README.md](coc-debian/README.md) for installation and configuration instructions.
 
 #### ALE
 
