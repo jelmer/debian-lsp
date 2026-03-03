@@ -274,17 +274,21 @@ impl LanguageServer for Backend {
         let text_range = lsp_range_to_text_range(&source_text, &params.range);
 
         match file_info.file_type {
-            FileType::Control | FileType::Copyright => {
-                let issues = match file_info.file_type {
-                    FileType::Control => {
-                        workspace.find_field_casing_issues(file_info.source_file, Some(text_range))
-                    }
-                    FileType::Copyright => workspace.find_copyright_field_casing_issues(
-                        file_info.source_file,
-                        Some(text_range),
-                    ),
-                    _ => unreachable!(),
-                };
+            FileType::Control => {
+                // Add wrap-and-sort action
+                let parsed = workspace.get_parsed_control(file_info.source_file);
+                if let Some(action) = control::get_wrap_and_sort_action(
+                    &params.text_document.uri,
+                    &source_text,
+                    &parsed,
+                    text_range,
+                ) {
+                    actions.push(action);
+                }
+
+                // Add field casing fixes
+                let issues =
+                    workspace.find_field_casing_issues(file_info.source_file, Some(text_range));
 
                 for issue in issues {
                     let lsp_range = text_range_to_lsp_range(&source_text, issue.field_range);
