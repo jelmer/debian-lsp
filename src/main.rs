@@ -289,58 +289,34 @@ impl LanguageServer for Backend {
                 // Add field casing fixes
                 let issues =
                     workspace.find_field_casing_issues(file_info.source_file, Some(text_range));
-
-                for issue in issues {
-                    let lsp_range = text_range_to_lsp_range(&source_text, issue.field_range);
-
-                    // Double-check it's within the requested range (should always be true)
-                    if range_overlaps(&lsp_range, &params.range) {
-                        // Check if there's a matching diagnostic in the context
-                        let matching_diagnostics = params
-                            .context
-                            .diagnostics
-                            .iter()
-                            .filter(|d| {
-                                d.range == lsp_range
-                                    && d.code
-                                        == Some(NumberOrString::String("field-casing".to_string()))
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-
-                        // Create a code action to fix the casing
-                        let edit = TextEdit {
-                            range: lsp_range,
-                            new_text: issue.standard_name.clone(),
-                        };
-
-                        let workspace_edit = WorkspaceEdit {
-                            changes: Some(
-                                vec![(params.text_document.uri.clone(), vec![edit])]
-                                    .into_iter()
-                                    .collect(),
-                            ),
-                            ..Default::default()
-                        };
-
-                        let action = CodeAction {
-                            title: format!(
-                                "Fix field casing: {} -> {}",
-                                issue.field_name, issue.standard_name
-                            ),
-                            kind: Some(CodeActionKind::QUICKFIX),
-                            edit: Some(workspace_edit),
-                            diagnostics: if !matching_diagnostics.is_empty() {
-                                Some(matching_diagnostics)
-                            } else {
-                                None
-                            },
-                            ..Default::default()
-                        };
-
-                        actions.push(CodeActionOrCommand::CodeAction(action));
-                    }
+                actions.extend(control::get_field_casing_actions(
+                    &params.text_document.uri,
+                    &source_text,
+                    issues,
+                    &params.context.diagnostics,
+                ));
+            }
+            FileType::Copyright => {
+                // Add wrap-and-sort action
+                let parsed = workspace.get_parsed_copyright(file_info.source_file);
+                if let Some(action) = copyright::get_wrap_and_sort_action(
+                    &params.text_document.uri,
+                    &source_text,
+                    &parsed,
+                    text_range,
+                ) {
+                    actions.push(action);
                 }
+
+                // Add field casing fixes
+                let issues = workspace
+                    .find_copyright_field_casing_issues(file_info.source_file, Some(text_range));
+                actions.extend(copyright::get_field_casing_actions(
+                    &params.text_document.uri,
+                    &source_text,
+                    issues,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Changelog => {
                 // Add action to create a new changelog entry

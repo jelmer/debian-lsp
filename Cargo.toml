@@ -16,7 +16,7 @@ chrono = "0.4"
 deb822-lossless = "0.5"
 debian-changelog = "0.2.15"
 debian-control = "0.3"
-debian-copyright = { version = "0.1.41", features = ["lossless"] }
+debian-copyright = { version = "0.1.42", features = ["lossless"] }
 debian-watch = { version = "0.4.1", features = ["linebased", "deb822"] }
 distro-info = "0.4"
 rowan = "0.16.1"
