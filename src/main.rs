@@ -450,6 +450,10 @@ impl LanguageServer for Backend {
                 let copyright = parsed.tree();
                 copyright::generate_semantic_tokens(&copyright, &source_text)
             }
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                changelog::generate_semantic_tokens(&parsed, &source_text)
+            }
             // TODO: Implement semantic tokens for other file types
             _ => vec![],
         };
