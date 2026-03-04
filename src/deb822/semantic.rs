@@ -6,7 +6,9 @@
 
 use deb822_lossless::{Deb822, SyntaxKind};
 use rowan::ast::AstNode;
-use tower_lsp_server::ls_types::{Position, SemanticToken};
+use tower_lsp_server::ls_types::SemanticToken;
+
+use crate::position::offset_to_position;
 
 /// Token type indices (must match the order in main.rs initialize())
 pub mod token_type {
@@ -82,18 +84,6 @@ impl Default for SemanticTokensBuilder {
     }
 }
 
-/// Convert a rowan::TextRange to LSP Position (line, character)
-fn text_range_to_position(text: &str, offset: rowan::TextSize) -> Position {
-    let offset_usize = usize::from(offset);
-    let text_before = &text[..offset_usize.min(text.len())];
-
-    let line = text_before.chars().filter(|&c| c == '\n').count() as u32;
-    let line_start = text_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let character = text_before[line_start..].chars().count() as u32;
-
-    Position { line, character }
-}
-
 /// Generate semantic tokens for a deb822 file
 pub fn generate_tokens<V: FieldValidator>(
     deb822: &Deb822,
@@ -108,7 +98,7 @@ pub fn generate_tokens<V: FieldValidator>(
             match token.kind() {
                 SyntaxKind::COMMENT => {
                     let range = token.text_range();
-                    let start_pos = text_range_to_position(source_text, range.start());
+                    let start_pos = offset_to_position(source_text, range.start());
                     let length = (usize::from(range.end()) - usize::from(range.start())) as u32;
 
                     builder.push(
@@ -121,7 +111,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 }
                 SyntaxKind::KEY => {
                     let range = token.text_range();
-                    let start_pos = text_range_to_position(source_text, range.start());
+                    let start_pos = offset_to_position(source_text, range.start());
                     let key = token.text();
                     let length = key.len() as u32;
 
@@ -142,7 +132,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 }
                 SyntaxKind::VALUE => {
                     let range = token.text_range();
-                    let start_pos = text_range_to_position(source_text, range.start());
+                    let start_pos = offset_to_position(source_text, range.start());
                     let length = (usize::from(range.end()) - usize::from(range.start())) as u32;
 
                     if length > 0 {
@@ -178,26 +168,6 @@ mod tests {
                 None
             }
         }
-    }
-
-    #[test]
-    fn test_text_range_to_position() {
-        let text = "Line 0\nLine 1\nLine 2";
-
-        // Start of file
-        let pos = text_range_to_position(text, rowan::TextSize::from(0));
-        assert_eq!(pos.line, 0);
-        assert_eq!(pos.character, 0);
-
-        // Start of line 1 (after first \n)
-        let pos = text_range_to_position(text, rowan::TextSize::from(7));
-        assert_eq!(pos.line, 1);
-        assert_eq!(pos.character, 0);
-
-        // Middle of line 1
-        let pos = text_range_to_position(text, rowan::TextSize::from(10));
-        assert_eq!(pos.line, 1);
-        assert_eq!(pos.character, 3);
     }
 
     #[test]

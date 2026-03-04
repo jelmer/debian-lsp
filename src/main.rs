@@ -21,7 +21,6 @@ mod workspace;
 
 use position::{lsp_range_to_text_range, text_range_to_lsp_range};
 use std::collections::HashMap;
-// Removed unused imports - TextRange and TextSize are no longer used in main.rs
 use workspace::Workspace;
 
 /// Debian file type
@@ -429,90 +428,31 @@ impl LanguageServer for Backend {
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
 
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("Semantic tokens requested for: {:?}", uri),
-            )
-            .await;
-
-        // Get the file from workspace
         let workspace = self.workspace.lock().await;
         let files = self.files.lock().await;
 
         let file = match files.get(uri) {
             Some(f) => *f,
-            None => {
-                self.client
-                    .log_message(MessageType::WARNING, "File not found in workspace")
-                    .await;
-                return Ok(None);
-            }
+            None => return Ok(None),
         };
+        drop(files);
 
         let source_text = workspace.source_text(file.source_file);
 
-        // Generate tokens based on file type
-        let tokens = if control::is_control_file(uri) {
-            let parsed = workspace.get_parsed_control(file.source_file);
-            // Use tree() instead of to_result() to get tokens even with parse errors
-            let control = parsed.tree();
-            control::generate_semantic_tokens(&control, &source_text)
-        } else if copyright::is_copyright_file(uri) {
-            // TODO: Implement copyright semantic tokens
-            vec![]
-        } else if watch::is_watch_file(uri) {
-            // TODO: Implement watch semantic tokens
-            vec![]
-        } else if tests::is_tests_control_file(uri) {
-            // TODO: Implement tests/control semantic tokens
-            vec![]
-        } else {
-            vec![]
+        let tokens = match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                // Use tree() instead of to_result() to get tokens even with parse errors
+                let control = parsed.tree();
+                control::generate_semantic_tokens(&control, &source_text)
+            }
+            // TODO: Implement semantic tokens for other file types
+            _ => vec![],
         };
 
-        let token_count = tokens.len();
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("Generated {} semantic tokens", token_count),
-            )
-            .await;
-
-        // Log first few tokens for debugging
-        if !tokens.is_empty() {
-            let sample = tokens
-                .iter()
-                .take(5)
-                .map(|t| {
-                    format!(
-                        "(line:{}, start:{}, len:{}, type:{}, mods:{})",
-                        t.delta_line,
-                        t.delta_start,
-                        t.length,
-                        t.token_type,
-                        t.token_modifiers_bitset
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.client
-                .log_message(MessageType::INFO, format!("Sample tokens: {}", sample))
-                .await;
-        }
-
         if tokens.is_empty() {
-            self.client
-                .log_message(MessageType::INFO, "No tokens to return")
-                .await;
             Ok(None)
         } else {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Returning {} tokens", tokens.len()),
-                )
-                .await;
             Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: tokens,

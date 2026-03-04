@@ -186,6 +186,24 @@
           "debianValue": ["string"],
           "debianComment": ["comment"]
         }
+      },
+      {
+        "language": "debtestscontrol",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
+      },
+      {
+        "language": "debwatch",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
       }
     ]
   },
