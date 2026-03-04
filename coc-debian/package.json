@@ -15,8 +15,16 @@
     "changelog",
     "deb822"
   ],
-  "author": "Your Name",
-  "license": "MIT",
+  "author": "Jelmer Vernooij",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jelmer/debian-lsp"
+  },
+  "homepage": "https://github.com/jelmer/debian-lsp#readme",
+  "bugs": {
+    "url": "https://github.com/jelmer/debian-lsp/issues"
+  },
   "activationEvents": [
     "onLanguage:debian-control",
     "onLanguage:debian-copyright",
