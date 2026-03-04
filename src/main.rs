@@ -110,6 +110,13 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::new("debianUnknownField"),
                                     SemanticTokenType::new("debianValue"),
                                     SemanticTokenType::new("debianComment"),
+                                    SemanticTokenType::new("changelogPackage"),
+                                    SemanticTokenType::new("changelogVersion"),
+                                    SemanticTokenType::new("changelogDistribution"),
+                                    SemanticTokenType::new("changelogUrgency"),
+                                    SemanticTokenType::new("changelogMaintainer"),
+                                    SemanticTokenType::new("changelogTimestamp"),
+                                    SemanticTokenType::new("changelogMetadataValue"),
                                 ],
                                 token_modifiers: vec![SemanticTokenModifier::DECLARATION],
                             },
@@ -449,6 +456,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 let copyright = parsed.tree();
                 copyright::generate_semantic_tokens(&copyright, &source_text)
+            }
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                changelog::generate_semantic_tokens(&parsed, &source_text)
             }
             // TODO: Implement semantic tokens for other file types
             _ => vec![],
