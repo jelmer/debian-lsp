@@ -442,9 +442,13 @@ impl LanguageServer for Backend {
         let tokens = match file.file_type {
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
-                // Use tree() instead of to_result() to get tokens even with parse errors
                 let control = parsed.tree();
                 control::generate_semantic_tokens(&control, &source_text)
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                let copyright = parsed.tree();
+                copyright::generate_semantic_tokens(&copyright, &source_text)
             }
             // TODO: Implement semantic tokens for other file types
             _ => vec![],
