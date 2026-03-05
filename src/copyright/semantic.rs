@@ -26,7 +26,7 @@ pub fn generate_semantic_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deb822::semantic::token_type;
+    use crate::deb822::semantic::TokenType;
 
     #[test]
     fn test_generate_semantic_tokens_known_fields() {
@@ -42,21 +42,21 @@ mod tests {
         assert_eq!(tokens[0].delta_line, 0);
         assert_eq!(tokens[0].delta_start, 0);
         assert_eq!(tokens[0].length, 6);
-        assert_eq!(tokens[0].token_type, token_type::FIELD);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
 
         // Second token: format value
         assert_eq!(tokens[1].delta_line, 0);
-        assert_eq!(tokens[1].token_type, token_type::VALUE);
+        assert_eq!(tokens[1].token_type, TokenType::Value as u32);
 
         // Third token: "Upstream-Name" field name
         assert_eq!(tokens[2].delta_line, 1);
         assert_eq!(tokens[2].delta_start, 0);
         assert_eq!(tokens[2].length, 13);
-        assert_eq!(tokens[2].token_type, token_type::FIELD);
+        assert_eq!(tokens[2].token_type, TokenType::Field as u32);
 
         // Fourth token: upstream-name value
         assert_eq!(tokens[3].delta_line, 0);
-        assert_eq!(tokens[3].token_type, token_type::VALUE);
+        assert_eq!(tokens[3].token_type, TokenType::Value as u32);
     }
 
     #[test]
@@ -70,10 +70,10 @@ mod tests {
         assert_eq!(tokens.len(), 4);
 
         // First token: "Format" - known field
-        assert_eq!(tokens[0].token_type, token_type::FIELD);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
 
         // Third token: "X-Custom" - unknown field
-        assert_eq!(tokens[2].token_type, token_type::UNKNOWN_FIELD);
+        assert_eq!(tokens[2].token_type, TokenType::UnknownField as u32);
         assert_eq!(tokens[2].length, 8);
     }
 
@@ -85,7 +85,7 @@ mod tests {
         let copyright = parsed.tree();
         let tokens = generate_semantic_tokens(&copyright, text);
 
-        assert_eq!(tokens[0].token_type, token_type::FIELD);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
     }
 
     #[test]
@@ -95,7 +95,10 @@ mod tests {
         assert_eq!(validator.get_standard_field_name("Format"), Some("Format"));
         assert_eq!(validator.get_standard_field_name("format"), Some("Format"));
         assert_eq!(validator.get_standard_field_name("Files"), Some("Files"));
-        assert_eq!(validator.get_standard_field_name("License"), Some("License"));
+        assert_eq!(
+            validator.get_standard_field_name("License"),
+            Some("License")
+        );
         assert_eq!(validator.get_standard_field_name("UnknownField"), None);
     }
 }

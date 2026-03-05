@@ -3,7 +3,7 @@
 use debian_changelog::SyntaxKind;
 use tower_lsp_server::ls_types::SemanticToken;
 
-use crate::deb822::semantic::{token_type, SemanticTokensBuilder};
+use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
 use crate::position::offset_to_position;
 
 /// Generate semantic tokens for a changelog file
@@ -22,26 +22,23 @@ pub fn generate_semantic_tokens(
 
             let token_type = match kind {
                 SyntaxKind::IDENTIFIER => {
-                    // Package name or metadata key — check parent node
                     let parent_kind = token.parent().map(|p| p.kind());
                     match parent_kind {
-                        Some(SyntaxKind::ENTRY_HEADER) | Some(SyntaxKind::METADATA_KEY) => {
-                            Some(token_type::FIELD)
-                        }
+                        Some(SyntaxKind::ENTRY_HEADER) => Some(TokenType::ChangelogPackage),
+                        Some(SyntaxKind::METADATA_KEY) => Some(TokenType::ChangelogUrgency),
+                        Some(SyntaxKind::DISTRIBUTIONS) => Some(TokenType::ChangelogDistribution),
                         _ => None,
                     }
                 }
-                SyntaxKind::VERSION => Some(token_type::VALUE),
-                SyntaxKind::COMMENT => Some(token_type::COMMENT),
+                SyntaxKind::VERSION => Some(TokenType::ChangelogVersion),
+                SyntaxKind::COMMENT => Some(TokenType::Comment),
                 _ => {
-                    // Check parent for composite nodes
                     let parent_kind = token.parent().map(|p| p.kind());
                     match parent_kind {
-                        Some(SyntaxKind::DISTRIBUTIONS) => Some(token_type::VALUE),
-                        Some(SyntaxKind::METADATA_VALUE) => Some(token_type::VALUE),
-                        Some(SyntaxKind::TIMESTAMP) => Some(token_type::VALUE),
-                        Some(SyntaxKind::MAINTAINER) => Some(token_type::VALUE),
-                        Some(SyntaxKind::EMAIL) => Some(token_type::VALUE),
+                        Some(SyntaxKind::METADATA_VALUE) => Some(TokenType::Value),
+                        Some(SyntaxKind::TIMESTAMP) => Some(TokenType::ChangelogTimestamp),
+                        Some(SyntaxKind::MAINTAINER) => Some(TokenType::ChangelogMaintainer),
+                        Some(SyntaxKind::EMAIL) => Some(TokenType::ChangelogMaintainer),
                         _ => None,
                     }
                 }
@@ -72,46 +69,59 @@ mod tests {
         let parsed = debian_changelog::ChangeLog::parse(text);
 
         let tokens = generate_semantic_tokens(&parsed, text);
-
-        // Should have tokens for: package name, version, distribution, urgency key, urgency value,
-        // maintainer, email, timestamp
         assert!(!tokens.is_empty());
 
-        // First token should be the package name "test-package"
+        // First token: package name "test-package"
         assert_eq!(tokens[0].delta_line, 0);
         assert_eq!(tokens[0].delta_start, 0);
         assert_eq!(tokens[0].length, 12);
-        assert_eq!(tokens[0].token_type, token_type::FIELD);
+        assert_eq!(tokens[0].token_type, TokenType::ChangelogPackage as u32);
 
-        // Second token should be the version "(1.0-1)"
-        assert_eq!(tokens[1].token_type, token_type::VALUE);
+        // Second token: version "(1.0-1)"
+        assert_eq!(tokens[1].token_type, TokenType::ChangelogVersion as u32);
     }
 
     #[test]
-    fn test_generate_semantic_tokens_comment() {
-        // Changelog comments start with a line that doesn't match entry format
-        // but the parser may handle them differently. Test with a simple entry.
-        let text = "test-package (1.0-1) unstable; urgency=medium\n\n  * Change.\n\n -- Test <test@test.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
-        let parsed = debian_changelog::ChangeLog::parse(text);
-
-        let tokens = generate_semantic_tokens(&parsed, text);
-        assert!(!tokens.is_empty());
-    }
-
-    #[test]
-    fn test_generate_semantic_tokens_metadata_key() {
+    fn test_generate_semantic_tokens_distribution() {
         let text = "test-package (1.0-1) unstable; urgency=medium\n\n  * Change.\n\n -- Test <test@test.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
 
         let tokens = generate_semantic_tokens(&parsed, text);
 
-        // Find the urgency token - should be FIELD type
-        let urgency_token = tokens.iter().find(|t| {
-            t.token_type == token_type::FIELD && t.delta_line == 0 && t.length == 7
-        });
-        assert!(
-            urgency_token.is_some(),
-            "Should have an urgency FIELD token"
-        );
+        let dist_token = tokens
+            .iter()
+            .find(|t| t.token_type == TokenType::ChangelogDistribution as u32);
+        assert!(dist_token.is_some(), "Should have a distribution token");
+    }
+
+    #[test]
+    fn test_generate_semantic_tokens_urgency() {
+        let text = "test-package (1.0-1) unstable; urgency=medium\n\n  * Change.\n\n -- Test <test@test.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = debian_changelog::ChangeLog::parse(text);
+
+        let tokens = generate_semantic_tokens(&parsed, text);
+
+        let urgency_token = tokens
+            .iter()
+            .find(|t| t.token_type == TokenType::ChangelogUrgency as u32 && t.length == 7);
+        assert!(urgency_token.is_some(), "Should have an urgency token");
+    }
+
+    #[test]
+    fn test_generate_semantic_tokens_maintainer_and_timestamp() {
+        let text = "test-package (1.0-1) unstable; urgency=medium\n\n  * Change.\n\n -- Test <test@test.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = debian_changelog::ChangeLog::parse(text);
+
+        let tokens = generate_semantic_tokens(&parsed, text);
+
+        let has_maintainer = tokens
+            .iter()
+            .any(|t| t.token_type == TokenType::ChangelogMaintainer as u32);
+        assert!(has_maintainer, "Should have a maintainer token");
+
+        let has_timestamp = tokens
+            .iter()
+            .any(|t| t.token_type == TokenType::ChangelogTimestamp as u32);
+        assert!(has_timestamp, "Should have a timestamp token");
     }
 }

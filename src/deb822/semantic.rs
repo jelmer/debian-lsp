@@ -10,15 +10,29 @@ use tower_lsp_server::ls_types::SemanticToken;
 
 use crate::position::offset_to_position;
 
-/// Token type indices (must match the order in main.rs initialize())
-pub mod token_type {
-    pub const FIELD: u32 = 0; // Known control field
-    pub const UNKNOWN_FIELD: u32 = 1; // Unknown/custom field
-    pub const VALUE: u32 = 2; // Field value
-    pub const COMMENT: u32 = 3; // Comment
+/// Semantic token types reported by the server.
+///
+/// The discriminant values must match the order in the `token_types` legend
+/// registered in `main.rs` `initialize()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TokenType {
+    // deb822 types
+    Field = 0,
+    UnknownField = 1,
+    Value = 2,
+    Comment = 3,
+
+    // Changelog-specific types
+    ChangelogPackage = 4,
+    ChangelogVersion = 5,
+    ChangelogDistribution = 6,
+    ChangelogUrgency = 7,
+    ChangelogMaintainer = 8,
+    ChangelogTimestamp = 9,
 }
 
-/// Token modifier indices
+/// Token modifier bit flags
 pub mod token_modifier {
     pub const DECLARATION: u32 = 1 << 0;
 }
@@ -51,7 +65,7 @@ impl SemanticTokensBuilder {
         line: u32,
         start_char: u32,
         length: u32,
-        token_type: u32,
+        token_type: TokenType,
         token_modifiers: u32,
     ) {
         let delta_line = line - self.prev_line;
@@ -65,7 +79,7 @@ impl SemanticTokensBuilder {
             delta_line,
             delta_start,
             length,
-            token_type,
+            token_type: token_type as u32,
             token_modifiers_bitset: token_modifiers,
         });
 
@@ -105,7 +119,7 @@ pub fn generate_tokens<V: FieldValidator>(
                         start_pos.line,
                         start_pos.character,
                         length,
-                        token_type::COMMENT,
+                        TokenType::Comment,
                         0,
                     );
                 }
@@ -117,9 +131,9 @@ pub fn generate_tokens<V: FieldValidator>(
 
                     // Check if field is known
                     let token_type = if validator.get_standard_field_name(key).is_some() {
-                        token_type::FIELD
+                        TokenType::Field
                     } else {
-                        token_type::UNKNOWN_FIELD
+                        TokenType::UnknownField
                     };
 
                     builder.push(
@@ -140,7 +154,7 @@ pub fn generate_tokens<V: FieldValidator>(
                             start_pos.line,
                             start_pos.character,
                             length,
-                            token_type::VALUE,
+                            TokenType::Value,
                             0,
                         );
                     }
@@ -175,13 +189,13 @@ mod tests {
         let mut builder = SemanticTokensBuilder::new();
 
         // Add a token on line 0
-        builder.push(0, 0, 6, token_type::FIELD, 0);
+        builder.push(0, 0, 6, TokenType::Field, 0);
 
         // Add another token on the same line
-        builder.push(0, 8, 4, token_type::VALUE, 0);
+        builder.push(0, 8, 4, TokenType::Value, 0);
 
         // Add a token on line 1
-        builder.push(1, 0, 7, token_type::FIELD, 0);
+        builder.push(1, 0, 7, TokenType::Field, 0);
 
         let tokens = builder.build();
         assert_eq!(tokens.len(), 3);

@@ -26,7 +26,7 @@ pub fn generate_semantic_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deb822::semantic::token_type;
+    use crate::deb822::semantic::TokenType;
 
     #[test]
     fn test_generate_semantic_tokens_known_fields() {
@@ -45,8 +45,8 @@ mod tests {
         assert_eq!(tokens[0].length, 6, "Source length should be 6");
         assert_eq!(
             tokens[0].token_type,
-            token_type::FIELD,
-            "Source should be classified as FIELD (known field)"
+            TokenType::Field as u32,
+            "Source should be classified as Field (known field)"
         );
 
         // Second token: "test-package" value at line 0, char 8
@@ -57,8 +57,8 @@ mod tests {
         );
         assert_eq!(
             tokens[1].token_type,
-            token_type::VALUE,
-            "Value should be classified as VALUE"
+            TokenType::Value as u32,
+            "Value should be classified as Value"
         );
 
         // Third token: "Maintainer" field name at line 1, char 0
@@ -70,16 +70,16 @@ mod tests {
         assert_eq!(tokens[2].length, 10, "Maintainer length should be 10");
         assert_eq!(
             tokens[2].token_type,
-            token_type::FIELD,
-            "Maintainer should be classified as FIELD (known field)"
+            TokenType::Field as u32,
+            "Maintainer should be classified as Field (known field)"
         );
 
         // Fourth token: maintainer value
         assert_eq!(tokens[3].delta_line, 0, "Value should be on same line");
         assert_eq!(
             tokens[3].token_type,
-            token_type::VALUE,
-            "Value should be classified as VALUE"
+            TokenType::Value as u32,
+            "Value should be classified as Value"
         );
     }
 
@@ -96,15 +96,15 @@ mod tests {
         // First token: "Source" - known field
         assert_eq!(
             tokens[0].token_type,
-            token_type::FIELD,
-            "Source should be FIELD (known)"
+            TokenType::Field as u32,
+            "Source should be Field (known)"
         );
 
         // Third token: "X-Custom-Field" - unknown field
         assert_eq!(
             tokens[2].token_type,
-            token_type::UNKNOWN_FIELD,
-            "Unknown field should be classified as UNKNOWN_FIELD"
+            TokenType::UnknownField as u32,
+            "Unknown field should be classified as UnknownField"
         );
         assert_eq!(tokens[2].length, 14, "X-Custom-Field length should be 14");
     }
@@ -120,8 +120,8 @@ mod tests {
         // "source" (lowercase) should still be recognized as a known field
         assert_eq!(
             tokens[0].token_type,
-            token_type::FIELD,
-            "Lowercase 'source' should still be classified as FIELD"
+            TokenType::Field as u32,
+            "Lowercase 'source' should still be classified as Field"
         );
     }
 
