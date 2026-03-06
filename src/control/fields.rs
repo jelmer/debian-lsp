@@ -67,6 +67,77 @@ pub const COMMON_PACKAGES: &[&str] = &[
     "libc6-dev",
 ];
 
+/// Debian policy-recognized priority values for control files.
+pub const CONTROL_PRIORITY_VALUES: &[&str] =
+    &["required", "important", "standard", "optional", "extra"];
+
+/// Debian policy section values for control files.
+pub const CONTROL_SECTION_VALUES: &[&str] = &[
+    "admin",
+    "cli-mono",
+    "comm",
+    "database",
+    "debug",
+    "devel",
+    "doc",
+    "editors",
+    "education",
+    "electronics",
+    "embedded",
+    "fonts",
+    "games",
+    "gnome",
+    "gnu-r",
+    "gnustep",
+    "graphics",
+    "hamradio",
+    "haskell",
+    "httpd",
+    "interpreters",
+    "introspection",
+    "java",
+    "javascript",
+    "kde",
+    "kernel",
+    "libdevel",
+    "libs",
+    "lisp",
+    "localization",
+    "mail",
+    "math",
+    "metapackages",
+    "misc",
+    "net",
+    "news",
+    "ocaml",
+    "oldlibs",
+    "otherosfs",
+    "perl",
+    "php",
+    "python",
+    "ruby",
+    "rust",
+    "science",
+    "shells",
+    "sound",
+    "tasks",
+    "tex",
+    "text",
+    "utils",
+    "vcs",
+    "video",
+    "web",
+    "x11",
+    "xfce",
+    "zope",
+    "debian-installer",
+];
+
+/// Debian archive areas used as section prefixes in control fields.
+///
+/// Section field values can be `area/section` for non-main archive areas.
+pub const CONTROL_SECTION_AREAS: &[&str] = &["contrib", "non-free", "non-free-firmware"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +185,30 @@ mod tests {
                 package
             );
         }
+    }
+
+    #[test]
+    fn test_control_priority_values() {
+        assert_eq!(
+            CONTROL_PRIORITY_VALUES,
+            &["required", "important", "standard", "optional", "extra"]
+        );
+    }
+
+    #[test]
+    fn test_control_section_values() {
+        assert!(!CONTROL_SECTION_VALUES.is_empty());
+        assert!(CONTROL_SECTION_VALUES.contains(&"admin"));
+        assert!(CONTROL_SECTION_VALUES.contains(&"python"));
+        assert!(CONTROL_SECTION_VALUES.contains(&"xfce"));
+        assert!(CONTROL_SECTION_VALUES.contains(&"debian-installer"));
+    }
+
+    #[test]
+    fn test_control_section_areas() {
+        assert_eq!(
+            CONTROL_SECTION_AREAS,
+            &["contrib", "non-free", "non-free-firmware"]
+        );
     }
 }
