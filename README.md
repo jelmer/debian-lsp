@@ -111,7 +111,14 @@ Add the following configuration to your Neovim config (init.lua):
 ```lua
 -- Configure debian-lsp
 vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
-  pattern = {'*/debian/control', 'control'},
+  pattern = {
+    '*/debian/control',
+    '*/debian/copyright',
+    '*/debian/changelog',
+    '*/debian/source/format',
+    '*/debian/watch',
+    '*/debian/tests/control',
+  },
   callback = function()
     vim.lsp.start({
       name = 'debian-lsp',
@@ -133,8 +140,14 @@ if not configs.debian_lsp then
   configs.debian_lsp = {
     default_config = {
       cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
-      filetypes = {'debcontrol'},
-      root_dir = lspconfig.util.root_pattern('debian/control', '.git'),
+      filetypes = {
+        'debcontrol',
+        'debcopyright',
+        'debchangelog',
+        'debsources',
+        'make',
+      },
+      root_dir = lspconfig.util.root_pattern('debian', '.git'),
       settings = {},
     },
   }
