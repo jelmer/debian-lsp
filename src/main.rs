@@ -231,16 +231,34 @@ impl LanguageServer for Backend {
 
         // Look up the file type from our cache
         let files = self.files.lock().await;
-        let file_type = files.get(&uri).map(|info| info.file_type);
+        let file_info = files
+            .get(&uri)
+            .map(|info| (info.file_type, info.source_file));
         drop(files); // Release the lock
 
-        let completions = match file_type {
-            Some(FileType::Control) => control::get_completions(&uri, position),
-            Some(FileType::Copyright) => copyright::get_completions(&uri, position),
-            Some(FileType::Watch) => watch::get_completions(&uri, position),
-            Some(FileType::TestsControl) => tests::get_completions(&uri, position),
-            Some(FileType::Changelog) => changelog::get_completions(&uri, position),
-            Some(FileType::SourceFormat) => source_format::get_completions(&uri, position),
+        let completions = match file_info {
+            Some((FileType::Control, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                if let Some(context) =
+                    workspace.get_control_completion_context(source_file, position)
+                {
+                    if let Some(value_completions) = control::get_field_value_completions(
+                        &context.field_name,
+                        &context.value_prefix,
+                    ) {
+                        value_completions
+                    } else {
+                        control::get_completions(&uri, position)
+                    }
+                } else {
+                    control::get_completions(&uri, position)
+                }
+            }
+            Some((FileType::Copyright, _)) => copyright::get_completions(&uri, position),
+            Some((FileType::Watch, _)) => watch::get_completions(&uri, position),
+            Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
+            Some((FileType::Changelog, _)) => changelog::get_completions(&uri, position),
+            Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             None => Vec::new(),
         };
 
