@@ -71,7 +71,7 @@ pub const COMMON_PACKAGES: &[&str] = &[
 pub const CONTROL_PRIORITY_VALUES: &[&str] =
     &["required", "important", "standard", "optional", "extra"];
 
-/// Debian policy section values for control files.
+/// Debian policy section values for normal packages.
 pub const CONTROL_SECTION_VALUES: &[&str] = &[
     "admin",
     "cli-mono",
@@ -130,13 +130,17 @@ pub const CONTROL_SECTION_VALUES: &[&str] = &[
     "x11",
     "xfce",
     "zope",
-    "debian-installer",
 ];
 
 /// Debian archive areas used as section prefixes in control fields.
 ///
 /// Section field values can be `area/section` for non-main archive areas.
 pub const CONTROL_SECTION_AREAS: &[&str] = &["contrib", "non-free", "non-free-firmware"];
+
+/// Debian policy special section values.
+///
+/// `debian-installer` is used for installer packages and not normal packages.
+pub const CONTROL_SPECIAL_SECTION_VALUES: &[&str] = &["debian-installer"];
 
 #[cfg(test)]
 mod tests {
@@ -201,7 +205,7 @@ mod tests {
         assert!(CONTROL_SECTION_VALUES.contains(&"admin"));
         assert!(CONTROL_SECTION_VALUES.contains(&"python"));
         assert!(CONTROL_SECTION_VALUES.contains(&"xfce"));
-        assert!(CONTROL_SECTION_VALUES.contains(&"debian-installer"));
+        assert!(!CONTROL_SECTION_VALUES.contains(&"debian-installer"));
     }
 
     #[test]
@@ -210,5 +214,10 @@ mod tests {
             CONTROL_SECTION_AREAS,
             &["contrib", "non-free", "non-free-firmware"]
         );
+    }
+
+    #[test]
+    fn test_control_special_section_values() {
+        assert_eq!(CONTROL_SPECIAL_SECTION_VALUES, &["debian-installer"]);
     }
 }

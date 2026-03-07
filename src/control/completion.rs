@@ -5,7 +5,7 @@ use tower_lsp_server::ls_types::{
 use super::detection::is_control_file;
 use super::fields::{
     COMMON_PACKAGES, CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS,
-    CONTROL_SECTION_VALUES,
+    CONTROL_SECTION_VALUES, CONTROL_SPECIAL_SECTION_VALUES,
 };
 
 /// Get completion items for a given position in a control file
@@ -120,6 +120,18 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
                     ..Default::default()
                 });
             }
+        }
+    }
+
+    for &special in CONTROL_SPECIAL_SECTION_VALUES {
+        if special.starts_with(&normalized_prefix) {
+            completions.push(CompletionItem {
+                label: special.to_string(),
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some("Section value (installer-only)".to_string()),
+                insert_text: Some(special.to_string()),
+                ..Default::default()
+            });
         }
     }
 
@@ -274,6 +286,7 @@ mod tests {
         assert!(labels.contains(&"python"));
         assert!(labels.contains(&"debian-installer"));
         assert!(labels.contains(&"non-free/python"));
+        assert!(!labels.contains(&"non-free/debian-installer"));
     }
 
     #[test]
@@ -283,6 +296,7 @@ mod tests {
 
         assert!(labels.contains(&"non-free/python"));
         assert!(!labels.contains(&"python"));
+        assert!(!labels.contains(&"non-free/debian-installer"));
     }
 
     #[test]
