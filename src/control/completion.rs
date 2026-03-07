@@ -20,28 +20,15 @@ pub fn get_completions(uri: &Uri, _position: Position) -> Vec<CompletionItem> {
     completions
 }
 
-/// Get completion items for a given position in a control file with source context.
-///
-/// This enables field-value completions for `Section` and `Priority`.
-pub fn get_completions_with_source(
-    uri: &Uri,
-    position: Position,
-    source_text: &str,
-) -> Vec<CompletionItem> {
-    if !is_control_file(uri) {
-        return Vec::new();
+/// Get value completions for specific control file fields.
+pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Option<Vec<CompletionItem>> {
+    if field_name.eq_ignore_ascii_case("Section") {
+        Some(get_section_value_completions(prefix))
+    } else if field_name.eq_ignore_ascii_case("Priority") {
+        Some(get_priority_value_completions(prefix))
+    } else {
+        None
     }
-
-    if let Some((field_name, prefix)) = detect_field_value_context(source_text, position) {
-        if field_name.eq_ignore_ascii_case("Section") {
-            return get_section_value_completions(prefix);
-        }
-        if field_name.eq_ignore_ascii_case("Priority") {
-            return get_priority_value_completions(prefix);
-        }
-    }
-
-    get_completions(uri, position)
 }
 
 /// Get completion items for control file fields
@@ -136,40 +123,6 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
     }
 
     completions
-}
-
-/// Detect whether the cursor is in a field value position on the current line.
-///
-/// Returns (field_name, value_prefix_before_cursor) when the cursor is after
-/// the `:` delimiter on the same line.
-fn detect_field_value_context(source_text: &str, position: Position) -> Option<(&str, &str)> {
-    let line = source_text.lines().nth(position.line as usize)?;
-    let cursor_byte = char_to_byte_offset(line, position.character);
-    let line_before_cursor = &line[..cursor_byte];
-    let colon_index = line_before_cursor.find(':')?;
-
-    // If cursor is at the colon itself, we are not in value context yet.
-    if cursor_byte <= colon_index + 1 {
-        return None;
-    }
-
-    let field_name = line_before_cursor[..colon_index].trim();
-    if field_name.is_empty() {
-        return None;
-    }
-
-    let value_part = &line_before_cursor[colon_index + 1..];
-    let value_prefix = value_part.trim_start();
-    Some((field_name, value_prefix))
-}
-
-/// Convert a line character offset to a byte offset, clamped to line length.
-fn char_to_byte_offset(line: &str, character: u32) -> usize {
-    let character = character as usize;
-    line.char_indices()
-        .nth(character)
-        .map(|(byte_index, _)| byte_index)
-        .unwrap_or(line.len())
 }
 
 #[cfg(test)]
@@ -300,48 +253,24 @@ mod tests {
     }
 
     #[test]
-    fn test_get_completions_with_source_for_section_value() {
-        let uri = str::parse("file:///path/to/debian/control").unwrap();
-        let source = "Source: foo\nSection: py\n";
-        let position = Position::new(1, 11);
-
-        let completions = get_completions_with_source(&uri, position, source);
+    fn test_get_field_value_completions_for_section() {
+        let completions = get_field_value_completions("Section", "py").expect("Should complete");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"python"));
-        assert!(!labels.contains(&"Source"));
     }
 
     #[test]
-    fn test_get_completions_with_source_for_priority_value() {
-        let uri = str::parse("file:///path/to/debian/control").unwrap();
-        let source = "Source: foo\nPriority: op\n";
-        let position = Position::new(1, 12);
-
-        let completions = get_completions_with_source(&uri, position, source);
+    fn test_get_field_value_completions_for_priority() {
+        let completions = get_field_value_completions("Priority", "op").expect("Should complete");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["optional"]);
     }
 
     #[test]
-    fn test_get_completions_with_source_fallback_to_default() {
-        let uri = str::parse("file:///path/to/debian/control").unwrap();
-        let source = "Source: foo\nMaintainer: test@example.com\n";
-        let position = Position::new(1, 3);
-
-        let completions = get_completions_with_source(&uri, position, source);
-
-        assert!(completions.iter().any(|c| c.label == "Source"));
-        assert!(completions.iter().any(|c| c.label == "debhelper-compat"));
-    }
-
-    #[test]
-    fn test_detect_field_value_context() {
-        let source = "Priority: optional\n";
-        let position = Position::new(0, 17);
-
-        let context = detect_field_value_context(source, position);
-        assert_eq!(context, Some(("Priority", "optiona")));
+    fn test_get_field_value_completions_for_unknown_field() {
+        let completions = get_field_value_completions("Depends", "py");
+        assert!(completions.is_none());
     }
 }

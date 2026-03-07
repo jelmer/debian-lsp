@@ -239,8 +239,20 @@ impl LanguageServer for Backend {
         let completions = match file_info {
             Some((FileType::Control, source_file)) => {
                 let workspace = self.workspace.lock().await;
-                let source_text = workspace.source_text(source_file);
-                control::get_completions_with_source(&uri, position, &source_text)
+                if let Some(context) =
+                    workspace.get_control_completion_context(source_file, position)
+                {
+                    if let Some(value_completions) = control::get_field_value_completions(
+                        &context.field_name,
+                        &context.value_prefix,
+                    ) {
+                        value_completions
+                    } else {
+                        control::get_completions(&uri, position)
+                    }
+                } else {
+                    control::get_completions(&uri, position)
+                }
             }
             Some((FileType::Copyright, _)) => copyright::get_completions(&uri, position),
             Some((FileType::Watch, _)) => watch::get_completions(&uri, position),
