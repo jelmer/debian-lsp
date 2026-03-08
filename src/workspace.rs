@@ -120,7 +120,7 @@ impl Workspace {
 
         let parsed = self.get_parsed_control(file);
         let control = parsed.tree();
-        let offset = crate::position::position_to_offset(&source_text, position);
+        let offset = crate::position::try_position_to_offset(&source_text, position)?;
         let text_len = text_size::TextSize::try_from(source_text.len()).ok()?;
 
         let query_range = if offset >= text_len {
