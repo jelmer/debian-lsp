@@ -150,9 +150,13 @@ impl Workspace {
                 } else {
                     value_range.end()
                 };
-                let start: usize = value_range.start().into();
-                let end: usize = prefix_end.into();
-                source_text[start..end].trim_start().to_string()
+                let prefix_len: usize = (prefix_end - value_range.start()).into();
+                let value = entry.value();
+                let mut prefix_bytes = prefix_len.min(value.len());
+                while !value.is_char_boundary(prefix_bytes) {
+                    prefix_bytes -= 1;
+                }
+                value[..prefix_bytes].to_string()
             }
         } else {
             String::new()
