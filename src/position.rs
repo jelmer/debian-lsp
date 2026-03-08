@@ -67,6 +67,7 @@ pub fn try_position_to_offset(text: &str, position: Position) -> Option<TextSize
 }
 
 /// Convert LSP Position to TextSize
+#[deprecated = "please use try_position_to_offset instead"]
 pub fn position_to_offset(text: &str, position: Position) -> TextSize {
     try_position_to_offset(text, position)
         .expect("invalid LSP position: line/character outside text bounds")
@@ -74,8 +75,10 @@ pub fn position_to_offset(text: &str, position: Position) -> TextSize {
 
 /// Convert LSP Range to TextRange
 pub fn lsp_range_to_text_range(text: &str, range: &Range) -> TextRange {
-    let start = position_to_offset(text, range.start);
-    let end = position_to_offset(text, range.end);
+    let start = try_position_to_offset(text, range.start)
+        .expect("invalid LSP range start: line/character outside text bounds");
+    let end = try_position_to_offset(text, range.end)
+        .expect("invalid LSP range end: line/character outside text bounds");
     TextRange::new(start, end)
 }
 
