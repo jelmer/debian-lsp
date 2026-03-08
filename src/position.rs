@@ -74,12 +74,17 @@ pub fn position_to_offset(text: &str, position: Position) -> TextSize {
 }
 
 /// Convert LSP Range to TextRange
+pub fn try_lsp_range_to_text_range(text: &str, range: &Range) -> Option<TextRange> {
+    let start = try_position_to_offset(text, range.start)?;
+    let end = try_position_to_offset(text, range.end)?;
+    Some(TextRange::new(start, end))
+}
+
+/// Convert LSP Range to TextRange
+#[deprecated = "please use try_lsp_range_to_text_range instead"]
 pub fn lsp_range_to_text_range(text: &str, range: &Range) -> TextRange {
-    let start = try_position_to_offset(text, range.start)
-        .expect("invalid LSP range start: line/character outside text bounds");
-    let end = try_position_to_offset(text, range.end)
-        .expect("invalid LSP range end: line/character outside text bounds");
-    TextRange::new(start, end)
+    try_lsp_range_to_text_range(text, range)
+        .expect("invalid LSP range: line/character outside text bounds")
 }
 
 #[cfg(test)]
@@ -113,5 +118,32 @@ mod tests {
     fn test_position_to_offset_panics_for_invalid_position() {
         let text = "Source: test\n";
         let _ = position_to_offset(text, Position::new(5, 0));
+    }
+
+    #[test]
+    fn test_try_lsp_range_to_text_range_valid() {
+        let text = "Source: test\nSection: py\n";
+        let range = Range::new(Position::new(1, 0), Position::new(1, 7));
+        let text_range = try_lsp_range_to_text_range(text, &range).unwrap();
+
+        let expected_start = TextSize::try_from(13usize).unwrap();
+        let expected_end = TextSize::try_from(20usize).unwrap();
+        assert_eq!(text_range.start(), expected_start);
+        assert_eq!(text_range.end(), expected_end);
+    }
+
+    #[test]
+    fn test_try_lsp_range_to_text_range_invalid_returns_none() {
+        let text = "Source: test\n";
+        let range = Range::new(Position::new(10, 0), Position::new(10, 1));
+        assert!(try_lsp_range_to_text_range(text, &range).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid LSP range")]
+    fn test_lsp_range_to_text_range_panics_for_invalid_range() {
+        let text = "Source: test\n";
+        let range = Range::new(Position::new(10, 0), Position::new(10, 1));
+        let _ = lsp_range_to_text_range(text, &range);
     }
 }
