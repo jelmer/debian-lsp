@@ -44,6 +44,95 @@ pub const CONTROL_FIELDS: &[ControlField] = &[
     ControlField::new("Rules-Requires-Root", "Root privileges requirement"),
 ];
 
+/// Debian section values.
+pub const SECTION_VALUES: &[&str] = &[
+    "admin",
+    "cli-mono",
+    "comm",
+    "database",
+    "debug",
+    "devel",
+    "doc",
+    "editors",
+    "education",
+    "electronics",
+    "embedded",
+    "fonts",
+    "games",
+    "gnome",
+    "gnu-r",
+    "gnustep",
+    "graphics",
+    "hamradio",
+    "haskell",
+    "httpd",
+    "interpreters",
+    "introspection",
+    "java",
+    "javascript",
+    "kde",
+    "kernel",
+    "libdevel",
+    "libs",
+    "lisp",
+    "localization",
+    "mail",
+    "math",
+    "metapackages",
+    "misc",
+    "net",
+    "news",
+    "ocaml",
+    "oldlibs",
+    "otherosfs",
+    "perl",
+    "php",
+    "python",
+    "ruby",
+    "rust",
+    "science",
+    "shells",
+    "sound",
+    "tasks",
+    "tex",
+    "text",
+    "utils",
+    "vcs",
+    "video",
+    "web",
+    "x11",
+    "xfce",
+    "zope",
+];
+
+/// Debian priority values.
+pub const PRIORITY_VALUES: &[&str] = &[
+    "extra",
+    "important",
+    "optional",
+    "required",
+    "standard",
+    "unknown",
+];
+
+/// Debian protected values.
+pub const PROTECTED_VALUES: &[&str] = &["yes", "no"];
+
+/// Debian essential values.
+pub const ESSENTIAL_VALUES: &[&str] = &["yes", "no"];
+
+/// Debian build-essential values.
+pub const BUILD_ESSENTIAL_VALUES: &[&str] = &["yes", "no"];
+
+/// Debian architecture values.
+pub const ARCHITECTURE_VALUES: &[&str] = &[
+    "all", "amd64", "arm64", "armel", "armhf", "i386", "mips", "mips64el", "mipsel", "ppc64el",
+    "s390x",
+];
+
+/// Debian multi-architecture values.
+pub const MULTI_ARCH_VALUES: &[&str] = &["allowed", "foreign", "no", "same"];
+
 /// Get the standard casing for a field name
 pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
     let lowercase = field_name.to_lowercase();
