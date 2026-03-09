@@ -1,7 +1,5 @@
 use text_size::TextRange;
-use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, Documentation, Position,
-};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
 /// A field definition for a deb822-based file format.
 pub struct FieldInfo {
@@ -190,8 +188,8 @@ mod tests {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let ctx = get_cursor_context(&deb822, text, Position::new(1, 11))
-            .expect("Should have context");
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(1, 11)).expect("Should have context");
         assert_eq!(
             ctx,
             CursorContext::FieldValue {
@@ -206,8 +204,8 @@ mod tests {
         let text = "Section: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let ctx = get_cursor_context(&deb822, text, Position::new(0, 8))
-            .expect("Should have context");
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(0, 8)).expect("Should have context");
         assert_eq!(
             ctx,
             CursorContext::FieldValue {
@@ -222,8 +220,8 @@ mod tests {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let ctx = get_cursor_context(&deb822, text, Position::new(1, 3))
-            .expect("Should have context");
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(1, 3)).expect("Should have context");
         assert_eq!(ctx, CursorContext::FieldKey);
     }
 
@@ -231,8 +229,8 @@ mod tests {
     fn test_get_cursor_context_empty_text() {
         let text = "";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
-        let ctx = get_cursor_context(&deb822, text, Position::new(0, 0))
-            .expect("Should have context");
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(0, 0)).expect("Should have context");
         assert_eq!(ctx, CursorContext::StartOfLine);
     }
 

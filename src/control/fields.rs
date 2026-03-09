@@ -55,9 +55,18 @@ pub const COMMON_PACKAGES: &[&str] = &[
 /// Each entry is (value, description).
 pub const CONTROL_PRIORITY_VALUES: &[(&str, &str)] = &[
     ("required", "Essential for the system to function"),
-    ("important", "Important programs, including those expected on a Unix-like system"),
-    ("standard", "Reasonably small but not too limited character-mode system"),
-    ("optional", "All packages not required for a reasonably functional system"),
+    (
+        "important",
+        "Important programs, including those expected on a Unix-like system",
+    ),
+    (
+        "standard",
+        "Reasonably small but not too limited character-mode system",
+    ),
+    (
+        "optional",
+        "All packages not required for a reasonably functional system",
+    ),
     ("extra", "Deprecated alias for optional"),
 ];
 
@@ -219,7 +228,10 @@ mod tests {
 
     #[test]
     fn test_control_special_section_values() {
-        let names: Vec<_> = CONTROL_SPECIAL_SECTION_VALUES.iter().map(|(n, _)| *n).collect();
+        let names: Vec<_> = CONTROL_SPECIAL_SECTION_VALUES
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
         assert_eq!(names, &["debian-installer"]);
     }
 }

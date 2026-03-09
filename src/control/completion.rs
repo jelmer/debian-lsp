@@ -24,7 +24,10 @@ pub fn get_completions(
     );
     // When returning field completions (not value completions), also
     // include common package names.
-    if completions.iter().any(|c| c.kind == Some(CompletionItemKind::FIELD)) {
+    if completions
+        .iter()
+        .any(|c| c.kind == Some(CompletionItemKind::FIELD))
+    {
         completions.extend(get_package_completions());
     }
     completions
@@ -226,7 +229,10 @@ mod tests {
 
         // Check that descriptions are present
         let admin = completions.iter().find(|c| c.label == "admin").unwrap();
-        assert_eq!(admin.detail.as_deref(), Some("System administration utilities"));
+        assert_eq!(
+            admin.detail.as_deref(),
+            Some("System administration utilities")
+        );
     }
 
     #[test]
@@ -239,8 +245,14 @@ mod tests {
         assert!(!labels.contains(&"non-free/debian-installer"));
 
         // Area-qualified sections use the same description as the base section
-        let nf_python = completions.iter().find(|c| c.label == "non-free/python").unwrap();
-        assert_eq!(nf_python.detail.as_deref(), Some("Python programming language"));
+        let nf_python = completions
+            .iter()
+            .find(|c| c.label == "non-free/python")
+            .unwrap();
+        assert_eq!(
+            nf_python.detail.as_deref(),
+            Some("Python programming language")
+        );
     }
 
     #[test]
