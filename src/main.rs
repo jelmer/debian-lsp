@@ -19,7 +19,7 @@ mod tests;
 mod watch;
 mod workspace;
 
-use position::{lsp_range_to_text_range, text_range_to_lsp_range};
+use position::{text_range_to_lsp_range, try_lsp_range_to_text_range};
 use std::collections::HashMap;
 use workspace::Workspace;
 
@@ -296,7 +296,9 @@ impl LanguageServer for Backend {
         let mut actions = Vec::new();
 
         // Check for field casing issues - only process fields in the requested range
-        let text_range = lsp_range_to_text_range(&source_text, &params.range);
+        let Some(text_range) = try_lsp_range_to_text_range(&source_text, &params.range) else {
+            return Ok(None);
+        };
 
         match file_info.file_type {
             FileType::Control => {
@@ -388,7 +390,6 @@ impl LanguageServer for Backend {
                 }
 
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
-                let text_range = lsp_range_to_text_range(&source_text, &params.range);
                 let unreleased_entries =
                     workspace.find_unreleased_entries_in_range(file_info.source_file, text_range);
 
