@@ -18,12 +18,13 @@ At the moment this is fairly basic, but the goal is to provide a useful LSP serv
 - `debian/copyright` - DEP-5 copyright files
 - `debian/watch` - Upstream watch files
 - `debian/tests/control` - Autopkgtest control files (basic support)
+- `debian/upstream/metadata` - DEP-12 upstream metadata files
 
 ## Features
 
 - Field name completion for Debian packaging files
 - Common package name suggestions for dependencies
-- Works with `debian/control`, `debian/copyright`, `debian/watch`, and `debian/tests/control`
+- Works with `debian/control`, `debian/copyright`, `debian/watch`, `debian/tests/control`, and `debian/upstream/metadata`
 - Diagnostic analysis for control and copyright files
 - Quick fixes for common issues
 
@@ -84,6 +85,7 @@ This configuration enables debian-lsp for all supported file types:
 - `debian/source/format` (debsources filetype)
 - `debian/watch` (make filetype)
 - `debian/tests/control` (make filetype)
+- `debian/upstream/metadata` (yaml filetype)
 
 You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
 
@@ -101,6 +103,7 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
     '*/debian/source/format',
     '*/debian/watch',
     '*/debian/tests/control',
+    '*/debian/upstream/metadata',
   },
   callback = function()
     vim.lsp.start({
@@ -129,6 +132,7 @@ if not configs.debian_lsp then
         'debchangelog',
         'debsources',
         'make',
+        'yaml',
       },
       root_dir = lspconfig.util.root_pattern('debian', '.git'),
       settings = {},

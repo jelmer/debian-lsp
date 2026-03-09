@@ -35,15 +35,17 @@ export function activate(context: ExtensionContext) {
       { scheme: 'file', language: 'debtestscontrol' },
       { scheme: 'file', language: 'debchangelog' },
       { scheme: 'file', language: 'debsourceformat' },
+      { scheme: 'file', language: 'debupstreammetadata' },
       { scheme: 'file', pattern: '**/debian/control' },
       { scheme: 'file', pattern: '**/debian/copyright' },
       { scheme: 'file', pattern: '**/debian/watch' },
       { scheme: 'file', pattern: '**/debian/tests/control' },
       { scheme: 'file', pattern: '**/debian/changelog' },
-      { scheme: 'file', pattern: '**/debian/source/format' }
+      { scheme: 'file', pattern: '**/debian/source/format' },
+      { scheme: 'file', pattern: '**/debian/upstream/metadata' }
     ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,tests/control,source/format}')
+      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,tests/control,source/format,upstream/metadata}')
     }
   };
 

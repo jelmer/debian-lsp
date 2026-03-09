@@ -1,7 +1,7 @@
 {
   "name": "coc-debian",
   "version": "0.1.0",
-  "description": "Debian language server support for coc.nvim (control, copyright, watch, changelog, tests/control, source/format)",
+  "description": "Debian language server support for coc.nvim (control, copyright, watch, changelog, tests/control, source/format, upstream/metadata)",
   "main": "lib/index.js",
   "engines": {
     "coc": "^0.0.80"
@@ -31,7 +31,8 @@
     "onLanguage:debian-watch",
     "onLanguage:debian-changelog",
     "onLanguage:debian-tests-control",
-    "onLanguage:debian-source-format"
+    "onLanguage:debian-source-format",
+    "onLanguage:debian-upstream-metadata"
   ],
   "contributes": {
     "configuration": {

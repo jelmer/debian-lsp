@@ -1,7 +1,7 @@
 {
   "name": "vscode-debian",
   "displayName": "Debian Language Support",
-  "description": "Language Server Protocol support for Debian control, copyright, and watch files",
+  "description": "Language Server Protocol support for Debian packaging files",
   "version": "0.1.0",
   "publisher": "debian",
   "license": "Apache-2.0+",
@@ -25,7 +25,8 @@
     "control",
     "copyright",
     "watch",
-    "deb822"
+    "deb822",
+    "upstream-metadata"
   ],
   "activationEvents": [
     "onLanguage:debcontrol",
@@ -33,7 +34,8 @@
     "onLanguage:debwatch",
     "onLanguage:debtestscontrol",
     "onLanguage:debchangelog",
-    "onLanguage:debsourceformat"
+    "onLanguage:debsourceformat",
+    "onLanguage:debupstreammetadata"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -116,6 +118,17 @@
         ],
         "filenamePatterns": [
           "**/debian/source/format"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "debupstreammetadata",
+        "aliases": [
+          "Debian Upstream Metadata",
+          "debupstreammetadata"
+        ],
+        "filenamePatterns": [
+          "**/debian/upstream/metadata"
         ],
         "configuration": "./language-configuration.json"
       }
@@ -233,6 +246,15 @@
       },
       {
         "language": "debwatch",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
+      },
+      {
+        "language": "debupstreammetadata",
         "scopes": {
           "debianField": ["entity.name.tag"],
           "debianUnknownField": ["variable.other"],

@@ -19,6 +19,7 @@ let g:ale_linters.debcopyright = ['debian-lsp']
 let g:ale_linters.debchangelog = ['debian-lsp']
 let g:ale_linters.debsources = ['debian-lsp']
 let g:ale_linters.make = get(g:ale_linters, 'make', []) + ['debian-lsp']
+let g:ale_linters.yaml = get(g:ale_linters, 'yaml', []) + ['debian-lsp']
 
 " Define debian-lsp for debian/control files
 call ale#linter#Define('debcontrol', {
@@ -58,6 +59,15 @@ call ale#linter#Define('debsources', {
 
 " Define debian-lsp for debian/watch and debian/tests/control files (make filetype)
 call ale#linter#Define('make', {
+\   'name': 'debian-lsp',
+\   'lsp': 'stdio',
+\   'executable': g:debian_lsp_executable,
+\   'command': '%e',
+\   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
+\})
+
+" Define debian-lsp for debian/upstream/metadata files (yaml filetype)
+call ale#linter#Define('yaml', {
 \   'name': 'debian-lsp',
 \   'lsp': 'stdio',
 \   'executable': g:debian_lsp_executable,
