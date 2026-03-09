@@ -60,11 +60,11 @@ pub fn get_priority_value_completions(prefix: &str) -> Vec<CompletionItem> {
 
     CONTROL_PRIORITY_VALUES
         .iter()
-        .filter(|value| value.starts_with(&normalized_prefix))
-        .map(|&value| CompletionItem {
+        .filter(|(value, _)| value.starts_with(&normalized_prefix))
+        .map(|&(value, description)| CompletionItem {
             label: value.to_string(),
             kind: Some(CompletionItemKind::VALUE),
-            detail: Some("Priority value".to_string()),
+            detail: Some(description.to_string()),
             insert_text: Some(value.to_string()),
             ..Default::default()
         })
@@ -78,12 +78,12 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
     let normalized_prefix = prefix.trim().to_ascii_lowercase();
     let mut completions = Vec::new();
 
-    for &section in CONTROL_SECTION_VALUES {
+    for &(section, description) in CONTROL_SECTION_VALUES {
         if section.starts_with(&normalized_prefix) {
             completions.push(CompletionItem {
                 label: section.to_string(),
                 kind: Some(CompletionItemKind::VALUE),
-                detail: Some("Section value".to_string()),
+                detail: Some(description.to_string()),
                 insert_text: Some(section.to_string()),
                 ..Default::default()
             });
@@ -91,13 +91,13 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
     }
 
     for &area in CONTROL_SECTION_AREAS {
-        for &section in CONTROL_SECTION_VALUES {
+        for &(section, description) in CONTROL_SECTION_VALUES {
             let qualified = format!("{}/{}", area, section);
             if qualified.starts_with(&normalized_prefix) {
                 completions.push(CompletionItem {
                     label: qualified.clone(),
                     kind: Some(CompletionItemKind::VALUE),
-                    detail: Some("Section value (area/section)".to_string()),
+                    detail: Some(description.to_string()),
                     insert_text: Some(qualified),
                     ..Default::default()
                 });
@@ -105,12 +105,12 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
         }
     }
 
-    for &special in CONTROL_SPECIAL_SECTION_VALUES {
+    for &(special, description) in CONTROL_SPECIAL_SECTION_VALUES {
         if special.starts_with(&normalized_prefix) {
             completions.push(CompletionItem {
                 label: special.to_string(),
                 kind: Some(CompletionItemKind::VALUE),
-                detail: Some("Section value (installer-only)".to_string()),
+                detail: Some(description.to_string()),
                 insert_text: Some(special.to_string()),
                 ..Default::default()
             });
@@ -223,6 +223,10 @@ mod tests {
         assert!(labels.contains(&"debian-installer"));
         assert!(labels.contains(&"non-free/python"));
         assert!(!labels.contains(&"non-free/debian-installer"));
+
+        // Check that descriptions are present
+        let admin = completions.iter().find(|c| c.label == "admin").unwrap();
+        assert_eq!(admin.detail.as_deref(), Some("System administration utilities"));
     }
 
     #[test]
@@ -233,6 +237,10 @@ mod tests {
         assert!(labels.contains(&"non-free/python"));
         assert!(!labels.contains(&"python"));
         assert!(!labels.contains(&"non-free/debian-installer"));
+
+        // Area-qualified sections use the same description as the base section
+        let nf_python = completions.iter().find(|c| c.label == "non-free/python").unwrap();
+        assert_eq!(nf_python.detail.as_deref(), Some("Python programming language"));
     }
 
     #[test]

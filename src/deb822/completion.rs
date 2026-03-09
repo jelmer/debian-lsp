@@ -15,11 +15,18 @@ impl FieldInfo {
     }
 }
 
-/// Completion context: the field name and value prefix at the cursor position.
+/// What kind of position the cursor is at in a deb822 document.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionContext {
-    pub field_name: String,
-    pub value_prefix: String,
+pub enum CursorContext {
+    /// Cursor is on a field key (the part before the colon).
+    FieldKey,
+    /// Cursor is on a field value (after the colon).
+    FieldValue {
+        field_name: String,
+        value_prefix: String,
+    },
+    /// Cursor is at the start of a line where a new field could be added.
+    StartOfLine,
 }
 
 /// Look up the standard (canonical) casing for a field name.
@@ -46,25 +53,26 @@ pub fn get_field_completions(fields: &[FieldInfo]) -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Extract the completion context (field name + value prefix) at a cursor
-/// position in a deb822 document.
+/// Determine what kind of completion context the cursor is in.
 ///
-/// Returns `None` if the cursor is not positioned on a field value.
-pub fn get_completion_context(
+/// Returns `None` for positions where no completions make sense
+/// (e.g. continuation lines, comments, blank lines between paragraphs).
+pub fn get_cursor_context(
     deb822: &deb822_lossless::Deb822,
     source_text: &str,
     position: Position,
-) -> Option<CompletionContext> {
+) -> Option<CursorContext> {
     if source_text.is_empty() {
-        return None;
+        return Some(CursorContext::StartOfLine);
     }
 
     let offset = crate::position::try_position_to_offset(source_text, position)?;
-    let text_len = text_size::TextSize::try_from(source_text.len()).ok()?;
 
+    // Check if cursor is on an existing entry
+    let text_len = text_size::TextSize::try_from(source_text.len()).ok()?;
     let query_range = if offset >= text_len {
         if text_len == text_size::TextSize::from(0) {
-            return None;
+            return Some(CursorContext::StartOfLine);
         }
         TextRange::new(text_len - text_size::TextSize::from(1), text_len)
     } else {
@@ -77,41 +85,57 @@ pub fn get_completion_context(
         .find(|entry| {
             let r = entry.text_range();
             r.start() < query_range.end() && query_range.start() < r.end()
-        })?;
+        });
 
-    let field_name = entry.key()?;
-    let colon_range = entry.colon_range()?;
+    if let Some(entry) = entry {
+        let field_name = entry.key()?;
+        let colon_range = entry.colon_range()?;
 
-    // Only offer value completions when cursor is at or after the ':' separator.
-    if offset < colon_range.end() {
-        return None;
+        if offset < colon_range.start() {
+            // Before the colon → on the field key
+            return Some(CursorContext::FieldKey);
+        }
+
+        if offset < colon_range.end() {
+            // On the colon itself → treat as field key
+            return Some(CursorContext::FieldKey);
+        }
+
+        // After the colon → on the field value
+        let value_prefix = if let Some(value_range) = entry.value_range() {
+            if offset <= value_range.start() {
+                String::new()
+            } else {
+                let prefix_end = if offset < value_range.end() {
+                    offset
+                } else {
+                    value_range.end()
+                };
+                let prefix_len: usize = (prefix_end - value_range.start()).into();
+                let value = entry.value();
+                let mut prefix_bytes = prefix_len.min(value.len());
+                while !value.is_char_boundary(prefix_bytes) {
+                    prefix_bytes -= 1;
+                }
+                value[..prefix_bytes].to_string()
+            }
+        } else {
+            String::new()
+        };
+
+        return Some(CursorContext::FieldValue {
+            field_name,
+            value_prefix,
+        });
     }
 
-    let value_prefix = if let Some(value_range) = entry.value_range() {
-        if offset <= value_range.start() {
-            String::new()
-        } else {
-            let prefix_end = if offset < value_range.end() {
-                offset
-            } else {
-                value_range.end()
-            };
-            let prefix_len: usize = (prefix_end - value_range.start()).into();
-            let value = entry.value();
-            let mut prefix_bytes = prefix_len.min(value.len());
-            while !value.is_char_boundary(prefix_bytes) {
-                prefix_bytes -= 1;
-            }
-            value[..prefix_bytes].to_string()
-        }
+    // Not on any entry — only offer field completions at column 0
+    // (start of a line where a new field could be written).
+    if position.character == 0 {
+        Some(CursorContext::StartOfLine)
     } else {
-        String::new()
-    };
-
-    Some(CompletionContext {
-        field_name,
-        value_prefix,
-    })
+        None
+    }
 }
 
 /// Get completions for a deb822 document at the given cursor position.
@@ -127,10 +151,14 @@ pub fn get_completions(
     fields: &[FieldInfo],
     value_completer: impl Fn(&str, &str) -> Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
-    if let Some(ctx) = get_completion_context(deb822, source_text, position) {
-        return value_completer(&ctx.field_name, &ctx.value_prefix);
+    match get_cursor_context(deb822, source_text, position) {
+        Some(CursorContext::FieldValue {
+            field_name,
+            value_prefix,
+        }) => value_completer(&field_name, &value_prefix),
+        Some(CursorContext::FieldKey | CursorContext::StartOfLine) => get_field_completions(fields),
+        None => vec![],
     }
-    get_field_completions(fields)
 }
 
 #[cfg(test)]
@@ -158,42 +186,54 @@ mod tests {
     }
 
     #[test]
-    fn test_get_completion_context_on_value() {
+    fn test_get_cursor_context_on_value() {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let ctx = get_completion_context(&deb822, text, Position::new(1, 11))
+        let ctx = get_cursor_context(&deb822, text, Position::new(1, 11))
             .expect("Should have context");
-        assert_eq!(ctx.field_name, "Section");
-        assert_eq!(ctx.value_prefix, "py");
+        assert_eq!(
+            ctx,
+            CursorContext::FieldValue {
+                field_name: "Section".to_string(),
+                value_prefix: "py".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn test_get_completion_context_immediately_after_colon() {
+    fn test_get_cursor_context_immediately_after_colon() {
         let text = "Section: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let ctx = get_completion_context(&deb822, text, Position::new(0, 8))
+        let ctx = get_cursor_context(&deb822, text, Position::new(0, 8))
             .expect("Should have context");
-        assert_eq!(ctx.field_name, "Section");
-        assert_eq!(ctx.value_prefix, "");
+        assert_eq!(
+            ctx,
+            CursorContext::FieldValue {
+                field_name: "Section".to_string(),
+                value_prefix: "".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn test_get_completion_context_none_in_field_key() {
+    fn test_get_cursor_context_on_field_key() {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let ctx = get_completion_context(&deb822, text, Position::new(1, 3));
-        assert!(ctx.is_none());
+        let ctx = get_cursor_context(&deb822, text, Position::new(1, 3))
+            .expect("Should have context");
+        assert_eq!(ctx, CursorContext::FieldKey);
     }
 
     #[test]
-    fn test_get_completion_context_empty_text() {
+    fn test_get_cursor_context_empty_text() {
         let text = "";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
-        let ctx = get_completion_context(&deb822, text, Position::new(0, 0));
-        assert!(ctx.is_none());
+        let ctx = get_cursor_context(&deb822, text, Position::new(0, 0))
+            .expect("Should have context");
+        assert_eq!(ctx, CursorContext::StartOfLine);
     }
 
     #[test]

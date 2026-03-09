@@ -52,68 +52,76 @@ pub const COMMON_PACKAGES: &[&str] = &[
 ];
 
 /// Debian policy-recognized priority values for control files.
-pub const CONTROL_PRIORITY_VALUES: &[&str] =
-    &["required", "important", "standard", "optional", "extra"];
+/// Each entry is (value, description).
+pub const CONTROL_PRIORITY_VALUES: &[(&str, &str)] = &[
+    ("required", "Essential for the system to function"),
+    ("important", "Important programs, including those expected on a Unix-like system"),
+    ("standard", "Reasonably small but not too limited character-mode system"),
+    ("optional", "All packages not required for a reasonably functional system"),
+    ("extra", "Deprecated alias for optional"),
+];
 
 /// Debian policy section values for normal packages.
-pub const CONTROL_SECTION_VALUES: &[&str] = &[
-    "admin",
-    "cli-mono",
-    "comm",
-    "database",
-    "debug",
-    "devel",
-    "doc",
-    "editors",
-    "education",
-    "electronics",
-    "embedded",
-    "fonts",
-    "games",
-    "gnome",
-    "gnu-r",
-    "gnustep",
-    "graphics",
-    "hamradio",
-    "haskell",
-    "httpd",
-    "interpreters",
-    "introspection",
-    "java",
-    "javascript",
-    "kde",
-    "kernel",
-    "libdevel",
-    "libs",
-    "lisp",
-    "localization",
-    "mail",
-    "math",
-    "metapackages",
-    "misc",
-    "net",
-    "news",
-    "ocaml",
-    "oldlibs",
-    "otherosfs",
-    "perl",
-    "php",
-    "python",
-    "ruby",
-    "rust",
-    "science",
-    "shells",
-    "sound",
-    "tasks",
-    "tex",
-    "text",
-    "utils",
-    "vcs",
-    "video",
-    "web",
-    "x11",
-    "xfce",
-    "zope",
+/// Each entry is (value, description).
+// TODO: Read section list from an external file or Debian policy data instead of hardcoding.
+pub const CONTROL_SECTION_VALUES: &[(&str, &str)] = &[
+    ("admin", "System administration utilities"),
+    ("cli-mono", "Mono/CLI based programs"),
+    ("comm", "Communication programs"),
+    ("database", "Database servers and tools"),
+    ("debug", "Debug packages"),
+    ("devel", "Development tools and libraries"),
+    ("doc", "Documentation"),
+    ("editors", "Text editors"),
+    ("education", "Educational software"),
+    ("electronics", "Electronics and electrical engineering"),
+    ("embedded", "Embedded systems software"),
+    ("fonts", "Font packages"),
+    ("games", "Games and amusements"),
+    ("gnome", "GNOME desktop environment"),
+    ("gnu-r", "GNU R statistical system"),
+    ("gnustep", "GNUstep environment"),
+    ("graphics", "Graphics tools"),
+    ("hamradio", "Ham radio software"),
+    ("haskell", "Haskell programming language"),
+    ("httpd", "Web servers"),
+    ("interpreters", "Interpreted languages"),
+    ("introspection", "GObject introspection data"),
+    ("java", "Java programming language"),
+    ("javascript", "JavaScript programming"),
+    ("kde", "KDE desktop environment"),
+    ("kernel", "Kernel and kernel modules"),
+    ("libdevel", "Development libraries"),
+    ("libs", "Shared libraries"),
+    ("lisp", "Lisp programming language"),
+    ("localization", "Localization and internationalization"),
+    ("mail", "Email programs"),
+    ("math", "Mathematics and numerical computation"),
+    ("metapackages", "Metapackages"),
+    ("misc", "Miscellaneous"),
+    ("net", "Networking tools"),
+    ("news", "Usenet news"),
+    ("ocaml", "OCaml programming language"),
+    ("oldlibs", "Obsolete libraries"),
+    ("otherosfs", "Other OS file systems"),
+    ("perl", "Perl programming language"),
+    ("php", "PHP programming language"),
+    ("python", "Python programming language"),
+    ("ruby", "Ruby programming language"),
+    ("rust", "Rust programming language"),
+    ("science", "Scientific software"),
+    ("shells", "Command-line shells"),
+    ("sound", "Sound and audio"),
+    ("tasks", "Task packages for installation"),
+    ("tex", "TeX typesetting system"),
+    ("text", "Text processing utilities"),
+    ("utils", "General-purpose utilities"),
+    ("vcs", "Version control systems"),
+    ("video", "Video tools"),
+    ("web", "Web browsers and tools"),
+    ("x11", "X Window System"),
+    ("xfce", "Xfce desktop environment"),
+    ("zope", "Zope/Plone framework"),
 ];
 
 /// Debian archive areas used as section prefixes in control fields.
@@ -124,7 +132,8 @@ pub const CONTROL_SECTION_AREAS: &[&str] = &["contrib", "non-free", "non-free-fi
 /// Debian policy special section values.
 ///
 /// `debian-installer` is used for installer packages and not normal packages.
-pub const CONTROL_SPECIAL_SECTION_VALUES: &[&str] = &["debian-installer"];
+pub const CONTROL_SPECIAL_SECTION_VALUES: &[(&str, &str)] =
+    &[("debian-installer", "Debian installer components")];
 
 #[cfg(test)]
 mod tests {
@@ -177,19 +186,27 @@ mod tests {
 
     #[test]
     fn test_control_priority_values() {
+        let names: Vec<_> = CONTROL_PRIORITY_VALUES.iter().map(|(n, _)| *n).collect();
         assert_eq!(
-            CONTROL_PRIORITY_VALUES,
+            names,
             &["required", "important", "standard", "optional", "extra"]
         );
+        for (_, desc) in CONTROL_PRIORITY_VALUES {
+            assert!(!desc.is_empty());
+        }
     }
 
     #[test]
     fn test_control_section_values() {
-        assert!(!CONTROL_SECTION_VALUES.is_empty());
-        assert!(CONTROL_SECTION_VALUES.contains(&"admin"));
-        assert!(CONTROL_SECTION_VALUES.contains(&"python"));
-        assert!(CONTROL_SECTION_VALUES.contains(&"xfce"));
-        assert!(!CONTROL_SECTION_VALUES.contains(&"debian-installer"));
+        let names: Vec<_> = CONTROL_SECTION_VALUES.iter().map(|(n, _)| *n).collect();
+        assert!(!names.is_empty());
+        assert!(names.contains(&"admin"));
+        assert!(names.contains(&"python"));
+        assert!(names.contains(&"xfce"));
+        assert!(!names.contains(&"debian-installer"));
+        for (_, desc) in CONTROL_SECTION_VALUES {
+            assert!(!desc.is_empty());
+        }
     }
 
     #[test]
@@ -202,6 +219,7 @@ mod tests {
 
     #[test]
     fn test_control_special_section_values() {
-        assert_eq!(CONTROL_SPECIAL_SECTION_VALUES, &["debian-installer"]);
+        let names: Vec<_> = CONTROL_SPECIAL_SECTION_VALUES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, &["debian-installer"]);
     }
 }
