@@ -3,7 +3,10 @@ use tower_lsp_server::ls_types::{
 };
 
 use super::detection::is_control_file;
-use super::fields::{COMMON_PACKAGES, CONTROL_FIELDS};
+use super::fields::{
+    COMMON_PACKAGES, CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS,
+    CONTROL_SECTION_VALUES, CONTROL_SPECIAL_SECTION_VALUES,
+};
 
 /// Get completion items for a given position in a control file
 pub fn get_completions(uri: &Uri, _position: Position) -> Vec<CompletionItem> {
@@ -15,6 +18,17 @@ pub fn get_completions(uri: &Uri, _position: Position) -> Vec<CompletionItem> {
     completions.extend(get_field_completions());
     completions.extend(get_package_completions());
     completions
+}
+
+/// Get value completions for specific control file fields.
+pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Option<Vec<CompletionItem>> {
+    if field_name.eq_ignore_ascii_case("Section") {
+        Some(get_section_value_completions(prefix))
+    } else if field_name.eq_ignore_ascii_case("Priority") {
+        Some(get_priority_value_completions(prefix))
+    } else {
+        None
+    }
 }
 
 /// Get completion items for control file fields
@@ -43,6 +57,72 @@ pub fn get_package_completions() -> Vec<CompletionItem> {
             ..Default::default()
         })
         .collect()
+}
+
+/// Get completion items for Debian priority values.
+pub fn get_priority_value_completions(prefix: &str) -> Vec<CompletionItem> {
+    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+
+    CONTROL_PRIORITY_VALUES
+        .iter()
+        .filter(|value| value.starts_with(&normalized_prefix))
+        .map(|&value| CompletionItem {
+            label: value.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some("Priority value".to_string()),
+            insert_text: Some(value.to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Get completion items for Debian section values.
+///
+/// Includes both `section` and `area/section` forms.
+pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
+    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+    let mut completions = Vec::new();
+
+    for &section in CONTROL_SECTION_VALUES {
+        if section.starts_with(&normalized_prefix) {
+            completions.push(CompletionItem {
+                label: section.to_string(),
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some("Section value".to_string()),
+                insert_text: Some(section.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+
+    for &area in CONTROL_SECTION_AREAS {
+        for &section in CONTROL_SECTION_VALUES {
+            let qualified = format!("{}/{}", area, section);
+            if qualified.starts_with(&normalized_prefix) {
+                completions.push(CompletionItem {
+                    label: qualified.clone(),
+                    kind: Some(CompletionItemKind::VALUE),
+                    detail: Some("Section value (area/section)".to_string()),
+                    insert_text: Some(qualified),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    for &special in CONTROL_SPECIAL_SECTION_VALUES {
+        if special.starts_with(&normalized_prefix) {
+            completions.push(CompletionItem {
+                label: special.to_string(),
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some("Section value (installer-only)".to_string()),
+                insert_text: Some(special.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+
+    completions
 }
 
 #[cfg(test)]
@@ -120,5 +200,77 @@ mod tests {
         let labels: Vec<_> = completions.iter().map(|c| &c.label).collect();
         assert!(labels.iter().any(|l| *l == "debhelper-compat"));
         assert!(labels.iter().any(|l| *l == "cmake"));
+    }
+
+    #[test]
+    fn test_priority_value_completions() {
+        let completions = get_priority_value_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"required"));
+        assert!(labels.contains(&"important"));
+        assert!(labels.contains(&"standard"));
+        assert!(labels.contains(&"optional"));
+        assert!(labels.contains(&"extra"));
+    }
+
+    #[test]
+    fn test_priority_value_completions_with_prefix() {
+        let completions = get_priority_value_completions("op");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["optional"]);
+    }
+
+    #[test]
+    fn test_priority_value_completions_with_uppercase_prefix() {
+        let completions = get_priority_value_completions("OP");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["optional"]);
+    }
+
+    #[test]
+    fn test_section_value_completions() {
+        let completions = get_section_value_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"admin"));
+        assert!(labels.contains(&"python"));
+        assert!(labels.contains(&"debian-installer"));
+        assert!(labels.contains(&"non-free/python"));
+        assert!(!labels.contains(&"non-free/debian-installer"));
+    }
+
+    #[test]
+    fn test_section_value_completions_with_area_prefix() {
+        let completions = get_section_value_completions("non-free/");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"non-free/python"));
+        assert!(!labels.contains(&"python"));
+        assert!(!labels.contains(&"non-free/debian-installer"));
+    }
+
+    #[test]
+    fn test_get_field_value_completions_for_section() {
+        let completions = get_field_value_completions("Section", "py").expect("Should complete");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"python"));
+    }
+
+    #[test]
+    fn test_get_field_value_completions_for_priority() {
+        let completions = get_field_value_completions("Priority", "op").expect("Should complete");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["optional"]);
+    }
+
+    #[test]
+    fn test_get_field_value_completions_for_unknown_field() {
+        let completions = get_field_value_completions("Depends", "py");
+        assert!(completions.is_none());
     }
 }
