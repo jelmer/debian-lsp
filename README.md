@@ -56,23 +56,6 @@ The binary will be available at `target/release/debian-lsp`.
 
 A dedicated VS Code extension is available in the `vscode-debian` directory. See [vscode-debian/README.md](vscode-debian/README.md) for installation and configuration instructions.
 
-Alternatively, you can use the generic LSP client extension:
-
-1. Install the "Generic LSP Client" extension
-2. Add to your `settings.json`:
-
-```json
-{
-  "genericLanguageServer.configurations": {
-    "debian-lsp": {
-      "command": ["/path/to/debian-lsp/target/release/debian-lsp"],
-      "filePatterns": ["**/debian/control", "**/debian/copyright", "**/debian/watch", "**/debian/tests/control"],
-      "languageId": "debcontrol"
-    }
-  }
-}
-```
-
 ### Using with Vim/Neovim
 
 #### coc.nvim
