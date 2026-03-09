@@ -6,6 +6,8 @@
 
 pub mod completion;
 pub mod detection;
+pub mod semantic;
 
 pub use completion::*;
 pub use detection::is_tests_control_file;
+pub use semantic::generate_semantic_tokens;
