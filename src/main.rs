@@ -16,6 +16,7 @@ mod deb822;
 mod position;
 mod source_format;
 mod tests;
+mod upstream_metadata;
 mod watch;
 mod workspace;
 
@@ -38,6 +39,8 @@ enum FileType {
     Changelog,
     /// debian/source/format file
     SourceFormat,
+    /// debian/upstream/metadata file
+    UpstreamMetadata,
 }
 
 impl FileType {
@@ -55,6 +58,8 @@ impl FileType {
             Some(Self::Changelog)
         } else if source_format::is_source_format_file(uri) {
             Some(Self::SourceFormat)
+        } else if upstream_metadata::is_upstream_metadata_file(uri) {
+            Some(Self::UpstreamMetadata)
         } else {
             None
         }
@@ -188,7 +193,8 @@ impl LanguageServer for Backend {
             FileType::Watch
             | FileType::TestsControl
             | FileType::Changelog
-            | FileType::SourceFormat => {
+            | FileType::SourceFormat
+            | FileType::UpstreamMetadata => {
                 // No diagnostics for these file types yet
             }
         }
@@ -248,7 +254,8 @@ impl LanguageServer for Backend {
             FileType::Watch
             | FileType::TestsControl
             | FileType::Changelog
-            | FileType::SourceFormat => {
+            | FileType::SourceFormat
+            | FileType::UpstreamMetadata => {
                 // No diagnostics for these file types yet
             }
         }
@@ -283,6 +290,11 @@ impl LanguageServer for Backend {
             Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
             Some((FileType::Changelog, _)) => changelog::get_completions(&uri, position),
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
+            Some((FileType::UpstreamMetadata, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                upstream_metadata::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -484,6 +496,7 @@ impl LanguageServer for Backend {
                 watch::generate_semantic_tokens(&parsed, &source_text)
             }
             FileType::TestsControl => tests::generate_semantic_tokens(&source_text),
+            FileType::UpstreamMetadata => upstream_metadata::generate_semantic_tokens(&source_text),
             // TODO: Implement semantic tokens for other file types
             _ => vec![],
         };
