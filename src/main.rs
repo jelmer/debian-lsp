@@ -270,24 +270,15 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_control(source_file);
-                if let Some(context) = deb822::completion::get_completion_context(
-                    parsed.tree().as_deb822(),
-                    &source_text,
-                    position,
-                ) {
-                    if let Some(value_completions) = control::get_field_value_completions(
-                        &context.field_name,
-                        &context.value_prefix,
-                    ) {
-                        value_completions
-                    } else {
-                        control::get_completions(&uri, position)
-                    }
-                } else {
-                    control::get_completions(&uri, position)
-                }
+                control::get_completions(parsed.tree().as_deb822(), &source_text, position)
             }
-            Some((FileType::Copyright, _)) => copyright::get_completions(&uri, position),
+            Some((FileType::Copyright, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_copyright(source_file);
+                let copyright = parsed.to_copyright();
+                copyright::get_completions(copyright.as_deb822(), &source_text, position)
+            }
             Some((FileType::Watch, _)) => watch::get_completions(&uri, position),
             Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
             Some((FileType::Changelog, _)) => changelog::get_completions(&uri, position),
@@ -526,54 +517,15 @@ async fn main() {
 mod main_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_completion_returns_control_completions() {
-        // Test that the completion method properly uses the control module
-        let uri = str::parse("file:///path/to/debian/control").unwrap();
-        let params = CompletionParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position::new(0, 0),
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-            context: None,
-        };
-
-        // We can't easily test the actual completion without a full LSP setup,
-        // but we can verify the control module works
-        let completions = control::get_completions(
-            &params.text_document_position.text_document.uri,
-            params.text_document_position.position,
-        );
-        assert!(!completions.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_completion_returns_none_for_non_control_files() {
-        let uri = str::parse("file:///path/to/other.txt").unwrap();
-        let position = Position::new(0, 0);
-
-        let completions = control::get_completions(&uri, position);
-        assert!(completions.is_empty());
-    }
-
     #[test]
-    fn test_control_module_integration() {
-        // Test that the control module is properly integrated
-        let control_uri = str::parse("file:///path/to/debian/control").unwrap();
-        let non_control_uri = str::parse("file:///path/to/other.txt").unwrap();
-        let position = Position::new(0, 0);
+    fn test_completion_returns_control_completions() {
+        let text = "Source: test\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        // Control file should return completions
-        let completions = control::get_completions(&control_uri, position);
+        let completions = control::get_completions(&deb822, text, Position::new(0, 3));
         assert!(!completions.is_empty());
         assert!(completions.iter().any(|c| c.label == "Source"));
         assert!(completions.iter().any(|c| c.label == "debhelper-compat"));
-
-        // Non-control file should return no completions
-        let completions = control::get_completions(&non_control_uri, position);
-        assert!(completions.is_empty());
     }
 
     #[test]

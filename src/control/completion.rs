@@ -1,20 +1,32 @@
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position, Uri};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 
-use super::detection::is_control_file;
 use super::fields::{
     COMMON_PACKAGES, CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS,
     CONTROL_SECTION_VALUES, CONTROL_SPECIAL_SECTION_VALUES,
 };
 
-/// Get completion items for a given position in a control file
-pub fn get_completions(uri: &Uri, _position: Position) -> Vec<CompletionItem> {
-    if !is_control_file(uri) {
-        return Vec::new();
+/// Get completions for a control file at the given cursor position.
+///
+/// Uses the parsed deb822 document for position-aware completions:
+/// if on a field value, returns value completions; otherwise returns
+/// field name and package name completions.
+pub fn get_completions(
+    deb822: &deb822_lossless::Deb822,
+    source_text: &str,
+    position: tower_lsp_server::ls_types::Position,
+) -> Vec<CompletionItem> {
+    let mut completions = crate::deb822::completion::get_completions(
+        deb822,
+        source_text,
+        position,
+        CONTROL_FIELDS,
+        get_field_value_completions,
+    );
+    // When returning field completions (not value completions), also
+    // include common package names.
+    if completions.iter().any(|c| c.kind == Some(CompletionItemKind::FIELD)) {
+        completions.extend(get_package_completions());
     }
-
-    let mut completions = Vec::new();
-    completions.extend(get_field_completions());
-    completions.extend(get_package_completions());
     completions
 }
 
@@ -27,11 +39,6 @@ pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Option<Vec
     } else {
         None
     }
-}
-
-/// Get completion items for control file fields
-pub fn get_field_completions() -> Vec<CompletionItem> {
-    crate::deb822::completion::get_field_completions(CONTROL_FIELDS)
 }
 
 /// Get completion items for common package names
@@ -116,14 +123,14 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower_lsp_server::ls_types::Position;
 
     #[test]
-    fn test_get_completions_for_control_file() {
-        let uri = str::parse("file:///path/to/debian/control").unwrap();
-        let position = Position::new(0, 0);
+    fn test_get_completions_on_field_key() {
+        let text = "Source: test\nSection: py\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let completions = get_completions(&uri, position);
-        assert!(!completions.is_empty());
+        let completions = get_completions(&deb822, text, Position::new(1, 3));
 
         // Should have both field and package completions
         let field_count = completions
@@ -140,35 +147,25 @@ mod tests {
     }
 
     #[test]
-    fn test_get_completions_for_non_control_file() {
-        let uri = str::parse("file:///path/to/other.txt").unwrap();
-        let position = Position::new(0, 0);
+    fn test_get_completions_on_section_value() {
+        let text = "Source: test\nSection: py\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let completions = get_completions(&uri, position);
-        assert!(completions.is_empty());
+        let completions = get_completions(&deb822, text, Position::new(1, 11));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"python"));
     }
 
     #[test]
-    fn test_field_completions() {
-        let completions = get_field_completions();
+    fn test_get_completions_on_priority_value() {
+        let text = "Source: test\nPriority: op\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        assert!(!completions.is_empty());
+        let completions = get_completions(&deb822, text, Position::new(1, 12));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
-        // Check that all completions have required properties
-        for completion in &completions {
-            assert!(!completion.label.is_empty());
-            assert_eq!(completion.kind, Some(CompletionItemKind::FIELD));
-            assert!(completion.detail.is_some());
-            assert!(completion.documentation.is_some());
-            assert!(completion.insert_text.is_some());
-            assert!(completion.insert_text.as_ref().unwrap().ends_with(": "));
-        }
-
-        // Check for specific fields
-        let labels: Vec<_> = completions.iter().map(|c| &c.label).collect();
-        assert!(labels.iter().any(|l| *l == "Source"));
-        assert!(labels.iter().any(|l| *l == "Package"));
-        assert!(labels.iter().any(|l| *l == "Depends"));
+        assert_eq!(labels, vec!["optional"]);
     }
 
     #[test]
@@ -177,14 +174,12 @@ mod tests {
 
         assert!(!completions.is_empty());
 
-        // Check that all completions have required properties
         for completion in &completions {
             assert!(!completion.label.is_empty());
             assert_eq!(completion.kind, Some(CompletionItemKind::VALUE));
             assert_eq!(completion.detail, Some("Package name".to_string()));
         }
 
-        // Check for specific packages
         let labels: Vec<_> = completions.iter().map(|c| &c.label).collect();
         assert!(labels.iter().any(|l| *l == "debhelper-compat"));
         assert!(labels.iter().any(|l| *l == "cmake"));
