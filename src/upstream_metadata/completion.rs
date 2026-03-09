@@ -69,6 +69,20 @@ mod tests {
     }
 
     #[test]
+    fn test_get_completions_empty_file() {
+        let completions = get_completions("", Position::new(0, 0));
+        assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
+    }
+
+    #[test]
+    fn test_get_completions_line_beyond_file() {
+        let text = "Repository: https://example.com\n";
+        let completions = get_completions(text, Position::new(5, 0));
+        // Line 5 doesn't exist, defaults to empty string which is whitespace-only
+        assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
+    }
+
+    #[test]
     fn test_field_completions_have_insert_text() {
         let completions = get_field_completions();
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());

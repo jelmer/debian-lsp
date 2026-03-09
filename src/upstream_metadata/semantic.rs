@@ -23,9 +23,10 @@ pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
     for entry in mapping.entries() {
         // Emit token for the key
         if let Some(YamlNode::Scalar(key_scalar)) = entry.key_node() {
-            let key_text = key_scalar.value();
+            let key_text = key_scalar.as_string();
             let pos = key_scalar.start_position(source_text);
-            let len = key_text.len() as u32;
+            let range = key_scalar.byte_range();
+            let len = range.end - range.start;
 
             // LineColumn is 1-indexed, LSP is 0-indexed
             let line = pos.line.saturating_sub(1) as u32;
@@ -103,5 +104,55 @@ mod tests {
     fn test_invalid_yaml() {
         let tokens = generate_semantic_tokens("{{invalid yaml");
         assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_non_mapping_document() {
+        // A YAML document that is a sequence, not a mapping
+        let tokens = generate_semantic_tokens("- item1\n- item2\n");
+        assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_sequence_value_skipped() {
+        // Registry has a sequence value — only the key should get a token
+        let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
+        let tokens = generate_semantic_tokens(text);
+
+        // Only the top-level key "Registry" gets a token (value is a sequence, not scalar)
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[0].length, 8); // "Registry"
+    }
+
+    #[test]
+    fn test_declaration_modifier_on_keys() {
+        let text = "Repository: https://example.com\n";
+        let tokens = generate_semantic_tokens(text);
+
+        assert_eq!(tokens.len(), 2);
+        // Key should have DECLARATION modifier
+        assert_eq!(
+            tokens[0].token_modifiers_bitset,
+            crate::deb822::semantic::token_modifier::DECLARATION
+        );
+        // Value should have no modifiers
+        assert_eq!(tokens[1].token_modifiers_bitset, 0);
+    }
+
+    #[test]
+    fn test_delta_positions() {
+        let text = "Repository: https://example.com\nBug-Database: https://bugs.example.com\n";
+        let tokens = generate_semantic_tokens(text);
+
+        assert_eq!(tokens.len(), 4);
+        // First key at line 0
+        assert_eq!(tokens[0].delta_line, 0);
+        assert_eq!(tokens[0].delta_start, 0);
+        // First value on same line
+        assert_eq!(tokens[1].delta_line, 0);
+        // Second key on next line
+        assert_eq!(tokens[2].delta_line, 1);
+        assert_eq!(tokens[2].delta_start, 0);
     }
 }

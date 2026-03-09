@@ -669,4 +669,16 @@ mod main_tests {
         assert_eq!(FileType::detect(&changelog_uri), Some(FileType::Changelog));
         assert_eq!(FileType::detect(&control_uri), Some(FileType::Control));
     }
+
+    #[test]
+    fn test_upstream_metadata_file_type_detection() {
+        let metadata_uri: Uri = str::parse("file:///path/to/debian/upstream/metadata").unwrap();
+        let non_metadata_uri: Uri = str::parse("file:///path/to/upstream/metadata").unwrap();
+
+        assert_eq!(
+            FileType::detect(&metadata_uri),
+            Some(FileType::UpstreamMetadata)
+        );
+        assert_eq!(FileType::detect(&non_metadata_uri), None);
+    }
 }
