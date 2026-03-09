@@ -196,6 +196,11 @@
         "id": "changelogTimestamp",
         "superType": "string",
         "description": "Timestamp in changelog trailer"
+      },
+      {
+        "id": "changelogMetadataValue",
+        "superType": "string",
+        "description": "Metadata value in changelog header (e.g. urgency level)"
       }
     ],
     "semanticTokenScopes": [
@@ -245,7 +250,8 @@
           "changelogDistribution": ["support.constant"],
           "changelogUrgency": ["keyword.other"],
           "changelogMaintainer": ["variable.other"],
-          "changelogTimestamp": ["string"]
+          "changelogTimestamp": ["string"],
+          "changelogMetadataValue": ["string"]
         }
       }
     ]

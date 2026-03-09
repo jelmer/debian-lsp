@@ -116,6 +116,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::new("changelogUrgency"),
                                     SemanticTokenType::new("changelogMaintainer"),
                                     SemanticTokenType::new("changelogTimestamp"),
+                                    SemanticTokenType::new("changelogMetadataValue"),
                                 ],
                                 token_modifiers: vec![SemanticTokenModifier::DECLARATION],
                             },
