@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod completion;
 pub mod detection;
+pub mod diagnostics;
 pub mod fields;
 pub mod semantic;
 
