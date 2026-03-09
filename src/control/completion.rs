@@ -31,13 +31,13 @@ pub fn get_completions(
 }
 
 /// Get value completions for specific control file fields.
-pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Option<Vec<CompletionItem>> {
+pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<CompletionItem> {
     if field_name.eq_ignore_ascii_case("Section") {
-        Some(get_section_value_completions(prefix))
+        get_section_value_completions(prefix)
     } else if field_name.eq_ignore_ascii_case("Priority") {
-        Some(get_priority_value_completions(prefix))
+        get_priority_value_completions(prefix)
     } else {
-        None
+        vec![]
     }
 }
 
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_get_field_value_completions_for_section() {
-        let completions = get_field_value_completions("Section", "py").expect("Should complete");
+        let completions = get_field_value_completions("Section", "py");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"python"));
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_get_field_value_completions_for_priority() {
-        let completions = get_field_value_completions("Priority", "op").expect("Should complete");
+        let completions = get_field_value_completions("Priority", "op");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["optional"]);
@@ -254,6 +254,6 @@ mod tests {
     #[test]
     fn test_get_field_value_completions_for_unknown_field() {
         let completions = get_field_value_completions("Depends", "py");
-        assert!(completions.is_none());
+        assert!(completions.is_empty());
     }
 }

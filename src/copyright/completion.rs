@@ -16,7 +16,7 @@ pub fn get_completions(
         source_text,
         position,
         COPYRIGHT_FIELDS,
-        |_field_name, _prefix| None, // No value completions for copyright fields yet
+        |_field_name, _prefix| vec![], // No value completions for copyright fields yet
     );
     // When returning field completions, also include license names.
     if completions

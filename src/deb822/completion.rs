@@ -117,20 +117,18 @@ pub fn get_completion_context(
 /// Get completions for a deb822 document at the given cursor position.
 ///
 /// If the cursor is on a field value, calls `value_completer` to get
-/// value-specific completions. If the value completer returns `None`
-/// (unknown field), or if the cursor is not on a value, returns field
+/// value-specific completions (or returns empty if none are defined for
+/// that field). If the cursor is not on a field value, returns field
 /// name completions.
 pub fn get_completions(
     deb822: &deb822_lossless::Deb822,
     source_text: &str,
     position: Position,
     fields: &[FieldInfo],
-    value_completer: impl Fn(&str, &str) -> Option<Vec<CompletionItem>>,
+    value_completer: impl Fn(&str, &str) -> Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
     if let Some(ctx) = get_completion_context(deb822, source_text, position) {
-        if let Some(value_completions) = value_completer(&ctx.field_name, &ctx.value_prefix) {
-            return value_completions;
-        }
+        return value_completer(&ctx.field_name, &ctx.value_prefix);
     }
     get_field_completions(fields)
 }
@@ -210,12 +208,12 @@ mod tests {
             TEST_FIELDS,
             |field, _prefix| {
                 if field == "Source" {
-                    Some(vec![CompletionItem {
+                    vec![CompletionItem {
                         label: "test-value".to_string(),
                         ..Default::default()
-                    }])
+                    }]
                 } else {
-                    None
+                    vec![]
                 }
             },
         );
@@ -235,7 +233,7 @@ mod tests {
             text,
             Position::new(0, 2),
             TEST_FIELDS,
-            |_, _| None,
+            |_, _| vec![],
         );
 
         assert_eq!(completions.len(), 2);
@@ -244,19 +242,19 @@ mod tests {
     }
 
     #[test]
-    fn test_get_completions_unknown_field_falls_back() {
+    fn test_get_completions_no_value_completions_returns_empty() {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        // Cursor on value, but completer returns None → field completions
+        // Cursor on value, completer returns empty → empty (not field completions)
         let completions = get_completions(
             &deb822,
             text,
             Position::new(0, 10),
             TEST_FIELDS,
-            |_, _| None,
+            |_, _| vec![],
         );
 
-        assert_eq!(completions.len(), 2);
+        assert!(completions.is_empty());
     }
 }
