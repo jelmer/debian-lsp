@@ -461,6 +461,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_semantic_tokens(&parsed, &source_text)
             }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                watch::generate_semantic_tokens(&parsed, &source_text)
+            }
             // TODO: Implement semantic tokens for other file types
             _ => vec![],
         };
