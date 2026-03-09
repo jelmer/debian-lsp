@@ -186,6 +186,80 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_tokens_known_and_unknown_fields() {
+        let text = "Source: foo\nX-Custom: bar\n";
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let deb822 = parsed.tree();
+        let validator = TestValidator;
+        let tokens = generate_tokens(&deb822, text, &validator);
+
+        // Source (known field), value, X-Custom (unknown field), value
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[0].length, 6); // "Source"
+        assert_eq!(tokens[1].token_type, TokenType::Value as u32);
+        assert_eq!(tokens[2].token_type, TokenType::UnknownField as u32);
+        assert_eq!(tokens[2].length, 8); // "X-Custom"
+        assert_eq!(tokens[3].token_type, TokenType::Value as u32);
+    }
+
+    #[test]
+    fn test_generate_tokens_comments() {
+        let text = "# This is a comment\nSource: foo\n";
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let deb822 = parsed.tree();
+        let validator = TestValidator;
+        let tokens = generate_tokens(&deb822, text, &validator);
+
+        assert_eq!(tokens[0].token_type, TokenType::Comment as u32);
+        assert_eq!(tokens[1].token_type, TokenType::Field as u32);
+    }
+
+    #[test]
+    fn test_generate_tokens_multi_paragraph() {
+        let text = "Source: foo\n\nPackage: bar\n";
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let deb822 = parsed.tree();
+        let validator = TestValidator;
+        let tokens = generate_tokens(&deb822, text, &validator);
+
+        // Source, value, Package, value
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[0].length, 6); // "Source"
+        assert_eq!(tokens[2].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[2].length, 7); // "Package"
+    }
+
+    #[test]
+    fn test_generate_tokens_empty() {
+        let text = "";
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let deb822 = parsed.tree();
+        let validator = TestValidator;
+        let tokens = generate_tokens(&deb822, text, &validator);
+
+        assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_generate_tokens_field_modifiers() {
+        let text = "Source: foo\n";
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let deb822 = parsed.tree();
+        let validator = TestValidator;
+        let tokens = generate_tokens(&deb822, text, &validator);
+
+        // Field tokens should have DECLARATION modifier
+        assert_eq!(
+            tokens[0].token_modifiers_bitset,
+            token_modifier::DECLARATION
+        );
+        // Value tokens should have no modifiers
+        assert_eq!(tokens[1].token_modifiers_bitset, 0);
+    }
+
+    #[test]
     fn test_semantic_tokens_builder() {
         let mut builder = SemanticTokensBuilder::new();
 
