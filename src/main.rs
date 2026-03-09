@@ -172,7 +172,9 @@ impl LanguageServer for Backend {
         // Publish diagnostics based on file type
         match file_type {
             FileType::Control => {
-                let diagnostics = workspace.get_diagnostics(source_file);
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_control(source_file);
+                let diagnostics = control::diagnostics::get_diagnostics(&source_text, &parsed);
                 self.client
                     .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                     .await;
@@ -230,7 +232,9 @@ impl LanguageServer for Backend {
         // Publish diagnostics based on file type
         match file_type {
             FileType::Control => {
-                let diagnostics = workspace.get_diagnostics(source_file);
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_control(source_file);
+                let diagnostics = control::diagnostics::get_diagnostics(&source_text, &parsed);
                 self.client
                     .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                     .await;
@@ -264,8 +268,10 @@ impl LanguageServer for Backend {
         let completions = match file_info {
             Some((FileType::Control, source_file)) => {
                 let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_control(source_file);
                 if let Some(context) =
-                    workspace.get_control_completion_context(source_file, position)
+                    control::diagnostics::get_completion_context(&source_text, &parsed, position)
                 {
                     if let Some(value_completions) = control::get_field_value_completions(
                         &context.field_name,
@@ -333,7 +339,7 @@ impl LanguageServer for Backend {
 
                 // Add field casing fixes
                 let issues =
-                    workspace.find_field_casing_issues(file_info.source_file, Some(text_range));
+                    control::diagnostics::find_field_casing_issues(&parsed, Some(text_range));
                 actions.extend(control::get_field_casing_actions(
                     &params.text_document.uri,
                     &source_text,
