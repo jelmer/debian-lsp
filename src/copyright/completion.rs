@@ -1,6 +1,4 @@
-use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, Documentation, Position, Uri,
-};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position, Uri};
 
 use super::detection::is_copyright_file;
 use super::fields::{get_common_licenses, COPYRIGHT_FIELDS};
@@ -19,17 +17,7 @@ pub fn get_completions(uri: &Uri, _position: Position) -> Vec<CompletionItem> {
 
 /// Get completion items for copyright file fields
 pub fn get_field_completions() -> Vec<CompletionItem> {
-    COPYRIGHT_FIELDS
-        .iter()
-        .map(|field| CompletionItem {
-            label: field.name.to_string(),
-            kind: Some(CompletionItemKind::FIELD),
-            detail: Some(field.description.to_string()),
-            documentation: Some(Documentation::String(field.description.to_string())),
-            insert_text: Some(format!("{}: ", field.name)),
-            ..Default::default()
-        })
-        .collect()
+    crate::deb822::completion::get_field_completions(COPYRIGHT_FIELDS)
 }
 
 /// Get completion items for common license names

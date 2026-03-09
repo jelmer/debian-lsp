@@ -270,9 +270,11 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_control(source_file);
-                if let Some(context) =
-                    control::diagnostics::get_completion_context(&source_text, &parsed, position)
-                {
+                if let Some(context) = deb822::completion::get_completion_context(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    position,
+                ) {
                     if let Some(value_completions) = control::get_field_value_completions(
                         &context.field_name,
                         &context.value_prefix,

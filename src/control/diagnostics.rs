@@ -3,13 +3,6 @@ use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString,
 
 use crate::workspace::FieldCasingIssue;
 
-/// Completion context information for a control file field value
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ControlCompletionContext {
-    pub field_name: String,
-    pub value_prefix: String,
-}
-
 /// All types of diagnostic issues that can be found in a control file
 #[derive(Debug, Clone)]
 pub enum DiagnosticIssue {
@@ -18,67 +11,6 @@ pub enum DiagnosticIssue {
         message: String,
         range: Option<TextRange>,
     },
-}
-
-/// Get completion context for the field value at the given cursor position in a control file.
-///
-/// This uses the parsed CST to identify the overlapping entry.
-pub fn get_completion_context(
-    source_text: &str,
-    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    position: Position,
-) -> Option<ControlCompletionContext> {
-    if source_text.is_empty() {
-        return None;
-    }
-
-    let control = parsed.tree();
-    let offset = crate::position::try_position_to_offset(source_text, position)?;
-    let text_len = text_size::TextSize::try_from(source_text.len()).ok()?;
-
-    let query_range = if offset >= text_len {
-        if text_len == text_size::TextSize::from(0) {
-            return None;
-        }
-        TextRange::new(text_len - text_size::TextSize::from(1), text_len)
-    } else {
-        TextRange::new(offset, offset + text_size::TextSize::from(1))
-    };
-
-    let entry = control.fields_in_range(query_range).next()?;
-    let field_name = entry.key()?;
-    let colon_range = entry.colon_range()?;
-
-    // Only offer value completions when cursor is at or after the ':' separator.
-    if offset < colon_range.end() {
-        return None;
-    }
-
-    let value_prefix = if let Some(value_range) = entry.value_range() {
-        if offset <= value_range.start() {
-            String::new()
-        } else {
-            let prefix_end = if offset < value_range.end() {
-                offset
-            } else {
-                value_range.end()
-            };
-            let prefix_len: usize = (prefix_end - value_range.start()).into();
-            let value = entry.value();
-            let mut prefix_bytes = prefix_len.min(value.len());
-            while !value.is_char_boundary(prefix_bytes) {
-                prefix_bytes -= 1;
-            }
-            value[..prefix_bytes].to_string()
-        }
-    } else {
-        String::new()
-    };
-
-    Some(ControlCompletionContext {
-        field_name,
-        value_prefix,
-    })
 }
 
 /// Find all diagnostic issues in a control file, optionally within a specific range
@@ -243,66 +175,5 @@ mod tests {
 
         let issues = find_all_issues(&parsed, None);
         assert!(!issues.is_empty());
-    }
-
-    #[test]
-    fn test_completion_context_for_section_value() {
-        let mut workspace = Workspace::new();
-        let url = str::parse("file:///debian/control").unwrap();
-        let content = "Source: test\nSection: py\n";
-        let file = workspace.update_file(url, content.to_string());
-        let source_text = workspace.source_text(file);
-        let parsed = workspace.get_parsed_control(file);
-
-        let context = get_completion_context(&source_text, &parsed, Position::new(1, 11))
-            .expect("Should have completion context");
-
-        assert_eq!(context.field_name, "Section");
-        assert_eq!(context.value_prefix, "py");
-    }
-
-    #[test]
-    fn test_completion_context_immediately_after_colon() {
-        let mut workspace = Workspace::new();
-        let url = str::parse("file:///debian/control").unwrap();
-        let content = "Section: py\n";
-        let file = workspace.update_file(url, content.to_string());
-        let source_text = workspace.source_text(file);
-        let parsed = workspace.get_parsed_control(file);
-
-        let context = get_completion_context(&source_text, &parsed, Position::new(0, 8))
-            .expect("Should have completion context");
-
-        assert_eq!(context.field_name, "Section");
-        assert_eq!(context.value_prefix, "");
-    }
-
-    #[test]
-    fn test_completion_context_for_priority_value() {
-        let mut workspace = Workspace::new();
-        let url = str::parse("file:///debian/control").unwrap();
-        let content = "Source: test\nPriority: op\n";
-        let file = workspace.update_file(url, content.to_string());
-        let source_text = workspace.source_text(file);
-        let parsed = workspace.get_parsed_control(file);
-
-        let context = get_completion_context(&source_text, &parsed, Position::new(1, 12))
-            .expect("Should have completion context");
-
-        assert_eq!(context.field_name, "Priority");
-        assert_eq!(context.value_prefix, "op");
-    }
-
-    #[test]
-    fn test_completion_context_none_in_field_key() {
-        let mut workspace = Workspace::new();
-        let url = str::parse("file:///debian/control").unwrap();
-        let content = "Source: test\nSection: py\n";
-        let file = workspace.update_file(url, content.to_string());
-        let source_text = workspace.source_text(file);
-        let parsed = workspace.get_parsed_control(file);
-
-        let context = get_completion_context(&source_text, &parsed, Position::new(1, 3));
-        assert!(context.is_none());
     }
 }

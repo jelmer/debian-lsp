@@ -1,44 +1,28 @@
 use std::fs;
 use std::sync::OnceLock;
 
-/// Debian copyright file field definitions
-pub struct CopyrightField {
-    pub name: &'static str,
-    pub description: &'static str,
-}
-
-impl CopyrightField {
-    pub const fn new(name: &'static str, description: &'static str) -> Self {
-        Self { name, description }
-    }
-}
+use crate::deb822::completion::FieldInfo;
 
 /// All available Debian copyright file fields (DEP-5 format)
-pub const COPYRIGHT_FIELDS: &[CopyrightField] = &[
+pub const COPYRIGHT_FIELDS: &[FieldInfo] = &[
     // Header paragraph fields
-    CopyrightField::new("Format", "URI of the format specification (DEP-5)"),
-    CopyrightField::new("Upstream-Name", "Name of the upstream project"),
-    CopyrightField::new("Upstream-Contact", "Contact information for upstream"),
-    CopyrightField::new("Source", "Where the upstream source can be obtained"),
-    CopyrightField::new("Disclaimer", "Disclaimer for non-free packages"),
-    CopyrightField::new("Comment", "Additional information or context"),
-    CopyrightField::new("License", "License for the work"),
-    CopyrightField::new("Copyright", "Copyright holder information"),
-    CopyrightField::new("Files-Excluded", "Files excluded from the source package"),
+    FieldInfo::new("Format", "URI of the format specification (DEP-5)"),
+    FieldInfo::new("Upstream-Name", "Name of the upstream project"),
+    FieldInfo::new("Upstream-Contact", "Contact information for upstream"),
+    FieldInfo::new("Source", "Where the upstream source can be obtained"),
+    FieldInfo::new("Disclaimer", "Disclaimer for non-free packages"),
+    FieldInfo::new("Comment", "Additional information or context"),
+    FieldInfo::new("License", "License for the work"),
+    FieldInfo::new("Copyright", "Copyright holder information"),
+    FieldInfo::new("Files-Excluded", "Files excluded from the source package"),
     // Files paragraph fields
-    CopyrightField::new("Files", "File patterns covered by this paragraph"),
+    FieldInfo::new("Files", "File patterns covered by this paragraph"),
     // License paragraph has License and Comment which are already listed above
 ];
 
 /// Get the standard casing for a field name
 pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
-    let lowercase = field_name.to_lowercase();
-    for field in COPYRIGHT_FIELDS {
-        if field.name.to_lowercase() == lowercase {
-            return Some(field.name);
-        }
-    }
-    None
+    crate::deb822::completion::get_standard_field_name(COPYRIGHT_FIELDS, field_name)
 }
 
 /// Cache for common license names loaded from the system
