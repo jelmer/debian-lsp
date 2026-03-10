@@ -1,8 +1,9 @@
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 
 use super::fields::{
-    COMMON_PACKAGES, CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS,
-    CONTROL_SECTION_VALUES, CONTROL_SPECIAL_SECTION_VALUES,
+    ARCHITECTURE_VALUES, COMMON_PACKAGES, CONTROL_FIELDS, CONTROL_PRIORITY_VALUES,
+    CONTROL_SECTION_AREAS, CONTROL_SECTION_VALUES, CONTROL_SPECIAL_SECTION_VALUES,
+    DEBIAN_BOOLEAN_VALUES, MULTI_ARCH_VALUES,
 };
 
 /// Get completions for a control file at the given cursor position.
@@ -39,6 +40,16 @@ pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<Comple
         get_section_value_completions(prefix)
     } else if field_name.eq_ignore_ascii_case("Priority") {
         get_priority_value_completions(prefix)
+    } else if field_name.eq_ignore_ascii_case("Protected") {
+        get_boolean_value_completions()
+    } else if field_name.eq_ignore_ascii_case("Essential") {
+        get_boolean_value_completions()
+    } else if field_name.eq_ignore_ascii_case("Build-Essential") {
+        get_boolean_value_completions()
+    } else if field_name.eq_ignore_ascii_case("Architecture") {
+        get_architecture_value_completions()
+    } else if field_name.eq_ignore_ascii_case("Multi-Arch") {
+        get_multiarch_value_completions()
     } else {
         vec![]
     }
@@ -69,6 +80,45 @@ pub fn get_priority_value_completions(prefix: &str) -> Vec<CompletionItem> {
             kind: Some(CompletionItemKind::VALUE),
             detail: Some(description.to_string()),
             insert_text: Some(value.to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Get completion items for Debian priority values.
+pub fn get_boolean_value_completions() -> Vec<CompletionItem> {
+    DEBIAN_BOOLEAN_VALUES
+        .iter()
+        .map(|&val| CompletionItem {
+            label: val.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some("Section value".to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Get completion items for Debian architecture values.
+pub fn get_architecture_value_completions() -> Vec<CompletionItem> {
+    ARCHITECTURE_VALUES
+        .iter()
+        .map(|&val| CompletionItem {
+            label: val.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some("Section value".to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Get completion items for Debian multi architecture values.
+pub fn get_multiarch_value_completions() -> Vec<CompletionItem> {
+    MULTI_ARCH_VALUES
+        .iter()
+        .map(|&val| CompletionItem {
+            label: val.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some("Section value".to_string()),
             ..Default::default()
         })
         .collect()

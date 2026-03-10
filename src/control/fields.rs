@@ -144,6 +144,18 @@ pub const CONTROL_SECTION_AREAS: &[&str] = &["contrib", "non-free", "non-free-fi
 pub const CONTROL_SPECIAL_SECTION_VALUES: &[(&str, &str)] =
     &[("debian-installer", "Debian installer components")];
 
+/// Debian boolean values.
+pub const DEBIAN_BOOLEAN_VALUES: &[&str] = &["yes", "no"];
+
+/// Debian architecture values.
+pub const ARCHITECTURE_VALUES: &[&str] = &[
+    "all", "amd64", "arm64", "armel", "armhf", "i386", "mips", "mips64el", "mipsel", "ppc64el",
+    "s390x",
+];
+
+/// Debian multi-architecture values.
+pub const MULTI_ARCH_VALUES: &[&str] = &["allowed", "foreign", "no", "same"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
