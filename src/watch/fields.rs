@@ -1,11 +1,4 @@
-/// Debian watch file option definition
-pub struct WatchOption {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub value_type: OptionValueType,
-}
-
-/// Type of value an option accepts
+/// Type of value a watch field/option accepts
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionValueType {
     /// Boolean option (no value)
@@ -16,145 +9,319 @@ pub enum OptionValueType {
     Enum(&'static [&'static str]),
 }
 
-impl WatchOption {
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
+
+/// A watch file field definition, used for both v1-4 line-based options and v5 deb822 fields.
+pub struct WatchField {
+    /// Canonical field name (deb822 / title-case form, used in v5).
+    pub deb822_name: &'static str,
+    /// Option name used in v1-4 line-based format, or `None` for v5-only fields.
+    pub linebased_name: Option<&'static str>,
+    /// Human-readable description.
+    pub description: &'static str,
+    /// Type of value the field accepts.
+    pub value_type: OptionValueType,
+    /// Callback returning completion items for this field's values.
+    /// Receives the prefix already typed by the user for filtering.
+    pub complete_values: fn(&str) -> Vec<CompletionItem>,
+}
+
+fn no_completions(_prefix: &str) -> Vec<CompletionItem> {
+    vec![]
+}
+
+fn enum_completions(values: &[&str], prefix: &str) -> Vec<CompletionItem> {
+    let normalized = prefix.trim().to_ascii_lowercase();
+    values
+        .iter()
+        .filter(|v| v.starts_with(&normalized))
+        .map(|&v| CompletionItem {
+            label: v.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn boolean_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["yes", "no"], prefix)
+}
+
+fn compression_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["gzip", "xz", "bzip2", "lzma", "default"], prefix)
+}
+
+fn mode_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["lwp", "git", "svn"], prefix)
+}
+
+fn pgpmode_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(
+        &["auto", "default", "mangle", "next", "previous", "self", "gittag"],
+        prefix,
+    )
+}
+
+fn searchmode_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["html", "plain"], prefix)
+}
+
+fn gitmode_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["shallow", "full"], prefix)
+}
+
+fn gitexport_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["default", "all"], prefix)
+}
+
+fn ctype_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(&["perl", "nodejs"], prefix)
+}
+
+impl WatchField {
     pub const fn new(
-        name: &'static str,
+        deb822_name: &'static str,
+        linebased_name: Option<&'static str>,
         description: &'static str,
         value_type: OptionValueType,
+        complete_values: fn(&str) -> Vec<CompletionItem>,
     ) -> Self {
         Self {
-            name,
+            deb822_name,
+            linebased_name,
             description,
             value_type,
+            complete_values,
         }
     }
 }
 
-/// All available Debian watch file options
-pub const WATCH_OPTIONS: &[WatchOption] = &[
-    WatchOption::new(
-        "component",
+/// All known watch file fields/options.
+pub const WATCH_FIELDS: &[WatchField] = &[
+    // v5-only fields (no line-based equivalent)
+    WatchField::new(
+        "Version",
+        None,
+        "Watch file format version",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Source",
+        None,
+        "URL to check for upstream releases",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Matching-Pattern",
+        None,
+        "Regex pattern to match upstream files",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Template",
+        None,
+        "URL template for constructing download URLs",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Owner",
+        None,
+        "Owner name for repository-based sources",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Project",
+        None,
+        "Project name for repository-based sources",
+        OptionValueType::String,
+        no_completions,
+    ),
+    // Fields available in both v1-4 (as options) and v5 (as deb822 fields)
+    WatchField::new(
+        "Component",
+        Some("component"),
         "Component name for multi-tarball packages",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "compression",
+    WatchField::new(
+        "Compression",
+        Some("compression"),
         "Compression format (gzip, xz, bzip2, lzma)",
         OptionValueType::Enum(&["gzip", "xz", "bzip2", "lzma", "default"]),
+        compression_completions,
     ),
-    WatchOption::new(
-        "mode",
+    WatchField::new(
+        "Mode",
+        Some("mode"),
         "Download mode (lwp, git, svn)",
         OptionValueType::Enum(&["lwp", "git", "svn"]),
+        mode_completions,
     ),
-    WatchOption::new(
-        "pgpmode",
+    WatchField::new(
+        "Pgpmode",
+        Some("pgpmode"),
         "PGP verification mode",
         OptionValueType::Enum(&[
             "auto", "default", "mangle", "next", "previous", "self", "gittag",
         ]),
+        pgpmode_completions,
     ),
-    WatchOption::new(
-        "searchmode",
+    WatchField::new(
+        "Searchmode",
+        Some("searchmode"),
         "Search mode for finding upstream versions",
         OptionValueType::Enum(&["html", "plain"]),
+        searchmode_completions,
     ),
-    WatchOption::new(
-        "gitmode",
+    WatchField::new(
+        "Gitmode",
+        Some("gitmode"),
         "Git clone mode",
         OptionValueType::Enum(&["shallow", "full"]),
+        gitmode_completions,
     ),
-    WatchOption::new(
-        "gitexport",
+    WatchField::new(
+        "Gitexport",
+        Some("gitexport"),
         "Git export mode",
         OptionValueType::Enum(&["default", "all"]),
+        gitexport_completions,
     ),
-    WatchOption::new(
-        "pretty",
+    WatchField::new(
+        "Pretty",
+        Some("pretty"),
         "Pretty format for git tags",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "uversionmangle",
+    WatchField::new(
+        "Uversionmangle",
+        Some("uversionmangle"),
         "Upstream version mangling rules (s/pattern/replacement/)",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "oversionmangle",
+    WatchField::new(
+        "Oversionmangle",
+        Some("oversionmangle"),
         "Upstream version mangling rules (alternative name)",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "dversionmangle",
+    WatchField::new(
+        "Dversionmangle",
+        Some("dversionmangle"),
         "Debian version mangling rules (s/pattern/replacement/)",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "dirversionmangle",
+    WatchField::new(
+        "Dirversionmangle",
+        Some("dirversionmangle"),
         "Directory version mangling rules for mode=git",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "pagemangle",
+    WatchField::new(
+        "Pagemangle",
+        Some("pagemangle"),
         "Page content mangling rules",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "downloadurlmangle",
+    WatchField::new(
+        "Downloadurlmangle",
+        Some("downloadurlmangle"),
         "Download URL mangling rules",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "pgpsigurlmangle",
+    WatchField::new(
+        "Pgpsigurlmangle",
+        Some("pgpsigurlmangle"),
         "PGP signature URL mangling rules",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "filenamemangle",
+    WatchField::new(
+        "Filenamemangle",
+        Some("filenamemangle"),
         "Filename mangling rules",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "versionmangle",
+    WatchField::new(
+        "Versionmangle",
+        Some("versionmangle"),
         "Version policy (debian, same, previous, ignore, group, checksum)",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "user-agent",
+    WatchField::new(
+        "User-Agent",
+        Some("user-agent"),
         "User agent string for HTTP requests",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "useragent",
+    WatchField::new(
+        "Useragent",
+        Some("useragent"),
         "User agent string for HTTP requests (alternative name)",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "ctype",
+    WatchField::new(
+        "Ctype",
+        Some("ctype"),
         "Component type (perl, nodejs)",
         OptionValueType::Enum(&["perl", "nodejs"]),
+        ctype_completions,
     ),
-    WatchOption::new(
-        "repacksuffix",
+    WatchField::new(
+        "Repacksuffix",
+        Some("repacksuffix"),
         "Suffix for repacked tarballs",
         OptionValueType::String,
+        no_completions,
     ),
-    WatchOption::new(
-        "decompress",
+    WatchField::new(
+        "Decompress",
+        Some("decompress"),
         "Decompress downloaded files",
         OptionValueType::Boolean,
+        boolean_completions,
     ),
-    WatchOption::new(
-        "bare",
+    WatchField::new(
+        "Bare",
+        Some("bare"),
         "Use bare git clone for mode=git",
         OptionValueType::Boolean,
+        boolean_completions,
     ),
-    WatchOption::new(
-        "repack",
+    WatchField::new(
+        "Repack",
+        Some("repack"),
         "Repack the upstream tarball",
         OptionValueType::Boolean,
+        boolean_completions,
     ),
 ];
+
+/// Get the standard (canonical deb822) name for a watch field.
+pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
+    let lower = field_name.to_lowercase();
+    WATCH_FIELDS
+        .iter()
+        .find(|f| f.deb822_name.to_lowercase() == lower)
+        .map(|f| f.deb822_name)
+}
 
 /// Watch file format versions
 pub const WATCH_VERSIONS: &[u32] = &[1, 2, 3, 4, 5];
@@ -164,33 +331,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_watch_options() {
-        assert!(!WATCH_OPTIONS.is_empty());
-        assert!(WATCH_OPTIONS.len() >= 20);
+    fn test_watch_fields() {
+        assert!(!WATCH_FIELDS.is_empty());
+        assert!(WATCH_FIELDS.len() >= 20);
 
-        // Test specific options exist
-        let option_names: Vec<_> = WATCH_OPTIONS.iter().map(|o| o.name).collect();
-        assert!(option_names.contains(&"mode"));
-        assert!(option_names.contains(&"pgpmode"));
-        assert!(option_names.contains(&"uversionmangle"));
-        assert!(option_names.contains(&"compression"));
+        let deb822_names: Vec<_> = WATCH_FIELDS.iter().map(|f| f.deb822_name).collect();
+        assert!(deb822_names.contains(&"Mode"));
+        assert!(deb822_names.contains(&"Pgpmode"));
+        assert!(deb822_names.contains(&"Uversionmangle"));
+        assert!(deb822_names.contains(&"Compression"));
+        assert!(deb822_names.contains(&"Source"));
+        assert!(deb822_names.contains(&"Matching-Pattern"));
+        assert!(deb822_names.contains(&"Version"));
     }
 
     #[test]
-    fn test_watch_option_validity() {
-        for option in WATCH_OPTIONS {
-            assert!(!option.name.is_empty());
-            assert!(!option.description.is_empty());
+    fn test_linebased_options() {
+        let options: Vec<_> = WATCH_FIELDS
+            .iter()
+            .filter_map(|f| f.linebased_name)
+            .collect();
+        assert!(options.len() >= 20);
+        assert!(options.contains(&"mode"));
+        assert!(options.contains(&"pgpmode"));
+        assert!(options.contains(&"uversionmangle"));
+        assert!(options.contains(&"compression"));
+    }
 
-            // Check that enum options have values
-            if let OptionValueType::Enum(values) = option.value_type {
+    #[test]
+    fn test_v5_only_fields_have_no_linebased_name() {
+        for field in WATCH_FIELDS {
+            if [
+                "Version",
+                "Source",
+                "Matching-Pattern",
+                "Template",
+                "Owner",
+                "Project",
+            ]
+            .contains(&field.deb822_name)
+            {
                 assert!(
-                    !values.is_empty(),
-                    "Enum option {} has no values",
-                    option.name
+                    field.linebased_name.is_none(),
+                    "{} should be v5-only",
+                    field.deb822_name
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_watch_field_validity() {
+        for field in WATCH_FIELDS {
+            assert!(!field.deb822_name.is_empty());
+            assert!(!field.description.is_empty());
+
+            if let OptionValueType::Enum(values) = field.value_type {
+                assert!(
+                    !values.is_empty(),
+                    "Enum field {} has no values",
+                    field.deb822_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_standard_field_name() {
+        assert_eq!(get_standard_field_name("Source"), Some("Source"));
+        assert_eq!(get_standard_field_name("source"), Some("Source"));
+        assert_eq!(
+            get_standard_field_name("Matching-Pattern"),
+            Some("Matching-Pattern")
+        );
+        assert_eq!(get_standard_field_name("mode"), Some("Mode"));
+        assert_eq!(get_standard_field_name("UnknownField"), None);
     }
 
     #[test]

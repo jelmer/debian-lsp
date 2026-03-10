@@ -315,7 +315,19 @@ impl LanguageServer for Backend {
                 let copyright = parsed.to_copyright();
                 copyright::get_completions(copyright.as_deb822(), &source_text, position)
             }
-            Some((FileType::Watch, _)) => watch::get_completions(&uri, position),
+            Some((FileType::Watch, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let parsed = workspace.get_parsed_watch(source_file);
+                if parsed.version() == 5 {
+                    let source_text = workspace.source_text(source_file);
+                    deb822_lossless::Deb822::parse(&source_text)
+                        .to_result()
+                        .map(|d| watch::get_completions_deb822(&d, &source_text, position))
+                        .unwrap_or_default()
+                } else {
+                    watch::get_completions(&uri, position)
+                }
+            }
             Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
             Some((FileType::Changelog, source_file)) => {
                 let workspace = self.workspace.lock().await;

@@ -7,49 +7,12 @@ use tower_lsp_server::ls_types::SemanticToken;
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
 use crate::position::offset_to_position;
 
-/// Known deb822 field names for v5 watch files
-const WATCH_V5_FIELDS: &[&str] = &[
-    "Version",
-    "Source",
-    "Matching-Pattern",
-    "Component",
-    "Template",
-    "Owner",
-    "Project",
-    "Searchmode",
-    "Mode",
-    "Pgpmode",
-    "Compression",
-    "Gitmode",
-    "Gitexport",
-    "Pretty",
-    "Uversionmangle",
-    "Oversionmangle",
-    "Dversionmangle",
-    "Dirversionmangle",
-    "Pagemangle",
-    "Downloadurlmangle",
-    "Pgpsigurlmangle",
-    "Filenamemangle",
-    "Versionmangle",
-    "User-Agent",
-    "Ctype",
-    "Repacksuffix",
-    "Decompress",
-    "Bare",
-    "Repack",
-];
-
 /// Field validator for v5 watch files
 struct WatchFieldValidator;
 
 impl crate::deb822::semantic::FieldValidator for WatchFieldValidator {
     fn get_standard_field_name(&self, name: &str) -> Option<&'static str> {
-        let lower = name.to_lowercase();
-        WATCH_V5_FIELDS
-            .iter()
-            .find(|f| f.to_lowercase() == lower)
-            .copied()
+        super::fields::get_standard_field_name(name)
     }
 }
 
