@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
@@ -15,9 +16,6 @@ pub struct VersionInfo {
 /// Access to the package cache.
 #[async_trait::async_trait]
 pub trait PackageCache: Send + Sync {
-    /// Number of packages in the cache.
-    fn package_count(&self) -> usize;
-
     /// Get packages whose names start with a given prefix, sorted.
     fn get_packages_with_prefix(&self, prefix: &str) -> Vec<String>;
 
@@ -27,14 +25,11 @@ pub trait PackageCache: Send + Sync {
     /// Get cached versions for a package.
     fn get_versions(&self, package: &str) -> Option<&[VersionInfo]>;
 
-    /// Load and cache the short description for a package.
-    async fn load_description(&mut self, package: &str) -> Option<String>;
-
     /// Load and cache versions for a package.
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]>;
 
-    /// Refresh the package list from the system.
-    async fn refresh_packages(&mut self);
+    /// Insert a package name with its short description into the cache.
+    fn insert_package(&mut self, name: String, description: String);
 }
 
 /// Thread-safe shared package cache.
@@ -63,10 +58,6 @@ impl AptPackageCache {
 
 #[async_trait::async_trait]
 impl PackageCache for AptPackageCache {
-    fn package_count(&self) -> usize {
-        self.packages.len()
-    }
-
     fn get_packages_with_prefix(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_ascii_lowercase();
         self.packages
@@ -82,34 +73,6 @@ impl PackageCache for AptPackageCache {
 
     fn get_versions(&self, package: &str) -> Option<&[VersionInfo]> {
         self.versions.get(package).map(|v| v.as_slice())
-    }
-
-    async fn load_description(&mut self, package: &str) -> Option<String> {
-        if let Some(desc) = self.descriptions.get(package) {
-            return Some(desc.clone());
-        }
-
-        match Command::new("apt-cache")
-            .arg("show")
-            .arg("--no-all-versions")
-            .arg(package)
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for line in text.lines() {
-                    if let Some(desc) = line.strip_prefix("Description: ") {
-                        let description = desc.trim().to_string();
-                        self.descriptions
-                            .insert(package.to_string(), description.clone());
-                        return Some(description);
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
     }
 
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]> {
@@ -148,27 +111,45 @@ impl PackageCache for AptPackageCache {
         }
     }
 
-    async fn refresh_packages(&mut self) {
-        match Command::new("apt-cache").arg("pkgnames").output().await {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                self.packages = text
-                    .lines()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-                self.packages.sort_unstable();
-            }
-            _ => {
-                // apt-cache not available or failed; keep existing cache
-            }
-        }
+    fn insert_package(&mut self, name: String, description: String) {
+        let pos = self.packages.binary_search(&name).unwrap_or_else(|p| p);
+        self.packages.insert(pos, name.clone());
+        self.descriptions.insert(name, description);
     }
 }
 
 /// Create a new shared cache backed by apt-cache.
 pub fn new_shared_cache() -> SharedPackageCache {
     Arc::new(RwLock::new(AptPackageCache::new()))
+}
+
+/// Stream package names and descriptions from `apt-cache search` into the
+/// shared cache.
+///
+/// Each line is `name - description`, inserted as soon as it is read so
+/// completions are available immediately while the full list loads.
+pub async fn stream_packages_into(cache: &SharedPackageCache) {
+    let Ok(mut child) = Command::new("apt-cache")
+        .args(["search", "--names-only", "."])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    else {
+        return;
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        return;
+    };
+
+    let mut lines = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Some((name, description)) = line.split_once(" - ") {
+            cache
+                .write()
+                .await
+                .insert_package(name.to_string(), description.to_string());
+        }
+    }
 }
 
 /// Simple in-memory package cache for tests.
@@ -182,10 +163,6 @@ pub struct TestPackageCache {
 
 #[async_trait::async_trait]
 impl PackageCache for TestPackageCache {
-    fn package_count(&self) -> usize {
-        self.packages.len()
-    }
-
     fn get_packages_with_prefix(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_ascii_lowercase();
         let mut result: Vec<String> = self
@@ -209,16 +186,12 @@ impl PackageCache for TestPackageCache {
         self.versions.get(package).map(|v| v.as_slice())
     }
 
-    async fn load_description(&mut self, _package: &str) -> Option<String> {
-        self.get_description(_package).map(|s| s.to_string())
-    }
-
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]> {
         self.versions.get(package).map(|v| v.as_slice())
     }
 
-    async fn refresh_packages(&mut self) {
-        // No-op for test cache
+    fn insert_package(&mut self, name: String, description: String) {
+        self.packages.push((name, Some(description)));
     }
 }
 
@@ -242,8 +215,18 @@ mod tests {
     #[test]
     fn test_empty_cache() {
         let cache = AptPackageCache::new();
-        assert_eq!(cache.package_count(), 0);
         assert!(cache.get_packages_with_prefix("foo").is_empty());
+    }
+
+    #[test]
+    fn test_insert_package_sorted() {
+        let mut cache = AptPackageCache::new();
+        cache.insert_package("cmake".to_string(), "cross-platform make".to_string());
+        cache.insert_package("apt".to_string(), "package manager".to_string());
+        cache.insert_package("zsh".to_string(), "shell".to_string());
+        cache.insert_package("debhelper".to_string(), "helper tools".to_string());
+        assert_eq!(cache.packages, vec!["apt", "cmake", "debhelper", "zsh"]);
+        assert_eq!(cache.get_description("cmake"), Some("cross-platform make"));
     }
 
     #[test]

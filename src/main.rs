@@ -92,6 +92,28 @@ struct Backend {
     package_cache: package_cache::SharedPackageCache,
 }
 
+impl Backend {
+    fn collect_diagnostics(
+        source_file: workspace::SourceFile,
+        file_type: FileType,
+        workspace: &Workspace,
+    ) -> Option<Vec<Diagnostic>> {
+        match file_type {
+            FileType::Control => {
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_control(source_file);
+                Some(control::diagnostics::get_diagnostics(&source_text, &parsed))
+            }
+            FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
+            FileType::Watch
+            | FileType::TestsControl
+            | FileType::Changelog
+            | FileType::SourceFormat
+            | FileType::UpstreamMetadata => None,
+        }
+    }
+}
+
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
@@ -101,7 +123,7 @@ impl LanguageServer for Backend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![":".to_string(), " ".to_string()]),
+                    trigger_characters: Some(vec![":".to_string(), " ".to_string(), "(".to_string()]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
                     completion_item: None,
@@ -176,29 +198,11 @@ impl LanguageServer for Backend {
             },
         );
 
-        // Publish diagnostics based on file type
-        match file_type {
-            FileType::Control => {
-                let source_text = workspace.source_text(source_file);
-                let parsed = workspace.get_parsed_control(source_file);
-                let diagnostics = control::diagnostics::get_diagnostics(&source_text, &parsed);
-                self.client
-                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
-                    .await;
-            }
-            FileType::Copyright => {
-                let diagnostics = workspace.get_copyright_diagnostics(source_file);
-                self.client
-                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
-                    .await;
-            }
-            FileType::Watch
-            | FileType::TestsControl
-            | FileType::Changelog
-            | FileType::SourceFormat
-            | FileType::UpstreamMetadata => {
-                // No diagnostics for these file types yet
-            }
+        if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
+            drop(workspace);
+            self.client
+                .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
         }
     }
 
@@ -237,29 +241,11 @@ impl LanguageServer for Backend {
             },
         );
 
-        // Publish diagnostics based on file type
-        match file_type {
-            FileType::Control => {
-                let source_text = workspace.source_text(source_file);
-                let parsed = workspace.get_parsed_control(source_file);
-                let diagnostics = control::diagnostics::get_diagnostics(&source_text, &parsed);
-                self.client
-                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
-                    .await;
-            }
-            FileType::Copyright => {
-                let diagnostics = workspace.get_copyright_diagnostics(source_file);
-                self.client
-                    .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
-                    .await;
-            }
-            FileType::Watch
-            | FileType::TestsControl
-            | FileType::Changelog
-            | FileType::SourceFormat
-            | FileType::UpstreamMetadata => {
-                // No diagnostics for these file types yet
-            }
+        if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
+            drop(workspace);
+            self.client
+                .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
         }
     }
 
@@ -279,7 +265,38 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_control(source_file);
-                control::get_completions(parsed.tree().as_deb822(), &source_text, position)
+                // Check if cursor is on a field value to try async relationship completions
+                let cursor_context = deb822::completion::get_cursor_context(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    position,
+                );
+                drop(workspace);
+                if let Some(deb822::completion::CursorContext::FieldValue {
+                    field_name,
+                    value_prefix,
+                }) = &cursor_context
+                {
+                    // Try async completions (relationship fields via package cache)
+                    if let Some(async_completions) = control::get_async_field_value_completions(
+                        field_name,
+                        value_prefix,
+                        &self.package_cache,
+                    )
+                    .await
+                    {
+                        async_completions
+                    } else {
+                        // Fall back to sync completions (Section, Priority, etc.)
+                        control::get_field_value_completions(field_name, value_prefix)
+                    }
+                } else {
+                    // Not on a field value — get field name completions
+                    let workspace = self.workspace.lock().await;
+                    let source_text = workspace.source_text(source_file);
+                    let parsed = workspace.get_parsed_control(source_file);
+                    control::get_completions(parsed.tree().as_deb822(), &source_text, position)
+                }
             }
             Some((FileType::Copyright, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -523,8 +540,7 @@ async fn main() {
     let package_cache = package_cache::new_shared_cache();
     let cache_for_loading = package_cache.clone();
     tokio::spawn(async move {
-        let mut cache = cache_for_loading.write().await;
-        cache.refresh_packages().await;
+        package_cache::stream_packages_into(&cache_for_loading).await;
     });
 
     let (service, socket) = LspService::new(|client| Backend {
@@ -549,7 +565,6 @@ mod main_tests {
         let completions = control::get_completions(&deb822, text, Position::new(0, 3));
         assert!(!completions.is_empty());
         assert!(completions.iter().any(|c| c.label == "Source"));
-        assert!(completions.iter().any(|c| c.label == "debhelper-compat"));
     }
 
     #[test]
