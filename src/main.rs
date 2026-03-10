@@ -13,6 +13,7 @@ mod changelog;
 mod control;
 mod copyright;
 mod deb822;
+mod package_cache;
 mod position;
 mod source_format;
 mod tests;
@@ -88,6 +89,7 @@ struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
     files: Arc<Mutex<HashMap<Uri, FileInfo>>>,
+    package_cache: package_cache::SharedPackageCache,
 }
 
 impl LanguageServer for Backend {
@@ -517,10 +519,19 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
+    // Load package cache in background
+    let package_cache = package_cache::new_shared_cache();
+    let cache_for_loading = package_cache.clone();
+    tokio::spawn(async move {
+        let mut cache = cache_for_loading.write().await;
+        cache.refresh_packages().await;
+    });
+
     let (service, socket) = LspService::new(|client| Backend {
         client,
         workspace: Arc::new(Mutex::new(Workspace::new())),
         files: Arc::new(Mutex::new(HashMap::new())),
+        package_cache: package_cache.clone(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
