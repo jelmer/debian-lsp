@@ -326,6 +326,9 @@ pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
 /// Watch file format versions
 pub const WATCH_VERSIONS: &[u32] = &[1, 2, 3, 4, 5];
 
+/// Line-based watch file format versions (v5 uses deb822 format)
+pub const WATCH_LINEBASED_VERSIONS: &[u32] = &[1, 2, 3, 4];
+
 #[cfg(test)]
 mod tests {
     use super::*;
