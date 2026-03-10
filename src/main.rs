@@ -9,6 +9,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
+mod architecture;
 mod changelog;
 mod control;
 mod copyright;
@@ -90,6 +91,7 @@ struct Backend {
     workspace: Arc<Mutex<Workspace>>,
     files: Arc<Mutex<HashMap<Uri, FileInfo>>>,
     package_cache: package_cache::SharedPackageCache,
+    architecture_list: architecture::SharedArchitectureList,
 }
 
 impl Backend {
@@ -287,6 +289,7 @@ impl LanguageServer for Backend {
                         field_name,
                         value_prefix,
                         &self.package_cache,
+                        &self.architecture_list,
                     )
                     .await
                     {
@@ -548,11 +551,19 @@ async fn main() {
         package_cache::stream_packages_into(&cache_for_loading).await;
     });
 
+    // Load architecture list in background
+    let architecture_list = architecture::new_shared_list();
+    let arch_for_loading = architecture_list.clone();
+    tokio::spawn(async move {
+        architecture::stream_into(&arch_for_loading).await;
+    });
+
     let (service, socket) = LspService::new(|client| Backend {
         client,
         workspace: Arc::new(Mutex::new(Workspace::new())),
         files: Arc::new(Mutex::new(HashMap::new())),
         package_cache: package_cache.clone(),
+        architecture_list: architecture_list.clone(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

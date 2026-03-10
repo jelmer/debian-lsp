@@ -7,6 +7,7 @@ use super::fields::{
     CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS, CONTROL_SECTION_VALUES,
     CONTROL_SPECIAL_SECTION_VALUES,
 };
+use crate::architecture::SharedArchitectureList;
 use crate::package_cache::SharedPackageCache;
 
 /// Get completions for a control file at the given cursor position.
@@ -245,6 +246,7 @@ fn last_significant_token(
 pub(crate) async fn get_relationship_completions(
     prefix: &str,
     package_cache: &SharedPackageCache,
+    architecture_list: &SharedArchitectureList,
 ) -> Vec<CompletionItem> {
     match determine_relation_position(prefix) {
         RelationCompletionPosition::PackageName(partial) => {
@@ -281,37 +283,22 @@ pub(crate) async fn get_relationship_completions(
         RelationCompletionPosition::Version(partial) => {
             get_version_completions(prefix, &partial, package_cache).await
         }
-        RelationCompletionPosition::Architecture(partial) => get_architecture_completions(&partial),
+        RelationCompletionPosition::Architecture(partial) => {
+            get_architecture_completions(&partial, architecture_list).await
+        }
     }
 }
 
-/// Known Debian architectures, loaded lazily from `dpkg-architecture -L`.
-fn get_known_architectures() -> &'static [String] {
-    use std::sync::OnceLock;
-    static ARCHES: OnceLock<Vec<String>> = OnceLock::new();
-    ARCHES.get_or_init(|| {
-        let output = std::process::Command::new("dpkg-architecture")
-            .arg("-L")
-            .output();
-        match output {
-            Ok(out) if out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                text.lines()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect()
-            }
-            _ => Vec::new(),
-        }
-    })
-}
-
 /// Get completion items for architecture names.
-fn get_architecture_completions(partial: &str) -> Vec<CompletionItem> {
+async fn get_architecture_completions(
+    partial: &str,
+    architecture_list: &SharedArchitectureList,
+) -> Vec<CompletionItem> {
     let negated = partial.starts_with('!');
     let prefix = if negated { &partial[1..] } else { partial };
 
-    get_known_architectures()
+    let arches = architecture_list.read().await;
+    arches
         .iter()
         .filter(|arch| arch.starts_with(prefix))
         .map(|arch| {
@@ -376,9 +363,10 @@ pub async fn get_async_field_value_completions(
     field_name: &str,
     prefix: &str,
     package_cache: &SharedPackageCache,
+    architecture_list: &SharedArchitectureList,
 ) -> Option<Vec<CompletionItem>> {
     if is_relationship_field(field_name) {
-        Some(get_relationship_completions(prefix, package_cache).await)
+        Some(get_relationship_completions(prefix, package_cache, architecture_list).await)
     } else {
         None
     }
@@ -454,6 +442,7 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
 mod tests {
     use super::*;
     use crate::package_cache::TestPackageCache;
+    use std::sync::Arc;
     use tower_lsp_server::ls_types::Position;
 
     fn test_cache() -> SharedPackageCache {
@@ -467,6 +456,15 @@ mod tests {
             ("libssl-dev", None),
             ("pkg-config", None),
         ])
+    }
+
+    fn test_arch_list() -> SharedArchitectureList {
+        Arc::new(tokio::sync::RwLock::new(vec![
+            "amd64".to_string(),
+            "arm64".to_string(),
+            "armhf".to_string(),
+            "i386".to_string(),
+        ]))
     }
 
     #[test]
@@ -592,9 +590,10 @@ mod tests {
     #[tokio::test]
     async fn test_async_field_value_completions_for_depends() {
         let cache = test_cache();
-        let completions = get_async_field_value_completions("Depends", "cm", &cache)
-            .await
-            .expect("Should return completions");
+        let completions =
+            get_async_field_value_completions("Depends", "cm", &cache, &test_arch_list())
+                .await
+                .expect("Should return completions");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["cmake"]);
     }
@@ -602,23 +601,25 @@ mod tests {
     #[tokio::test]
     async fn test_async_field_value_completions_for_build_depends() {
         let cache = test_cache();
-        let completions = get_async_field_value_completions("Build-Depends", "", &cache)
-            .await
-            .expect("Should return completions");
+        let completions =
+            get_async_field_value_completions("Build-Depends", "", &cache, &test_arch_list())
+                .await
+                .expect("Should return completions");
         assert!(!completions.is_empty());
     }
 
     #[tokio::test]
     async fn test_async_field_value_completions_for_non_relationship() {
         let cache = test_cache();
-        let completions = get_async_field_value_completions("Homepage", "http", &cache).await;
+        let completions =
+            get_async_field_value_completions("Homepage", "http", &cache, &test_arch_list()).await;
         assert!(completions.is_none());
     }
 
     #[tokio::test]
     async fn test_relationship_completions_package_name_empty() {
         let cache = test_cache();
-        let completions = get_relationship_completions("", &cache).await;
+        let completions = get_relationship_completions("", &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"debhelper-compat"));
         assert!(labels.contains(&"cmake"));
@@ -627,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_package_name_prefix() {
         let cache = test_cache();
-        let completions = get_relationship_completions("deb", &cache).await;
+        let completions = get_relationship_completions("deb", &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["debhelper-compat"]);
     }
@@ -635,7 +636,8 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_after_comma() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (>= 2.17), cm", &cache).await;
+        let completions =
+            get_relationship_completions("libc6 (>= 2.17), cm", &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["cmake"]);
     }
@@ -643,7 +645,8 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_after_pipe() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libfoo | cm", &cache).await;
+        let completions =
+            get_relationship_completions("libfoo | cm", &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["cmake"]);
     }
@@ -651,7 +654,7 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_version_operator() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (", &cache).await;
+        let completions = get_relationship_completions("libc6 (", &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec![">=", "<=", "=", ">>", "<<"]);
     }
@@ -659,7 +662,7 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_version_operator_partial() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (>", &cache).await;
+        let completions = get_relationship_completions("libc6 (>", &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec![">=", ">>"]);
     }
@@ -667,7 +670,8 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_version_position() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (>= ", &cache).await;
+        let completions =
+            get_relationship_completions("libc6 (>= ", &cache, &test_arch_list()).await;
         assert!(completions.is_empty());
     }
 
@@ -686,7 +690,9 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_multiline_value() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (>= 2.17),\n dh-py", &cache).await;
+        let completions =
+            get_relationship_completions("libc6 (>= 2.17),\n dh-py", &cache, &test_arch_list())
+                .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["dh-python"]);
     }
@@ -694,7 +700,7 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_with_description() {
         let cache = test_cache();
-        let completions = get_relationship_completions("cm", &cache).await;
+        let completions = get_relationship_completions("cm", &cache, &test_arch_list()).await;
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].label, "cmake");
         assert_eq!(
@@ -710,7 +716,8 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_without_description() {
         let cache = test_cache();
-        let completions = get_relationship_completions("debhelper", &cache).await;
+        let completions =
+            get_relationship_completions("debhelper", &cache, &test_arch_list()).await;
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].label, "debhelper-compat");
         assert_eq!(completions[0].detail, Some("Package".to_string()));
@@ -818,10 +825,14 @@ mod tests {
                 assert_eq!(field_name, "Build-Depends");
                 assert_eq!(value_prefix, "");
                 let cache = test_cache();
-                let completions =
-                    get_async_field_value_completions(&field_name, &value_prefix, &cache)
-                        .await
-                        .expect("Should return completions for relationship field");
+                let completions = get_async_field_value_completions(
+                    &field_name,
+                    &value_prefix,
+                    &cache,
+                    &test_arch_list(),
+                )
+                .await
+                .expect("Should return completions for relationship field");
                 assert!(!completions.is_empty(), "Should have package completions");
             }
             other => panic!("Expected FieldValue, got {:?}", other),
@@ -848,10 +859,14 @@ mod tests {
                 assert_eq!(field_name, "Build-Depends");
                 assert_eq!(value_prefix, "dh");
                 let cache = test_cache();
-                let completions =
-                    get_async_field_value_completions(&field_name, &value_prefix, &cache)
-                        .await
-                        .expect("Should return completions for relationship field");
+                let completions = get_async_field_value_completions(
+                    &field_name,
+                    &value_prefix,
+                    &cache,
+                    &test_arch_list(),
+                )
+                .await
+                .expect("Should return completions for relationship field");
                 let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
                 assert_eq!(labels, vec!["dh-python"]);
             }
