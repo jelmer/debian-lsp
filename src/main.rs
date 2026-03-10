@@ -77,14 +77,6 @@ struct FileInfo {
     file_type: FileType,
 }
 
-/// Check if two LSP ranges overlap
-fn range_overlaps(a: &Range, b: &Range) -> bool {
-    // Check if range a starts before b ends and b starts before a ends
-    (a.start.line < b.end.line
-        || (a.start.line == b.end.line && a.start.character <= b.end.character))
-        && (b.start.line < a.end.line
-            || (b.start.line == a.end.line && b.start.character <= a.end.character))
-}
 
 struct Backend {
     client: Client,

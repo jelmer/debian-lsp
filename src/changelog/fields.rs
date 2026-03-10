@@ -22,19 +22,6 @@ pub const URGENCY_LEVELS: &[UrgencyLevel] = &[
     UrgencyLevel::new("emergency", "Emergency urgency update"),
 ];
 
-/// Common changelog entry prefixes
-pub const CHANGELOG_PREFIXES: &[&str] = &["* ", "  + ", "  - ", "    - "];
-
-/// Get the standard casing for an urgency level
-pub fn get_standard_urgency_name(urgency: &str) -> Option<&'static str> {
-    let lowercase = urgency.to_lowercase();
-    for level in URGENCY_LEVELS {
-        if level.name.to_lowercase() == lowercase {
-            return Some(level.name);
-        }
-    }
-    None
-}
 
 /// Get Debian distribution names from distro-info-data
 /// Returns a vector of distribution names (codenames and aliases)
@@ -92,23 +79,6 @@ mod tests {
                 level.name
             );
         }
-    }
-
-    #[test]
-    fn test_get_standard_urgency_name() {
-        assert_eq!(get_standard_urgency_name("low"), Some("low"));
-        assert_eq!(get_standard_urgency_name("LOW"), Some("low"));
-        assert_eq!(get_standard_urgency_name("Low"), Some("low"));
-        assert_eq!(get_standard_urgency_name("medium"), Some("medium"));
-        assert_eq!(get_standard_urgency_name("MEDIUM"), Some("medium"));
-        assert_eq!(get_standard_urgency_name("invalid"), None);
-    }
-
-    #[test]
-    fn test_changelog_prefixes() {
-        assert!(!CHANGELOG_PREFIXES.is_empty());
-        assert!(CHANGELOG_PREFIXES.contains(&"* "));
-        assert!(CHANGELOG_PREFIXES.contains(&"  + "));
     }
 
     #[test]

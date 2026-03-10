@@ -174,30 +174,6 @@ pub fn get_linebased_option_completions() -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Get completion items for option values (for enum-type options).
-pub fn get_linebased_option_value_completions(option_name: &str) -> Vec<CompletionItem> {
-    WATCH_FIELDS
-        .iter()
-        .find(|f| f.linebased_name == Some(option_name))
-        .and_then(|field| {
-            if let OptionValueType::Enum(values) = field.value_type {
-                Some(
-                    values
-                        .iter()
-                        .map(|value| CompletionItem {
-                            label: value.to_string(),
-                            kind: Some(CompletionItemKind::VALUE),
-                            detail: Some(format!("Value for {}", option_name)),
-                            ..Default::default()
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default()
-}
 
 /// Get completion items for watch file `version=N` lines (used in default context).
 pub fn get_linebased_version_completions() -> Vec<CompletionItem> {
@@ -413,22 +389,6 @@ mod tests {
         assert!(!labels.contains(&"Source"));
         assert!(!labels.contains(&"Matching-Pattern"));
         assert!(!labels.contains(&"Version"));
-    }
-
-    #[test]
-    fn test_option_value_completions() {
-        let mode_values = get_linebased_option_value_completions("mode");
-        assert!(!mode_values.is_empty());
-        let mode_labels: Vec<_> = mode_values.iter().map(|c| &c.label).collect();
-        assert!(mode_labels.contains(&&"lwp".to_string()));
-        assert!(mode_labels.contains(&&"git".to_string()));
-        assert!(mode_labels.contains(&&"svn".to_string()));
-
-        let string_values = get_linebased_option_value_completions("uversionmangle");
-        assert!(string_values.is_empty());
-
-        let unknown_values = get_linebased_option_value_completions("nonexistent");
-        assert!(unknown_values.is_empty());
     }
 
     #[test]
