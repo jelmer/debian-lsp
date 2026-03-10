@@ -71,17 +71,14 @@ fn distribution_prefix_at_offset(
         // If distributions are currently empty, still offer completions when the
         // cursor is between the version and semicolon (on whitespaces).
         if range.start() == range.end() && offset < range.start() {
-            let version_end = header
-                .syntax()
-                .children_with_tokens()
-                .find_map(|it| {
-                    let token = it.as_token()?;
-                    if token.kind() == debian_changelog::SyntaxKind::VERSION {
-                        Some(token.text_range().end())
-                    } else {
-                        None
-                    }
-                });
+            let version_end = header.syntax().children_with_tokens().find_map(|it| {
+                let token = it.as_token()?;
+                if token.kind() == debian_changelog::SyntaxKind::VERSION {
+                    Some(token.text_range().end())
+                } else {
+                    None
+                }
+            });
             if version_end.is_some_and(|end| offset >= end) {
                 return Some(String::new());
             }
@@ -194,7 +191,8 @@ fn range_contains_offset(range: TextRange, offset: TextSize) -> bool {
 }
 
 fn token_prefix(token_text: &str, token_range: TextRange, offset: TextSize) -> String {
-    let relative_end: usize = (std::cmp::min(offset, token_range.end()) - token_range.start()).into();
+    let relative_end: usize =
+        (std::cmp::min(offset, token_range.end()) - token_range.start()).into();
     let mut prefix_end = std::cmp::min(relative_end, token_text.len());
     while !token_text.is_char_boundary(prefix_end) {
         prefix_end -= 1;
