@@ -36,11 +36,10 @@ pub fn get_linebased_completions(
             match ancestor.kind() {
                 debian_watch::SyntaxKind::OPTION => {
                     // If cursor is after '=', offer value completions
-                    let has_eq_before_cursor =
-                        ancestor.children_with_tokens().any(|el| {
-                            el.kind() == debian_watch::SyntaxKind::EQUALS
-                                && el.text_range().end() <= offset
-                        });
+                    let has_eq_before_cursor = ancestor.children_with_tokens().any(|el| {
+                        el.kind() == debian_watch::SyntaxKind::EQUALS
+                            && el.text_range().end() <= offset
+                    });
                     if has_eq_before_cursor {
                         let key = ancestor.children_with_tokens().find_map(|el| {
                             if el.kind() == debian_watch::SyntaxKind::KEY {
@@ -77,11 +76,10 @@ pub fn get_linebased_completions(
                 }
                 debian_watch::SyntaxKind::VERSION => {
                     // If cursor is after '=', offer version number completions
-                    let has_eq_before_cursor =
-                        ancestor.children_with_tokens().any(|el| {
-                            el.kind() == debian_watch::SyntaxKind::EQUALS
-                                && el.text_range().end() <= offset
-                        });
+                    let has_eq_before_cursor = ancestor.children_with_tokens().any(|el| {
+                        el.kind() == debian_watch::SyntaxKind::EQUALS
+                            && el.text_range().end() <= offset
+                    });
                     if has_eq_before_cursor {
                         return get_linebased_version_value_completions();
                     }
@@ -173,7 +171,6 @@ pub fn get_linebased_option_completions() -> Vec<CompletionItem> {
         })
         .collect()
 }
-
 
 /// Get completion items for watch file `version=N` lines (used in default context).
 pub fn get_linebased_version_completions() -> Vec<CompletionItem> {

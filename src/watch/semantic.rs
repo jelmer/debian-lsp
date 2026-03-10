@@ -23,7 +23,9 @@ pub fn generate_semantic_tokens(
 ) -> Vec<SemanticToken> {
     match parse.to_watch_file() {
         debian_watch::parse::ParsedWatchFile::Deb822(_) => generate_deb822_tokens(source_text),
-        debian_watch::parse::ParsedWatchFile::LineBased(_) => generate_linebased_tokens(source_text),
+        debian_watch::parse::ParsedWatchFile::LineBased(_) => {
+            generate_linebased_tokens(source_text)
+        }
     }
 }
 

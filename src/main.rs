@@ -77,7 +77,6 @@ struct FileInfo {
     file_type: FileType,
 }
 
-
 struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,

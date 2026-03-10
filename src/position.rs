@@ -73,7 +73,6 @@ pub fn try_lsp_range_to_text_range(text: &str, range: &Range) -> Option<TextRang
     Some(TextRange::new(start, end))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +117,4 @@ mod tests {
         let range = Range::new(Position::new(10, 0), Position::new(10, 1));
         assert!(try_lsp_range_to_text_range(text, &range).is_none());
     }
-
 }

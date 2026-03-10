@@ -57,7 +57,9 @@ fn mode_completions(prefix: &str) -> Vec<CompletionItem> {
 
 fn pgpmode_completions(prefix: &str) -> Vec<CompletionItem> {
     enum_completions(
-        &["auto", "default", "mangle", "next", "previous", "self", "gittag"],
+        &[
+            "auto", "default", "mangle", "next", "previous", "self", "gittag",
+        ],
         prefix,
     )
 }

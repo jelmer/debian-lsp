@@ -22,7 +22,6 @@ pub const URGENCY_LEVELS: &[UrgencyLevel] = &[
     UrgencyLevel::new("emergency", "Emergency urgency update"),
 ];
 
-
 /// Get Debian distribution names from distro-info-data
 /// Returns a vector of distribution names (codenames and aliases)
 pub fn get_debian_distributions() -> Vec<String> {
