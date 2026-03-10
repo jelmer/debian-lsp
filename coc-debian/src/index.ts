@@ -33,10 +33,11 @@ export async function activate(context: ExtensionContext): Promise<void> {
       { scheme: 'file', pattern: '**/debian/tests/control' },
       { scheme: 'file', pattern: '**/debian/changelog' },
       { scheme: 'file', pattern: '**/changelog' },
-      { scheme: 'file', pattern: '**/debian/source/format' }
+      { scheme: 'file', pattern: '**/debian/source/format' },
+      { scheme: 'file', pattern: '**/debian/upstream/metadata' }
     ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,tests/control,source/format}')
+      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,tests/control,source/format,upstream/metadata}')
     }
   };
 

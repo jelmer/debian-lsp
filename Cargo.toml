@@ -20,6 +20,7 @@ debian-watch = { version = "0.4.4", features = ["linebased", "deb822"] }
 distro-info = "0.4"
 rowan = "0.16.1"
 deb822-lossless = { version = "0.5.12" }
+yaml-edit = { git = "https://github.com/jelmer/yaml-edit" }
 tower-lsp-server = "0.23"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
