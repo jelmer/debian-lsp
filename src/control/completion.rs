@@ -96,6 +96,8 @@ enum RelationCompletionPosition {
     ArchQualifier(String),
     /// Inside `<` — expecting a build profile name.
     BuildProfile(String),
+    /// Inside `${` — expecting a substvar name.
+    Substvar(String),
 }
 
 /// Determine the completion position within a relationship field value prefix.
@@ -173,6 +175,33 @@ fn determine_relation_position(prefix: &str) -> RelationCompletionPosition {
             .collect();
 
         return RelationCompletionPosition::Version(version_prefix);
+    }
+
+    // Check if we're inside a SUBSTVAR node (i.e. inside `${...}`).
+    let in_substvar = token
+        .parent_ancestors()
+        .any(|n| n.kind() == RelSyntaxKind::SUBSTVAR);
+
+    if in_substvar {
+        let substvar_node = token
+            .parent_ancestors()
+            .find(|n| n.kind() == RelSyntaxKind::SUBSTVAR)
+            .unwrap();
+
+        // Collect the text of IDENT and COLON tokens inside the substvar.
+        let partial: String = substvar_node
+            .children_with_tokens()
+            .filter_map(|it| match it {
+                NodeOrToken::Token(t)
+                    if t.kind() == RelSyntaxKind::IDENT || t.kind() == RelSyntaxKind::COLON =>
+                {
+                    Some(t.text().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+
+        return RelationCompletionPosition::Substvar(partial);
     }
 
     // Check if we're inside an ARCHQUAL node (i.e. after ":" on a package name).
@@ -359,6 +388,7 @@ pub(crate) async fn get_relationship_completions(
         RelationCompletionPosition::BuildProfile(partial) => {
             get_build_profile_completions(&partial)
         }
+        RelationCompletionPosition::Substvar(partial) => get_substvar_completions(&partial),
     }
 }
 
@@ -468,6 +498,62 @@ fn get_build_profile_completions(partial: &str) -> Vec<CompletionItem> {
                 detail: Some(desc.to_string()),
                 ..Default::default()
             }
+        })
+        .collect()
+}
+
+/// Known substitution variables used in relationship fields.
+///
+/// See deb-substvars(5).
+const KNOWN_SUBSTVARS: &[(&str, &str)] = &[
+    ("shlibs:Depends", "Shared library dependencies"),
+    ("shlibs:Pre-Depends", "Shared library pre-dependencies"),
+    ("shlibs:Suggests", "Shared library suggestions"),
+    ("shlibs:Recommends", "Shared library recommendations"),
+    ("misc:Depends", "Miscellaneous dependencies (debhelper)"),
+    (
+        "misc:Pre-Depends",
+        "Miscellaneous pre-dependencies (debhelper)",
+    ),
+    (
+        "misc:Recommends",
+        "Miscellaneous recommendations (debhelper)",
+    ),
+    ("misc:Suggests", "Miscellaneous suggestions (debhelper)"),
+    ("misc:Breaks", "Miscellaneous breaks (debhelper)"),
+    ("misc:Enhances", "Miscellaneous enhances (debhelper)"),
+    ("misc:Provides", "Miscellaneous provides (debhelper)"),
+    ("misc:Conflicts", "Miscellaneous conflicts (debhelper)"),
+    ("misc:Replaces", "Miscellaneous replaces (debhelper)"),
+    ("perl:Depends", "Perl dependencies (dh_perl)"),
+    ("python3:Depends", "Python 3 dependencies (dh_python3)"),
+    ("python3:Provides", "Python 3 provides (dh_python3)"),
+    ("python3:Breaks", "Python 3 breaks (dh_python3)"),
+    (
+        "sphinxdoc:Depends",
+        "Sphinx documentation dependencies (dh_sphinxdoc)",
+    ),
+    ("binary:Version", "Current binary package version"),
+    ("source:Version", "Current source package version"),
+    (
+        "source:Upstream-Version",
+        "Upstream version (without Debian revision)",
+    ),
+];
+
+/// Get completion items for substitution variables (inside `${...}`).
+fn get_substvar_completions(partial: &str) -> Vec<CompletionItem> {
+    KNOWN_SUBSTVARS
+        .iter()
+        .filter(|(name, _)| name.starts_with(partial))
+        .map(|&(name, desc)| CompletionItem {
+            label: format!("${{{}}}", name),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some(desc.to_string()),
+            // Insert just the name part — the `${` is already typed and `}`
+            // will be added or is already present.
+            insert_text: Some(format!("{}}}", name)),
+            ..Default::default()
         })
         .collect()
 }
@@ -1187,5 +1273,72 @@ mod tests {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"nocheck"));
         assert!(!labels.contains(&"cross"));
+    }
+
+    #[test]
+    fn test_determine_relation_position_after_dollar_brace() {
+        assert_eq!(
+            determine_relation_position("${"),
+            RelationCompletionPosition::Substvar(String::new())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_partial_substvar() {
+        assert_eq!(
+            determine_relation_position("${shlibs"),
+            RelationCompletionPosition::Substvar("shlibs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_substvar_with_colon() {
+        assert_eq!(
+            determine_relation_position("${shlibs:Dep"),
+            RelationCompletionPosition::Substvar("shlibs:Dep".to_string())
+        );
+    }
+
+    #[test]
+    fn test_substvar_completions_empty() {
+        let completions = get_substvar_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"${shlibs:Depends}"));
+        assert!(labels.contains(&"${misc:Depends}"));
+    }
+
+    #[test]
+    fn test_substvar_completions_partial() {
+        let completions = get_substvar_completions("shlibs");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"${shlibs:Depends}"));
+        assert!(!labels.contains(&"${misc:Depends}"));
+    }
+
+    #[test]
+    fn test_substvar_completions_with_colon() {
+        let completions = get_substvar_completions("misc:D");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"${misc:Depends}"));
+        assert!(!labels.contains(&"${misc:Recommends}"));
+    }
+
+    #[tokio::test]
+    async fn test_relationship_completions_substvar() {
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions = get_relationship_completions("${shlibs:D", &cache, &arch_list).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"${shlibs:Depends}"));
+        assert!(!labels.contains(&"${misc:Depends}"));
+    }
+
+    #[tokio::test]
+    async fn test_relationship_completions_substvar_after_comma() {
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions = get_relationship_completions("libc6, ${misc", &cache, &arch_list).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"${misc:Depends}"));
     }
 }
