@@ -100,6 +100,9 @@ pub fn get_cursor_context(
         }
 
         // After the colon → on the field value
+        // Use the raw source text (not entry.value()) to extract the prefix,
+        // because value_range() spans the raw source including newlines and
+        // continuation-line indentation, while entry.value() strips those.
         let value_prefix = if let Some(value_range) = entry.value_range() {
             if offset <= value_range.start() {
                 String::new()
@@ -109,13 +112,13 @@ pub fn get_cursor_context(
                 } else {
                     value_range.end()
                 };
-                let prefix_len: usize = (prefix_end - value_range.start()).into();
-                let value = entry.value();
-                let mut prefix_bytes = prefix_len.min(value.len());
-                while !value.is_char_boundary(prefix_bytes) {
+                let start: usize = value_range.start().into();
+                let end: usize = prefix_end.into();
+                let mut prefix_bytes = end.min(source_text.len());
+                while !source_text.is_char_boundary(prefix_bytes) {
                     prefix_bytes -= 1;
                 }
-                value[..prefix_bytes].to_string()
+                source_text[start..prefix_bytes].to_string()
             }
         } else {
             String::new()
@@ -294,5 +297,35 @@ mod tests {
         );
 
         assert!(completions.is_empty());
+    }
+
+    #[test]
+    fn test_get_cursor_context_multiline_value() {
+        let text = "Build-Depends:\n debhelper-compat (= 13),\n pkg-co\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+
+        // Cursor at end of "pkg-co" on line 2, column 7
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(2, 7)).expect("Should have context");
+        match ctx {
+            CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Build-Depends");
+                // Should include the full raw value text up to cursor
+                assert!(
+                    value_prefix.contains("debhelper-compat"),
+                    "prefix should contain prior relations: {:?}",
+                    value_prefix
+                );
+                assert!(
+                    value_prefix.ends_with("pkg-co"),
+                    "prefix should end with partial name: {:?}",
+                    value_prefix
+                );
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
     }
 }

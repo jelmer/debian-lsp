@@ -39,18 +39,6 @@ pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
     crate::deb822::completion::get_standard_field_name(CONTROL_FIELDS, field_name)
 }
 
-/// Common package names for completion
-pub const COMMON_PACKAGES: &[&str] = &[
-    "debhelper-compat",
-    "dh-python",
-    "python3-all",
-    "python3-setuptools",
-    "cmake",
-    "pkg-config",
-    "libssl-dev",
-    "libc6-dev",
-];
-
 /// Debian policy-recognized priority values for control files.
 /// Each entry is (value, description).
 pub const CONTROL_PRIORITY_VALUES: &[(&str, &str)] = &[
@@ -173,22 +161,6 @@ mod tests {
                     .all(|c| c.is_ascii_alphanumeric() || c == '-'),
                 "Field {} contains invalid characters",
                 field.name
-            );
-        }
-    }
-
-    #[test]
-    fn test_common_packages() {
-        assert!(!COMMON_PACKAGES.is_empty());
-
-        for package in COMMON_PACKAGES {
-            assert!(!package.is_empty());
-            assert!(
-                package
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c.is_ascii_digit()),
-                "Package {} contains invalid characters",
-                package
             );
         }
     }

@@ -1,39 +1,39 @@
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 
 use super::fields::{
-    COMMON_PACKAGES, CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS,
-    CONTROL_SECTION_VALUES, CONTROL_SPECIAL_SECTION_VALUES,
+    CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS, CONTROL_SECTION_VALUES,
+    CONTROL_SPECIAL_SECTION_VALUES,
 };
+use super::relation_completion;
+use crate::architecture::SharedArchitectureList;
+use crate::package_cache::SharedPackageCache;
 
 /// Get completions for a control file at the given cursor position.
 ///
 /// Uses the parsed deb822 document for position-aware completions:
 /// if on a field value, returns value completions; otherwise returns
-/// field name and package name completions.
+/// field name completions. Relationship field completions are not
+/// included here because they require async access to the package cache;
+/// use [`get_async_field_value_completions`] for those.
 pub fn get_completions(
     deb822: &deb822_lossless::Deb822,
     source_text: &str,
     position: tower_lsp_server::ls_types::Position,
 ) -> Vec<CompletionItem> {
-    let mut completions = crate::deb822::completion::get_completions(
+    crate::deb822::completion::get_completions(
         deb822,
         source_text,
         position,
         CONTROL_FIELDS,
         get_field_value_completions,
-    );
-    // When returning field completions (not value completions), also
-    // include common package names.
-    if completions
-        .iter()
-        .any(|c| c.kind == Some(CompletionItemKind::FIELD))
-    {
-        completions.extend(get_package_completions());
-    }
-    completions
+    )
 }
 
-/// Get value completions for specific control file fields.
+/// Get value completions for specific control file fields (sync only).
+///
+/// Returns completions for Section and Priority fields.
+/// Returns empty for relationship fields (handled async separately)
+/// and for unknown fields.
 pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<CompletionItem> {
     if field_name.eq_ignore_ascii_case("Section") {
         get_section_value_completions(prefix)
@@ -44,17 +44,27 @@ pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<Comple
     }
 }
 
-/// Get completion items for common package names
-pub fn get_package_completions() -> Vec<CompletionItem> {
-    COMMON_PACKAGES
-        .iter()
-        .map(|&package| CompletionItem {
-            label: package.to_string(),
-            kind: Some(CompletionItemKind::VALUE),
-            detail: Some("Package name".to_string()),
-            ..Default::default()
-        })
-        .collect()
+/// Get async value completions for control file fields that need the package cache.
+///
+/// Returns `Some` with completions for relationship fields, `None` for other fields.
+pub async fn get_async_field_value_completions(
+    field_name: &str,
+    prefix: &str,
+    package_cache: &SharedPackageCache,
+    architecture_list: &SharedArchitectureList,
+) -> Option<Vec<CompletionItem>> {
+    if relation_completion::is_relationship_field(field_name) {
+        Some(
+            relation_completion::get_relationship_completions(
+                prefix,
+                package_cache,
+                architecture_list,
+            )
+            .await,
+        )
+    } else {
+        None
+    }
 }
 
 /// Get completion items for Debian priority values.
@@ -126,7 +136,32 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::architecture::SharedArchitectureList;
+    use crate::package_cache::TestPackageCache;
+    use std::sync::Arc;
     use tower_lsp_server::ls_types::Position;
+
+    fn test_cache() -> SharedPackageCache {
+        TestPackageCache::new_shared(&[
+            ("cmake", Some("cross-platform make")),
+            ("debhelper-compat", None),
+            (
+                "dh-python",
+                Some("Debian helper tools for packaging Python"),
+            ),
+            ("libssl-dev", None),
+            ("pkg-config", None),
+        ])
+    }
+
+    fn test_arch_list() -> SharedArchitectureList {
+        Arc::new(tokio::sync::RwLock::new(vec![
+            "amd64".to_string(),
+            "arm64".to_string(),
+            "armhf".to_string(),
+            "i386".to_string(),
+        ]))
+    }
 
     #[test]
     fn test_get_completions_on_field_key() {
@@ -135,18 +170,10 @@ mod tests {
 
         let completions = get_completions(&deb822, text, Position::new(1, 3));
 
-        // Should have both field and package completions
-        let field_count = completions
+        // Should have field completions only
+        assert!(completions
             .iter()
-            .filter(|c| c.kind == Some(CompletionItemKind::FIELD))
-            .count();
-        let package_count = completions
-            .iter()
-            .filter(|c| c.kind == Some(CompletionItemKind::VALUE))
-            .count();
-
-        assert!(field_count > 0);
-        assert!(package_count > 0);
+            .all(|c| c.kind == Some(CompletionItemKind::FIELD)));
     }
 
     #[test]
@@ -172,23 +199,6 @@ mod tests {
     }
 
     #[test]
-    fn test_package_completions() {
-        let completions = get_package_completions();
-
-        assert!(!completions.is_empty());
-
-        for completion in &completions {
-            assert!(!completion.label.is_empty());
-            assert_eq!(completion.kind, Some(CompletionItemKind::VALUE));
-            assert_eq!(completion.detail, Some("Package name".to_string()));
-        }
-
-        let labels: Vec<_> = completions.iter().map(|c| &c.label).collect();
-        assert!(labels.iter().any(|l| *l == "debhelper-compat"));
-        assert!(labels.iter().any(|l| *l == "cmake"));
-    }
-
-    #[test]
     fn test_priority_value_completions() {
         let completions = get_priority_value_completions("");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -204,7 +214,6 @@ mod tests {
     fn test_priority_value_completions_with_prefix() {
         let completions = get_priority_value_completions("op");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
-
         assert_eq!(labels, vec!["optional"]);
     }
 
@@ -212,7 +221,6 @@ mod tests {
     fn test_priority_value_completions_with_uppercase_prefix() {
         let completions = get_priority_value_completions("OP");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
-
         assert_eq!(labels, vec!["optional"]);
     }
 
@@ -259,7 +267,6 @@ mod tests {
     fn test_get_field_value_completions_for_section() {
         let completions = get_field_value_completions("Section", "py");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
-
         assert!(labels.contains(&"python"));
     }
 
@@ -267,13 +274,111 @@ mod tests {
     fn test_get_field_value_completions_for_priority() {
         let completions = get_field_value_completions("Priority", "op");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
-
         assert_eq!(labels, vec!["optional"]);
     }
 
     #[test]
     fn test_get_field_value_completions_for_unknown_field() {
-        let completions = get_field_value_completions("Depends", "py");
+        let completions = get_field_value_completions("Homepage", "http");
         assert!(completions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_async_field_value_completions_for_depends() {
+        let cache = test_cache();
+        let completions =
+            get_async_field_value_completions("Depends", "cm", &cache, &test_arch_list())
+                .await
+                .expect("Should return completions");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["cmake"]);
+    }
+
+    #[tokio::test]
+    async fn test_async_field_value_completions_for_build_depends() {
+        let cache = test_cache();
+        let completions =
+            get_async_field_value_completions("Build-Depends", "", &cache, &test_arch_list())
+                .await
+                .expect("Should return completions");
+        assert!(!completions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_async_field_value_completions_for_non_relationship() {
+        let cache = test_cache();
+        let completions =
+            get_async_field_value_completions("Homepage", "http", &cache, &test_arch_list()).await;
+        assert!(completions.is_none());
+    }
+
+    /// End-to-end test: get_cursor_context → get_async_field_value_completions
+    /// for a single-line Build-Depends field with cursor after ": ".
+    #[tokio::test]
+    async fn test_end_to_end_build_depends_empty_value() {
+        let text = "Build-Depends: \n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let ctx = crate::deb822::completion::get_cursor_context(
+            &deb822,
+            text,
+            tower_lsp_server::ls_types::Position::new(0, 15),
+        )
+        .expect("Should have context");
+
+        match ctx {
+            crate::deb822::completion::CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Build-Depends");
+                assert_eq!(value_prefix, "");
+                let cache = test_cache();
+                let completions = get_async_field_value_completions(
+                    &field_name,
+                    &value_prefix,
+                    &cache,
+                    &test_arch_list(),
+                )
+                .await
+                .expect("Should return completions for relationship field");
+                assert!(!completions.is_empty(), "Should have package completions");
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
+    }
+
+    /// End-to-end test: cursor in middle of Build-Depends value.
+    #[tokio::test]
+    async fn test_end_to_end_build_depends_partial_name() {
+        let text = "Build-Depends: dh\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let ctx = crate::deb822::completion::get_cursor_context(
+            &deb822,
+            text,
+            tower_lsp_server::ls_types::Position::new(0, 17),
+        )
+        .expect("Should have context");
+
+        match ctx {
+            crate::deb822::completion::CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Build-Depends");
+                assert_eq!(value_prefix, "dh");
+                let cache = test_cache();
+                let completions = get_async_field_value_completions(
+                    &field_name,
+                    &value_prefix,
+                    &cache,
+                    &test_arch_list(),
+                )
+                .await
+                .expect("Should return completions for relationship field");
+                let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+                assert_eq!(labels, vec!["dh-python"]);
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
     }
 }
