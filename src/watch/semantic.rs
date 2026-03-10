@@ -21,10 +21,9 @@ pub fn generate_semantic_tokens(
     parse: &debian_watch::parse::Parse,
     source_text: &str,
 ) -> Vec<SemanticToken> {
-    if parse.version() == 5 {
-        generate_deb822_tokens(source_text)
-    } else {
-        generate_linebased_tokens(source_text)
+    match parse.to_watch_file() {
+        debian_watch::parse::ParsedWatchFile::Deb822(_) => generate_deb822_tokens(source_text),
+        debian_watch::parse::ParsedWatchFile::LineBased(_) => generate_linebased_tokens(source_text),
     }
 }
 

@@ -313,18 +313,16 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let parsed = workspace.get_parsed_watch(source_file);
                 let source_text = workspace.source_text(source_file);
-                if parsed.version() == 5 {
-                    deb822_lossless::Deb822::parse(&source_text)
-                        .to_result()
-                        .map(|d| watch::get_completions_deb822(&d, &source_text, position))
-                        .unwrap_or_default()
-                } else {
-                    let wf = parsed.to_watch_file();
-                    match &wf {
-                        debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
-                            watch::get_linebased_completions(&uri, wf, &source_text, position)
-                        }
-                        _ => Vec::new(),
+                let wf = parsed.to_watch_file();
+                match &wf {
+                    debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
+                        watch::get_linebased_completions(&uri, wf, &source_text, position)
+                    }
+                    debian_watch::parse::ParsedWatchFile::Deb822(_) => {
+                        deb822_lossless::Deb822::parse(&source_text)
+                            .to_result()
+                            .map(|d| watch::get_completions_deb822(&d, &source_text, position))
+                            .unwrap_or_default()
                     }
                 }
             }
