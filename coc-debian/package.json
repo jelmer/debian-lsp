@@ -26,13 +26,7 @@
     "url": "https://github.com/jelmer/debian-lsp/issues"
   },
   "activationEvents": [
-    "onLanguage:debian-control",
-    "onLanguage:debian-copyright",
-    "onLanguage:debian-watch",
-    "onLanguage:debian-changelog",
-    "onLanguage:debian-tests-control",
-    "onLanguage:debian-source-format",
-    "onLanguage:debian-upstream-metadata"
+    "*"
   ],
   "contributes": {
     "configuration": {

@@ -77,15 +77,6 @@ struct FileInfo {
     file_type: FileType,
 }
 
-/// Check if two LSP ranges overlap
-fn range_overlaps(a: &Range, b: &Range) -> bool {
-    // Check if range a starts before b ends and b starts before a ends
-    (a.start.line < b.end.line
-        || (a.start.line == b.end.line && a.start.character <= b.end.character))
-        && (b.start.line < a.end.line
-            || (b.start.line == a.end.line && b.start.character <= a.end.character))
-}
-
 struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
@@ -132,6 +123,8 @@ impl LanguageServer for Backend {
                         "[".to_string(),
                         "<".to_string(),
                         "$".to_string(),
+                        "=".to_string(),
+                        ",".to_string(),
                     ]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
@@ -315,7 +308,23 @@ impl LanguageServer for Backend {
                 let copyright = parsed.to_copyright();
                 copyright::get_completions(copyright.as_deb822(), &source_text, position)
             }
-            Some((FileType::Watch, _)) => watch::get_completions(&uri, position),
+            Some((FileType::Watch, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let parsed = workspace.get_parsed_watch(source_file);
+                let source_text = workspace.source_text(source_file);
+                let wf = parsed.to_watch_file();
+                match &wf {
+                    debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
+                        watch::get_linebased_completions(&uri, wf, &source_text, position)
+                    }
+                    debian_watch::parse::ParsedWatchFile::Deb822(_) => {
+                        deb822_lossless::Deb822::parse(&source_text)
+                            .to_result()
+                            .map(|d| watch::get_completions_deb822(&d, &source_text, position))
+                            .unwrap_or_default()
+                    }
+                }
+            }
             Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
             Some((FileType::Changelog, source_file)) => {
                 let workspace = self.workspace.lock().await;

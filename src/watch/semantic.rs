@@ -7,49 +7,12 @@ use tower_lsp_server::ls_types::SemanticToken;
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
 use crate::position::offset_to_position;
 
-/// Known deb822 field names for v5 watch files
-const WATCH_V5_FIELDS: &[&str] = &[
-    "Version",
-    "Source",
-    "Matching-Pattern",
-    "Component",
-    "Template",
-    "Owner",
-    "Project",
-    "Searchmode",
-    "Mode",
-    "Pgpmode",
-    "Compression",
-    "Gitmode",
-    "Gitexport",
-    "Pretty",
-    "Uversionmangle",
-    "Oversionmangle",
-    "Dversionmangle",
-    "Dirversionmangle",
-    "Pagemangle",
-    "Downloadurlmangle",
-    "Pgpsigurlmangle",
-    "Filenamemangle",
-    "Versionmangle",
-    "User-Agent",
-    "Ctype",
-    "Repacksuffix",
-    "Decompress",
-    "Bare",
-    "Repack",
-];
-
 /// Field validator for v5 watch files
 struct WatchFieldValidator;
 
 impl crate::deb822::semantic::FieldValidator for WatchFieldValidator {
     fn get_standard_field_name(&self, name: &str) -> Option<&'static str> {
-        let lower = name.to_lowercase();
-        WATCH_V5_FIELDS
-            .iter()
-            .find(|f| f.to_lowercase() == lower)
-            .copied()
+        super::fields::get_standard_field_name(name)
     }
 }
 
@@ -58,10 +21,11 @@ pub fn generate_semantic_tokens(
     parse: &debian_watch::parse::Parse,
     source_text: &str,
 ) -> Vec<SemanticToken> {
-    if parse.version() == 5 {
-        generate_deb822_tokens(source_text)
-    } else {
-        generate_linebased_tokens(source_text)
+    match parse.to_watch_file() {
+        debian_watch::parse::ParsedWatchFile::Deb822(_) => generate_deb822_tokens(source_text),
+        debian_watch::parse::ParsedWatchFile::LineBased(_) => {
+            generate_linebased_tokens(source_text)
+        }
     }
 }
 
