@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rowan::ast::AstNode;
 use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
@@ -6,6 +8,7 @@ use super::fields::{get_debian_distributions, URGENCY_LEVELS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CursorContext {
+    PackageValue { value_prefix: String },
     DistributionValue { value_prefix: String },
     UrgencyValue { value_prefix: String },
 }
@@ -13,8 +16,8 @@ enum CursorContext {
 /// Get completion items for a changelog file at the given cursor position.
 ///
 /// Uses changelog CST context to return only relevant value completions:
-/// distributions in header distribution position, urgency levels for
-/// `urgency=` metadata values.
+/// package names at header start, distributions in header distribution
+/// position, urgency levels for `urgency=` metadata values.
 pub fn get_completions(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
     source_text: &str,
@@ -27,6 +30,9 @@ pub fn get_completions(
     };
 
     match get_cursor_context(&changelog, source_text, position) {
+        Some(CursorContext::PackageValue { value_prefix }) => {
+            get_package_completions(&changelog, &value_prefix)
+        }
         Some(CursorContext::DistributionValue { value_prefix }) => {
             get_distribution_completions(&value_prefix)
         }
@@ -46,6 +52,10 @@ fn get_cursor_context(
     let entry = changelog.entry_at_offset(offset)?;
     let header = entry.header()?;
 
+    if let Some(value_prefix) = package_prefix_at_offset(&header, offset) {
+        return Some(CursorContext::PackageValue { value_prefix });
+    }
+
     if let Some(value_prefix) = distribution_prefix_at_offset(&header, offset) {
         return Some(CursorContext::DistributionValue { value_prefix });
     }
@@ -55,6 +65,74 @@ fn get_cursor_context(
     }
 
     None
+}
+
+fn package_prefix_at_offset(
+    header: &debian_changelog::EntryHeader,
+    offset: TextSize,
+) -> Option<String> {
+    let header_range = header.syntax().text_range();
+    let version_start = header.syntax().children_with_tokens().find_map(|it| {
+        let token = it.as_token()?;
+        if token.kind() == debian_changelog::SyntaxKind::VERSION {
+            Some(token.text_range().start())
+        } else {
+            None
+        }
+    });
+    let package_slot_end = version_start.unwrap_or_else(|| header_range.end());
+
+    // Package appears at the start of the header, before VERSION.
+    if header_range.start() == package_slot_end {
+        return if offset == header_range.start() {
+            Some(String::new())
+        } else {
+            None
+        };
+    }
+
+    if offset < header_range.start() || offset > package_slot_end {
+        return None;
+    }
+
+    if version_start.is_some_and(|start| offset >= start) {
+        return None;
+    }
+
+    let package_token = match header.syntax().token_at_offset(offset) {
+        rowan::TokenAtOffset::Single(token) => Some(token),
+        rowan::TokenAtOffset::Between(left, right) => {
+            if left.kind() == debian_changelog::SyntaxKind::IDENTIFIER
+                && left.text_range().end() <= package_slot_end
+            {
+                Some(left)
+            } else if right.kind() == debian_changelog::SyntaxKind::IDENTIFIER
+                && right.text_range().end() <= package_slot_end
+            {
+                Some(right)
+            } else {
+                None
+            }
+        }
+        rowan::TokenAtOffset::None => None,
+    };
+
+    if let Some(token) = package_token {
+        if token.kind() != debian_changelog::SyntaxKind::IDENTIFIER
+            || token.text_range().end() > package_slot_end
+        {
+            return Some(String::new());
+        }
+
+        if offset <= token.text_range().start() {
+            return Some(String::new());
+        }
+
+        let prefix_end = std::cmp::min(offset, token.text_range().end());
+        return Some(token_prefix(token.text(), token.text_range(), prefix_end));
+    }
+
+    Some(String::new())
 }
 
 fn distribution_prefix_at_offset(
@@ -200,6 +278,37 @@ fn token_prefix(token_text: &str, token_range: TextRange, offset: TextSize) -> S
     token_text[..prefix_end].to_string()
 }
 
+/// Get completion items for package names from existing changelog entries.
+fn get_package_completions(
+    changelog: &debian_changelog::ChangeLog,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+    let mut package_names = BTreeSet::new();
+
+    for entry in changelog.iter() {
+        if let Some(package_name) = entry.package() {
+            package_names.insert(package_name.to_string());
+        }
+    }
+
+    package_names
+        .into_iter()
+        .filter(|name| name.to_ascii_lowercase().starts_with(&normalized_prefix))
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some("Debian source package".to_string()),
+            documentation: Some(Documentation::String(format!(
+                "Debian source package: {}",
+                name
+            ))),
+            insert_text: Some(name),
+            ..Default::default()
+        })
+        .collect()
+}
+
 /// Get completion items for Debian distributions.
 pub fn get_distribution_completions(prefix: &str) -> Vec<CompletionItem> {
     let normalized_prefix = prefix.trim().to_ascii_lowercase();
@@ -262,6 +371,21 @@ mod tests {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"unstable"));
         assert!(labels.contains(&"UNRELEASED"));
+    }
+
+    #[test]
+    fn test_get_completions_on_package_value() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let offset = text.find("foo (").unwrap() + 2;
+        let completions = get_completions(&parsed, text, position_at(text, offset));
+
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["foo"]);
+        assert_eq!(
+            completions[0].detail.as_deref(),
+            Some("Debian source package")
+        );
     }
 
     #[test]
@@ -333,6 +457,28 @@ mod tests {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"unstable"));
         assert!(labels.contains(&"UNRELEASED"));
+    }
+
+    #[test]
+    fn test_package_completions_with_prefix() {
+        let text = "\
+foo (2.0-1) unstable; urgency=medium
+
+  * New release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2025 12:00:00 +0000
+
+bar (1.0-1) unstable; urgency=low
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+";
+        let parsed = parse_for(text);
+        let changelog = parsed.tree();
+        let completions = get_package_completions(&changelog, "fo");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["foo"]);
     }
 
     #[test]
