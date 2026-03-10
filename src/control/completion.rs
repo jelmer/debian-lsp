@@ -89,6 +89,8 @@ enum RelationCompletionPosition {
     VersionOperator(String),
     /// After a version operator — expecting a version string.
     Version(String),
+    /// Inside `[` — expecting an architecture name.
+    Architecture(String),
 }
 
 /// Determine the completion position within a relationship field value prefix.
@@ -168,6 +170,46 @@ fn determine_relation_position(prefix: &str) -> RelationCompletionPosition {
         return RelationCompletionPosition::Version(version_prefix);
     }
 
+    // Check if we're inside an ARCHITECTURES node (i.e. inside brackets).
+    let in_architectures = token
+        .parent_ancestors()
+        .any(|n| n.kind() == RelSyntaxKind::ARCHITECTURES);
+
+    if in_architectures {
+        match token.kind() {
+            RelSyntaxKind::L_BRACKET => {
+                return RelationCompletionPosition::Architecture(String::new());
+            }
+            RelSyntaxKind::IDENT => {
+                // If followed by whitespace, the arch name is complete —
+                // we're in position for a new architecture.
+                let has_trailing_ws = token.next_token().is_some_and(|t| {
+                    matches!(t.kind(), RelSyntaxKind::WHITESPACE | RelSyntaxKind::NEWLINE)
+                });
+                if has_trailing_ws {
+                    return RelationCompletionPosition::Architecture(String::new());
+                }
+                // Check if preceded by "!" (negated arch).
+                let negated = token
+                    .prev_token()
+                    .is_some_and(|t| t.kind() == RelSyntaxKind::NOT);
+                let prefix = if negated {
+                    format!("!{}", token.text())
+                } else {
+                    token.text().to_string()
+                };
+                return RelationCompletionPosition::Architecture(prefix);
+            }
+            RelSyntaxKind::NOT => {
+                // "!" with no arch name yet
+                return RelationCompletionPosition::Architecture("!".to_string());
+            }
+            _ => {
+                return RelationCompletionPosition::Architecture(String::new());
+            }
+        }
+    }
+
     match token.kind() {
         RelSyntaxKind::COMMA | RelSyntaxKind::PIPE => {
             RelationCompletionPosition::PackageName(String::new())
@@ -239,7 +281,52 @@ pub(crate) async fn get_relationship_completions(
         RelationCompletionPosition::Version(partial) => {
             get_version_completions(prefix, &partial, package_cache).await
         }
+        RelationCompletionPosition::Architecture(partial) => get_architecture_completions(&partial),
     }
+}
+
+/// Known Debian architectures, loaded lazily from `dpkg-architecture -L`.
+fn get_known_architectures() -> &'static [String] {
+    use std::sync::OnceLock;
+    static ARCHES: OnceLock<Vec<String>> = OnceLock::new();
+    ARCHES.get_or_init(|| {
+        let output = std::process::Command::new("dpkg-architecture")
+            .arg("-L")
+            .output();
+        match output {
+            Ok(out) if out.status.success() => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                text.lines()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    })
+}
+
+/// Get completion items for architecture names.
+fn get_architecture_completions(partial: &str) -> Vec<CompletionItem> {
+    let negated = partial.starts_with('!');
+    let prefix = if negated { &partial[1..] } else { partial };
+
+    get_known_architectures()
+        .iter()
+        .filter(|arch| arch.starts_with(prefix))
+        .map(|arch| {
+            let label = if negated {
+                format!("!{}", arch)
+            } else {
+                arch.clone()
+            };
+            CompletionItem {
+                label,
+                kind: Some(CompletionItemKind::VALUE),
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 /// Extract the package name from a relationship prefix when in version position.
@@ -770,5 +857,37 @@ mod tests {
             }
             other => panic!("Expected FieldValue, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_determine_relation_position_after_open_bracket() {
+        assert_eq!(
+            determine_relation_position("libc6 ["),
+            RelationCompletionPosition::Architecture(String::new())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_partial_arch() {
+        assert_eq!(
+            determine_relation_position("libc6 [amd"),
+            RelationCompletionPosition::Architecture("amd".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_second_arch() {
+        assert_eq!(
+            determine_relation_position("libc6 [amd64 "),
+            RelationCompletionPosition::Architecture(String::new())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_negated_arch() {
+        assert_eq!(
+            determine_relation_position("libc6 [amd64 !arm"),
+            RelationCompletionPosition::Architecture("!arm".to_string())
+        );
     }
 }
