@@ -317,7 +317,12 @@ impl LanguageServer for Backend {
             }
             Some((FileType::Watch, _)) => watch::get_completions(&uri, position),
             Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
-            Some((FileType::Changelog, _)) => changelog::get_completions(&uri, position),
+            Some((FileType::Changelog, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_changelog(source_file);
+                changelog::get_completions(&parsed, &source_text, position)
+            }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::UpstreamMetadata, source_file)) => {
                 let workspace = self.workspace.lock().await;
