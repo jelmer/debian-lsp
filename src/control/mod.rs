@@ -3,6 +3,7 @@ pub mod completion;
 pub mod detection;
 pub mod diagnostics;
 pub mod fields;
+mod relation_completion;
 pub mod semantic;
 
 pub use actions::*;
