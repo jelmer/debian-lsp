@@ -92,6 +92,8 @@ enum RelationCompletionPosition {
     Version(String),
     /// Inside `[` — expecting an architecture name.
     Architecture(String),
+    /// After `:` on a package name — expecting an architecture qualifier.
+    ArchQualifier(String),
 }
 
 /// Determine the completion position within a relationship field value prefix.
@@ -169,6 +171,33 @@ fn determine_relation_position(prefix: &str) -> RelationCompletionPosition {
             .collect();
 
         return RelationCompletionPosition::Version(version_prefix);
+    }
+
+    // Check if we're inside an ARCHQUAL node (i.e. after ":" on a package name).
+    let in_archqual = token
+        .parent_ancestors()
+        .any(|n| n.kind() == RelSyntaxKind::ARCHQUAL);
+
+    if in_archqual {
+        match token.kind() {
+            RelSyntaxKind::COLON => {
+                return RelationCompletionPosition::ArchQualifier(String::new());
+            }
+            RelSyntaxKind::IDENT => {
+                // If followed by whitespace, the qualifier is complete —
+                // we're past the archqual, back to package name position.
+                let has_trailing_ws = token.next_token().is_some_and(|t| {
+                    matches!(t.kind(), RelSyntaxKind::WHITESPACE | RelSyntaxKind::NEWLINE)
+                });
+                if has_trailing_ws {
+                    return RelationCompletionPosition::PackageName(String::new());
+                }
+                return RelationCompletionPosition::ArchQualifier(token.text().to_string());
+            }
+            _ => {
+                return RelationCompletionPosition::ArchQualifier(String::new());
+            }
+        }
     }
 
     // Check if we're inside an ARCHITECTURES node (i.e. inside brackets).
@@ -286,6 +315,9 @@ pub(crate) async fn get_relationship_completions(
         RelationCompletionPosition::Architecture(partial) => {
             get_architecture_completions(&partial, architecture_list).await
         }
+        RelationCompletionPosition::ArchQualifier(partial) => {
+            get_arch_qualifier_completions(&partial, architecture_list).await
+        }
     }
 }
 
@@ -314,6 +346,46 @@ async fn get_architecture_completions(
             }
         })
         .collect()
+}
+
+/// Special architecture qualifier values.
+const ARCH_QUALIFIER_SPECIALS: &[(&str, &str)] = &[
+    ("any", "Satisfied by any architecture"),
+    ("native", "Host architecture only"),
+];
+
+/// Get completion items for architecture qualifiers (after `:` on a package name).
+///
+/// Offers the special qualifiers `any` and `native`, plus all known architecture names.
+async fn get_arch_qualifier_completions(
+    partial: &str,
+    architecture_list: &SharedArchitectureList,
+) -> Vec<CompletionItem> {
+    let mut completions: Vec<CompletionItem> = ARCH_QUALIFIER_SPECIALS
+        .iter()
+        .filter(|(name, _)| name.starts_with(partial))
+        .map(|&(name, desc)| CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(desc.to_string()),
+            ..Default::default()
+        })
+        .collect();
+
+    let arches = architecture_list.read().await;
+    completions.extend(
+        arches
+            .iter()
+            .filter(|arch| arch.starts_with(partial))
+            .map(|arch| CompletionItem {
+                label: arch.clone(),
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some("Specific architecture".to_string()),
+                ..Default::default()
+            }),
+    );
+
+    completions
 }
 
 /// Extract the package name from a relationship prefix when in version position.
@@ -904,5 +976,54 @@ mod tests {
             determine_relation_position("libc6 [amd64 !arm"),
             RelationCompletionPosition::Architecture("!arm".to_string())
         );
+    }
+
+    #[test]
+    fn test_determine_relation_position_after_colon() {
+        assert_eq!(
+            determine_relation_position("libc6:"),
+            RelationCompletionPosition::ArchQualifier(String::new())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_partial_archqual() {
+        assert_eq!(
+            determine_relation_position("libc6:an"),
+            RelationCompletionPosition::ArchQualifier("an".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_complete_archqual() {
+        assert_eq!(
+            determine_relation_position("libc6:any "),
+            RelationCompletionPosition::PackageName(String::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_arch_qualifier_completions_empty() {
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions = get_relationship_completions("libc6:", &cache, &arch_list).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"any"));
+        assert!(labels.contains(&"native"));
+        assert!(labels.contains(&"amd64"));
+    }
+
+    #[tokio::test]
+    async fn test_arch_qualifier_completions_partial() {
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions = get_relationship_completions("libc6:a", &cache, &arch_list).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"any"));
+        assert!(labels.contains(&"amd64"));
+        assert!(labels.contains(&"arm64"));
+        assert!(labels.contains(&"armhf"));
+        assert!(!labels.contains(&"native"));
+        assert!(!labels.contains(&"i386"));
     }
 }
