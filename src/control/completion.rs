@@ -94,6 +94,8 @@ enum RelationCompletionPosition {
     Architecture(String),
     /// After `:` on a package name — expecting an architecture qualifier.
     ArchQualifier(String),
+    /// Inside `<` — expecting a build profile name.
+    BuildProfile(String),
 }
 
 /// Determine the completion position within a relationship field value prefix.
@@ -240,6 +242,42 @@ fn determine_relation_position(prefix: &str) -> RelationCompletionPosition {
         }
     }
 
+    // Check if we're inside a PROFILES node (i.e. inside angle brackets).
+    let in_profiles = token
+        .parent_ancestors()
+        .any(|n| n.kind() == RelSyntaxKind::PROFILES);
+
+    if in_profiles {
+        match token.kind() {
+            RelSyntaxKind::L_ANGLE => {
+                return RelationCompletionPosition::BuildProfile(String::new());
+            }
+            RelSyntaxKind::IDENT => {
+                let has_trailing_ws = token.next_token().is_some_and(|t| {
+                    matches!(t.kind(), RelSyntaxKind::WHITESPACE | RelSyntaxKind::NEWLINE)
+                });
+                if has_trailing_ws {
+                    return RelationCompletionPosition::BuildProfile(String::new());
+                }
+                let negated = token
+                    .prev_token()
+                    .is_some_and(|t| t.kind() == RelSyntaxKind::NOT);
+                let prefix = if negated {
+                    format!("!{}", token.text())
+                } else {
+                    token.text().to_string()
+                };
+                return RelationCompletionPosition::BuildProfile(prefix);
+            }
+            RelSyntaxKind::NOT => {
+                return RelationCompletionPosition::BuildProfile("!".to_string());
+            }
+            _ => {
+                return RelationCompletionPosition::BuildProfile(String::new());
+            }
+        }
+    }
+
     match token.kind() {
         RelSyntaxKind::COMMA | RelSyntaxKind::PIPE => {
             RelationCompletionPosition::PackageName(String::new())
@@ -318,6 +356,9 @@ pub(crate) async fn get_relationship_completions(
         RelationCompletionPosition::ArchQualifier(partial) => {
             get_arch_qualifier_completions(&partial, architecture_list).await
         }
+        RelationCompletionPosition::BuildProfile(partial) => {
+            get_build_profile_completions(&partial)
+        }
     }
 }
 
@@ -386,6 +427,49 @@ async fn get_arch_qualifier_completions(
     );
 
     completions
+}
+
+/// Known build profile names.
+///
+/// See <https://wiki.debian.org/BuildProfileSpec> and dpkg's
+/// `vendor/default/tupletable`.
+const BUILD_PROFILES: &[(&str, &str)] = &[
+    ("cross", "Cross-compilation mode"),
+    ("nobiarch", "Disable multiarch/biarch support"),
+    ("nocheck", "Skip test suites"),
+    ("nodoc", "Skip documentation generation"),
+    ("nogolang", "Skip Go-related build steps"),
+    ("noinsttest", "Skip installed tests"),
+    ("noperl", "Skip Perl-related build steps"),
+    ("nopython", "Skip Python-related build steps"),
+    ("noruby", "Skip Ruby-related build steps"),
+    ("notriggered", "Do not activate triggers"),
+    ("stage1", "Bootstrap stage 1"),
+    ("stage2", "Bootstrap stage 2"),
+];
+
+/// Get completion items for build profiles (inside `<...>`).
+fn get_build_profile_completions(partial: &str) -> Vec<CompletionItem> {
+    let negated = partial.starts_with('!');
+    let prefix = if negated { &partial[1..] } else { partial };
+
+    BUILD_PROFILES
+        .iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|&(name, desc)| {
+            let label = if negated {
+                format!("!{}", name)
+            } else {
+                name.to_string()
+            };
+            CompletionItem {
+                label,
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some(desc.to_string()),
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 /// Extract the package name from a relationship prefix when in version position.
@@ -1025,5 +1109,83 @@ mod tests {
         assert!(labels.contains(&"armhf"));
         assert!(!labels.contains(&"native"));
         assert!(!labels.contains(&"i386"));
+    }
+
+    #[test]
+    fn test_determine_relation_position_after_angle_bracket() {
+        assert_eq!(
+            determine_relation_position("libc6 <"),
+            RelationCompletionPosition::BuildProfile(String::new())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_partial_profile() {
+        assert_eq!(
+            determine_relation_position("libc6 <no"),
+            RelationCompletionPosition::BuildProfile("no".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_negated_profile() {
+        assert_eq!(
+            determine_relation_position("libc6 <!no"),
+            RelationCompletionPosition::BuildProfile("!no".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_second_profile() {
+        assert_eq!(
+            determine_relation_position("libc6 <cross "),
+            RelationCompletionPosition::BuildProfile(String::new())
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_profile_after_arch() {
+        assert_eq!(
+            determine_relation_position("libc6 [amd64] <"),
+            RelationCompletionPosition::BuildProfile(String::new())
+        );
+    }
+
+    #[test]
+    fn test_build_profile_completions_empty() {
+        let completions = get_build_profile_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"cross"));
+        assert!(labels.contains(&"nocheck"));
+        assert!(labels.contains(&"stage1"));
+    }
+
+    #[test]
+    fn test_build_profile_completions_partial() {
+        let completions = get_build_profile_completions("no");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"nocheck"));
+        assert!(labels.contains(&"nodoc"));
+        assert!(!labels.contains(&"cross"));
+        assert!(!labels.contains(&"stage1"));
+    }
+
+    #[test]
+    fn test_build_profile_completions_negated() {
+        let completions = get_build_profile_completions("!no");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"!nocheck"));
+        assert!(labels.contains(&"!nodoc"));
+        assert!(!labels.contains(&"!cross"));
+    }
+
+    #[tokio::test]
+    async fn test_relationship_completions_build_profile() {
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions = get_relationship_completions("libc6 <no", &cache, &arch_list).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"nocheck"));
+        assert!(!labels.contains(&"cross"));
     }
 }
