@@ -1,4 +1,3 @@
-use text_size::TextRange;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
 /// A field definition for a deb822-based file format.
@@ -66,28 +65,38 @@ pub fn get_cursor_context(
 
     let offset = crate::position::try_position_to_offset(source_text, position)?;
 
-    // Check if cursor is on an existing entry
-    let text_len = text_size::TextSize::try_from(source_text.len()).ok()?;
-    let query_range = if offset >= text_len {
-        if text_len == text_size::TextSize::from(0) {
-            return Some(CursorContext::StartOfLine);
-        }
-        TextRange::new(text_len - text_size::TextSize::from(1), text_len)
-    } else {
-        TextRange::new(offset, offset + text_size::TextSize::from(1))
-    };
+    // If cursor is at column 0 of a new line, it's a position where a new
+    // field can be started, not a continuation of the previous entry.
+    if position.character == 0 {
+        return Some(CursorContext::StartOfLine);
+    }
 
+    // Find the entry that contains the cursor offset. For incomplete entries
+    // (no colon — the user is still typing a field name), the CST range
+    // excludes the trailing newline, so we use an inclusive end check to
+    // match when the cursor is right at the boundary.
     let entry = deb822
         .paragraphs()
         .flat_map(|p| p.entries().collect::<Vec<_>>())
         .find(|entry| {
             let r = entry.text_range();
-            r.start() < query_range.end() && query_range.start() < r.end()
+            if entry.colon_range().is_none() {
+                r.start() <= offset && offset <= r.end()
+            } else {
+                r.start() <= offset && offset < r.end()
+            }
         });
 
     if let Some(entry) = entry {
         let field_name = entry.key()?;
-        let colon_range = entry.colon_range()?;
+        let colon_range = match entry.colon_range() {
+            Some(r) => r,
+            None => {
+                // Entry has a key but no colon — the user is still typing
+                // a field name. Treat as a field key.
+                return Some(CursorContext::FieldKey);
+            }
+        };
 
         if offset < colon_range.start() {
             // Before the colon → on the field key
@@ -327,5 +336,41 @@ mod tests {
             }
             other => panic!("Expected FieldValue, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_get_cursor_context_partial_field_name_no_colon() {
+        let text = "Source: test\nMai";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(1, 3)).expect("Should have context");
+        assert_eq!(ctx, CursorContext::FieldKey);
+    }
+
+    #[test]
+    fn test_get_cursor_context_empty_new_line_after_entry() {
+        let text = "Source: test\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(1, 0)).expect("Should have context");
+        assert_eq!(ctx, CursorContext::StartOfLine);
+    }
+
+    #[test]
+    fn test_get_cursor_context_typing_single_char_on_new_line() {
+        let text = "Source: test\nM";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(1, 1)).expect("Should have context");
+        assert_eq!(ctx, CursorContext::FieldKey);
+    }
+
+    #[test]
+    fn test_partial_field_between_existing_fields() {
+        let text = "Source: debian-codemods\nSection: devel\nHomepa\nPriority: optional\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let ctx = get_cursor_context(&deb822, text, Position::new(2, 6));
+        assert!(ctx.is_some(), "Should have context");
+        assert_eq!(ctx.unwrap(), CursorContext::FieldKey);
     }
 }

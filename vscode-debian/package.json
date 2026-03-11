@@ -46,9 +46,6 @@
           "Debian Control",
           "debcontrol"
         ],
-        "filenames": [
-          "control"
-        ],
         "filenamePatterns": [
           "**/debian/control"
         ],
@@ -60,9 +57,6 @@
           "Debian Copyright",
           "debcopyright"
         ],
-        "filenames": [
-          "copyright"
-        ],
         "filenamePatterns": [
           "**/debian/copyright"
         ],
@@ -73,9 +67,6 @@
         "aliases": [
           "Debian Watch",
           "debwatch"
-        ],
-        "filenames": [
-          "watch"
         ],
         "filenamePatterns": [
           "**/debian/watch"
@@ -99,9 +90,6 @@
           "Debian Changelog",
           "debchangelog"
         ],
-        "filenames": [
-          "changelog"
-        ],
         "filenamePatterns": [
           "**/debian/changelog"
         ],
@@ -112,9 +100,6 @@
         "aliases": [
           "Debian Source Format",
           "debsourceformat"
-        ],
-        "filenames": [
-          "format"
         ],
         "filenamePatterns": [
           "**/debian/source/format"

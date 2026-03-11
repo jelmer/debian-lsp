@@ -22,9 +22,6 @@ pub trait PackageCache: Send + Sync {
     /// Get the cached short description for a package.
     fn get_description(&self, package: &str) -> Option<&str>;
 
-    /// Get cached versions for a package.
-    fn get_versions(&self, package: &str) -> Option<&[VersionInfo]>;
-
     /// Load and cache versions for a package.
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]>;
 
@@ -69,10 +66,6 @@ impl PackageCache for AptPackageCache {
 
     fn get_description(&self, package: &str) -> Option<&str> {
         self.descriptions.get(package).map(|s| s.as_str())
-    }
-
-    fn get_versions(&self, package: &str) -> Option<&[VersionInfo]> {
-        self.versions.get(package).map(|v| v.as_slice())
     }
 
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]> {
@@ -152,6 +145,7 @@ pub async fn stream_packages_into(cache: &SharedPackageCache) {
     }
 }
 
+#[cfg(test)]
 /// Simple in-memory package cache for tests.
 #[derive(Default)]
 pub struct TestPackageCache {
@@ -161,6 +155,7 @@ pub struct TestPackageCache {
     pub versions: HashMap<String, Vec<VersionInfo>>,
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl PackageCache for TestPackageCache {
     fn get_packages_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -182,10 +177,6 @@ impl PackageCache for TestPackageCache {
             .and_then(|(_, desc)| desc.as_deref())
     }
 
-    fn get_versions(&self, package: &str) -> Option<&[VersionInfo]> {
-        self.versions.get(package).map(|v| v.as_slice())
-    }
-
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]> {
         self.versions.get(package).map(|v| v.as_slice())
     }
@@ -195,6 +186,7 @@ impl PackageCache for TestPackageCache {
     }
 }
 
+#[cfg(test)]
 impl TestPackageCache {
     /// Create a shared test cache.
     pub fn new_shared(packages: &[(&str, Option<&str>)]) -> SharedPackageCache {
