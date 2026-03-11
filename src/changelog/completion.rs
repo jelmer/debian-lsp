@@ -5,19 +5,31 @@ use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
+use crate::bugs::{BugSummary, SharedBugCache};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CursorContext {
-    PackageValue { value_prefix: String },
-    DistributionValue { value_prefix: String },
-    UrgencyValue { value_prefix: String },
+    Package {
+        value_prefix: String,
+    },
+    Distribution {
+        value_prefix: String,
+    },
+    Urgency {
+        value_prefix: String,
+    },
+    BugNumber {
+        package_name: Option<String>,
+        value_prefix: String,
+    },
 }
 
 /// Get completion items for a changelog file at the given cursor position.
 ///
 /// Uses changelog CST context to return only relevant value completions:
 /// package names at header start, distributions in header distribution
-/// position, urgency levels for `urgency=` metadata values.
+/// position, urgency levels for `urgency=` metadata values, and local
+/// changelog bug numbers in `Closes: #...` detail contexts.
 pub fn get_completions(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
     source_text: &str,
@@ -30,17 +42,61 @@ pub fn get_completions(
     };
 
     match get_cursor_context(&changelog, source_text, position) {
-        Some(CursorContext::PackageValue { value_prefix }) => {
+        Some(CursorContext::Package { value_prefix }) => {
             get_package_completions(&changelog, &value_prefix)
         }
-        Some(CursorContext::DistributionValue { value_prefix }) => {
+        Some(CursorContext::Distribution { value_prefix }) => {
             get_distribution_completions(&value_prefix)
         }
-        Some(CursorContext::UrgencyValue { value_prefix }) => {
-            get_urgency_completions(&value_prefix)
+        Some(CursorContext::Urgency { value_prefix }) => get_urgency_completions(&value_prefix),
+        Some(CursorContext::BugNumber { value_prefix, .. }) => {
+            get_local_bug_completions(&changelog, &value_prefix)
         }
         None => Vec::new(),
     }
+}
+
+/// Get bug-number completions for changelog `Closes: #...` context using
+/// both local changelog data and cached Debbugs lookups.
+///
+/// Returns `None` when the cursor is not in bug-number context.
+pub async fn get_async_bug_completions(
+    parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
+    source_text: &str,
+    position: Position,
+    bug_cache: &SharedBugCache,
+) -> Option<Vec<CompletionItem>> {
+    // Keep all CST-backed values in a short scope and drop them before await
+    // so this future remains Send for tower-lsp.
+    let (package_name, value_prefix, local) = {
+        let changelog = debian_changelog::ChangeLog::cast(parse.syntax_node())?;
+
+        let CursorContext::BugNumber {
+            package_name,
+            value_prefix,
+        } = get_cursor_context(&changelog, source_text, position)?
+        else {
+            return None;
+        };
+
+        let local = get_local_bug_completions(&changelog, &value_prefix);
+        (package_name, value_prefix, local)
+    };
+
+    let remote = if let Some(package_name) = package_name {
+        bug_cache
+            .write()
+            .await
+            .get_open_bug_summaries_with_prefix(&package_name, &value_prefix)
+            .await
+    } else {
+        Vec::new()
+    };
+
+    Some(merge_unique_completions(
+        local,
+        get_bug_completions_from_summaries(remote, &value_prefix, "Debian bug (from Debian BTS)"),
+    ))
 }
 
 fn get_cursor_context(
@@ -50,18 +106,26 @@ fn get_cursor_context(
 ) -> Option<CursorContext> {
     let offset = crate::position::try_position_to_offset(source_text, position)?;
     let entry = changelog.entry_at_offset(offset)?;
-    let header = entry.header()?;
 
-    if let Some(value_prefix) = package_prefix_at_offset(&header, offset) {
-        return Some(CursorContext::PackageValue { value_prefix });
+    if let Some(header) = entry.header() {
+        if let Some(value_prefix) = package_prefix_at_offset(&header, offset) {
+            return Some(CursorContext::Package { value_prefix });
+        }
+
+        if let Some(value_prefix) = distribution_prefix_at_offset(&header, offset) {
+            return Some(CursorContext::Distribution { value_prefix });
+        }
+
+        if let Some(value_prefix) = urgency_prefix_at_offset(&header, offset) {
+            return Some(CursorContext::Urgency { value_prefix });
+        }
     }
 
-    if let Some(value_prefix) = distribution_prefix_at_offset(&header, offset) {
-        return Some(CursorContext::DistributionValue { value_prefix });
-    }
-
-    if let Some(value_prefix) = urgency_prefix_at_offset(&header, offset) {
-        return Some(CursorContext::UrgencyValue { value_prefix });
+    if let Some(value_prefix) = bug_prefix_at_offset(&entry, offset) {
+        return Some(CursorContext::BugNumber {
+            package_name: entry.package(),
+            value_prefix,
+        });
     }
 
     None
@@ -260,6 +324,78 @@ fn urgency_prefix_at_offset(
     None
 }
 
+/// Return the decimal prefix after `Closes: #` at `offset` inside an entry.
+///
+/// This only matches detail lines (`DETAIL` tokens) and returns `None` for
+/// non-`Closes:` contexts.
+fn bug_prefix_at_offset(entry: &debian_changelog::Entry, offset: TextSize) -> Option<String> {
+    let detail = match entry.syntax().token_at_offset(offset) {
+        rowan::TokenAtOffset::Single(token) => Some(token),
+        rowan::TokenAtOffset::Between(left, right) => {
+            if left.kind() == debian_changelog::SyntaxKind::DETAIL {
+                Some(left)
+            } else if right.kind() == debian_changelog::SyntaxKind::DETAIL {
+                Some(right)
+            } else {
+                None
+            }
+        }
+        rowan::TokenAtOffset::None => None,
+    }?;
+
+    if detail.kind() != debian_changelog::SyntaxKind::DETAIL {
+        return None;
+    }
+
+    closes_bug_prefix_at_offset(detail.text(), detail.text_range(), offset)
+}
+
+/// Parse a `Closes:` bug-number prefix from a single detail line slice.
+///
+/// Supports comma-separated references like `Closes: #123, #456` and returns
+/// the digits of the currently edited fragment.
+fn closes_bug_prefix_at_offset(
+    detail_text: &str,
+    detail_range: TextRange,
+    offset: TextSize,
+) -> Option<String> {
+    if !range_contains_offset(detail_range, offset) {
+        return None;
+    }
+
+    let relative_end: usize =
+        (std::cmp::min(offset, detail_range.end()) - detail_range.start()).into();
+    let mut prefix_end = std::cmp::min(relative_end, detail_text.len());
+    while !detail_text.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
+    let up_to_cursor = &detail_text[..prefix_end];
+
+    let lower = up_to_cursor.to_ascii_lowercase();
+    let closes_pos = lower.rfind("closes:")?;
+    let after_closes = &up_to_cursor[closes_pos + "closes:".len()..];
+
+    if after_closes
+        .chars()
+        .any(|c| !(c.is_ascii_whitespace() || c == ',' || c == '#' || c.is_ascii_digit()))
+    {
+        return None;
+    }
+
+    let current_fragment = after_closes
+        .rsplit(',')
+        .next()
+        .unwrap_or(after_closes)
+        .trim_start();
+    let digits = current_fragment.strip_prefix('#')?;
+
+    if !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(digits.to_string())
+}
+
 fn range_contains_offset(range: TextRange, offset: TextSize) -> bool {
     if range.start() == range.end() {
         offset == range.start()
@@ -306,6 +442,93 @@ fn get_package_completions(
             insert_text: Some(name),
             ..Default::default()
         })
+        .collect()
+}
+
+fn get_local_bug_completions(
+    changelog: &debian_changelog::ChangeLog,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let mut bug_ids = BTreeSet::new();
+    for entry in changelog.iter() {
+        let lines: Vec<_> = entry.change_lines().collect();
+        let line_refs: Vec<_> = lines.iter().map(|line| line.as_str()).collect();
+        bug_ids.extend(debian_changelog::changes::find_closed_debian_bugs(
+            &line_refs,
+        ));
+    }
+
+    get_bug_completions_from_ids(bug_ids, prefix, "Debian bug (from changelog history)")
+}
+
+/// Build completion items for bug IDs, preserving only the suffix beyond
+/// the currently typed decimal prefix.
+fn get_bug_completions_from_ids<I>(bug_ids: I, prefix: &str, detail: &str) -> Vec<CompletionItem>
+where
+    I: IntoIterator<Item = u32>,
+{
+    let normalized_prefix = prefix.trim();
+
+    bug_ids
+        .into_iter()
+        .map(|id| id.to_string())
+        .filter(|id| id.starts_with(normalized_prefix))
+        .map(|id| CompletionItem {
+            label: format!("#{}", id),
+            kind: Some(CompletionItemKind::REFERENCE),
+            detail: Some(detail.to_string()),
+            insert_text: Some(
+                id.strip_prefix(normalized_prefix)
+                    .unwrap_or(&id)
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Build completion items for Debbugs bug summaries, including titles in the
+/// completion detail when available.
+fn get_bug_completions_from_summaries<I>(
+    bug_summaries: I,
+    prefix: &str,
+    detail: &str,
+) -> Vec<CompletionItem>
+where
+    I: IntoIterator<Item = BugSummary>,
+{
+    let normalized_prefix = prefix.trim();
+
+    bug_summaries
+        .into_iter()
+        .map(|summary| (summary.id.to_string(), summary.title))
+        .filter(|(id, _)| id.starts_with(normalized_prefix))
+        .map(|(id, title)| CompletionItem {
+            label: format!("#{}", id),
+            kind: Some(CompletionItemKind::REFERENCE),
+            detail: Some(match title {
+                Some(title) => format!("{}: {}", detail, title),
+                None => detail.to_string(),
+            }),
+            insert_text: Some(
+                id.strip_prefix(normalized_prefix)
+                    .unwrap_or(&id)
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn merge_unique_completions(
+    first: Vec<CompletionItem>,
+    second: Vec<CompletionItem>,
+) -> Vec<CompletionItem> {
+    let mut seen = BTreeSet::new();
+    first
+        .into_iter()
+        .chain(second)
+        .filter(|item| seen.insert(item.label.clone()))
         .collect()
 }
 
@@ -413,6 +636,37 @@ mod tests {
     }
 
     #[test]
+    fn test_get_completions_on_closes_bug_value() {
+        let text = "\
+foo (1.0-2) unstable; urgency=medium
+
+  * Follow-up release.
+
+ -- John Doe <john@example.com>  Mon, 02 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) unstable; urgency=medium
+
+  * Fix issue. Closes: #123456
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+";
+        let parsed = parse_for(text);
+        let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
+        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"#123456"));
+    }
+
+    #[test]
+    fn test_get_completions_on_non_closes_bug_context_returns_empty() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Ref #123456 without closes tag.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let offset = text.find("#123456").unwrap() + 4;
+        let completions = get_completions(&parsed, text, position_at(text, offset));
+        assert!(completions.is_empty());
+    }
+
+    #[test]
     fn test_get_completions_in_body_returns_empty() {
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
@@ -486,5 +740,115 @@ bar (1.0-1) unstable; urgency=low
         let completions = get_urgency_completions("me");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["medium"]);
+    }
+
+    #[test]
+    fn test_closes_bug_prefix_detection() {
+        let text = "  * Fix issue. Closes: #1234, #5678";
+        let offset = TextSize::try_from(text.find("#567").unwrap() + 4).unwrap();
+        let prefix = closes_bug_prefix_at_offset(
+            text,
+            TextRange::new(
+                TextSize::from(0u32),
+                TextSize::try_from(text.len()).unwrap(),
+            ),
+            offset,
+        );
+        assert_eq!(prefix.as_deref(), Some("567"));
+    }
+
+    #[test]
+    fn test_closes_bug_prefix_rejects_non_closes_context() {
+        let text = "  * Mention #123456";
+        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
+        let prefix = closes_bug_prefix_at_offset(
+            text,
+            TextRange::new(
+                TextSize::from(0u32),
+                TextSize::try_from(text.len()).unwrap(),
+            ),
+            offset,
+        );
+        assert!(prefix.is_none());
+    }
+
+    #[test]
+    fn test_get_bug_completions_from_ids_uses_suffix_insert_text() {
+        let completions = get_bug_completions_from_ids(
+            vec![123456_u32, 999999_u32],
+            "123",
+            "Debian bug (from changelog history)",
+        );
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].label, "#123456");
+        assert_eq!(completions[0].insert_text.as_deref(), Some("456"));
+    }
+
+    #[test]
+    fn test_get_async_bug_completions_merges_local_and_remote() {
+        let text = "\
+foo (1.0-2) unstable; urgency=medium
+
+  * Follow-up work. Closes: #12
+
+ -- John Doe <john@example.com>  Mon, 02 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) unstable; urgency=medium
+
+  * Older fix. Closes: #123456
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+";
+        let parsed = parse_for(text);
+        let bug_cache = crate::bugs::new_shared_bug_cache();
+
+        {
+            let mut cache = tokio_test::block_on(bug_cache.write());
+            cache.insert_cached_open_bugs_for_package(
+                "foo",
+                vec![
+                    (123456, Some("Older fix from BTS")),
+                    (129999, Some("New regression in foo")),
+                ],
+            );
+        }
+
+        let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
+        let completions = tokio_test::block_on(get_async_bug_completions(
+            &parsed,
+            text,
+            position_at(text, offset),
+            &bug_cache,
+        ))
+        .expect("bug context should return Some");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"#123456"));
+        assert!(labels.contains(&"#129999"));
+        let count_123456 = labels.iter().filter(|label| **label == "#123456").count();
+        assert_eq!(count_123456, 1);
+        assert!(completions.iter().any(|item| {
+            item.label == "#129999"
+                && item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("New regression in foo"))
+        }));
+    }
+
+    #[test]
+    fn test_get_async_bug_completions_returns_none_outside_bug_context() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let bug_cache = crate::bugs::new_shared_bug_cache();
+        let offset = text.find("Initial").unwrap() + 2;
+
+        let completions = tokio_test::block_on(get_async_bug_completions(
+            &parsed,
+            text,
+            position_at(text, offset),
+            &bug_cache,
+        ));
+        assert!(completions.is_none());
     }
 }
