@@ -5,43 +5,61 @@
 
 Language Server Protocol implementation for Debian packaging files.
 
-At the moment this is fairly basic, but the goal is to provide a useful LSP server for editing Debian packaging files with features like:
-- Field name completion
-- Common package name suggestions
-- Diagnostics for common issues
-- Quick fixes for common issues
-- Integration with lintian-brush, apply-multiarch-hints, etc
-
 ## Supported Files
 
 - `debian/control` - Package control files
 - `debian/copyright` - DEP-5 copyright files
-- `debian/watch` - Upstream watch files
+- `debian/watch` - Upstream watch files (v1-4 line-based and v5 deb822 formats)
+- `debian/changelog` - Package changelog files
+- `debian/source/format` - Source format declaration files
 - `debian/tests/control` - Autopkgtest control files (basic support)
 - `debian/upstream/metadata` - DEP-12 upstream metadata files
 
 ## Features
 
-- Field name completion for Debian packaging files
-- Common package name suggestions for dependencies
-- Works with `debian/control`, `debian/copyright`, `debian/watch`, `debian/tests/control`, and `debian/upstream/metadata`
-- Diagnostic analysis for control and copyright files
-- Quick fixes for common issues
+### Completions
+
+**debian/control:**
+- Field name completions for all standard source and binary package fields
+- Package name completions for relationship fields (Depends, Build-Depends, Recommends, etc.) using the system package cache
+- Value completions for Section (all Debian sections including area-qualified), Priority, and architecture fields
+
+**debian/copyright:**
+- Field name completions for header, files, and license paragraphs
+- Value completions for Format and License (from `/usr/share/common-licenses`)
+
+**debian/watch:**
+- Field name completions for watch file fields
+- Version number completions
+- Option value completions (compression, mode, pgpmode, searchmode, gitmode, gitexport, component)
+
+**debian/changelog:**
+- Distribution completions (unstable, stable, testing, experimental, UNRELEASED, plus release codenames)
+- Urgency level completions (low, medium, high, critical, emergency)
+
+**debian/source/format:**
+- Format value completions (3.0 (quilt), 3.0 (native), 3.0 (git), 1.0, etc.)
+
+**debian/upstream/metadata:**
+- Field name completions for all DEP-12 fields (Repository, Bug-Database, Contact, etc.)
 
 ### Diagnostics
 
-The LSP provides the following diagnostic capabilities:
+- Field casing validation (e.g. `source` instead of `Source`)
+- Parse error reporting with position information
 
-- **Field casing validation**: Detects incorrectly cased field names (e.g., `source` instead of `Source`)
-- **Parse error reporting**: Reports parsing errors in control file syntax
+### Code Actions
 
-### Quick Fixes
+- **Fix field casing** - automatically correct field names to canonical casing
+- **Wrap and sort** - wrap long fields to 79 characters and sort dependency lists (control and copyright files)
+- **Add changelog entry** - create a new changelog entry with incremented version, UNRELEASED distribution, and auto-populated maintainer
+- **Mark for upload** - replace UNRELEASED with the target distribution
 
-The LSP offers automatic fixes for detected issues:
+### Semantic Highlighting
 
-- **Field casing corrections**: Automatically fix field names to use proper Debian control file casing
-  - Example: `source` → `Source`, `maintainer` → `Maintainer`
-  - Available as code actions in your editor
+Custom token types for syntax highlighting of Debian-specific constructs:
+- Control/copyright/watch/upstream-metadata files: field names, unknown fields, values, comments
+- Changelog files: package name, version, distribution, urgency, maintainer, timestamp
 
 ## Installation
 
@@ -77,15 +95,6 @@ By default, the configuration will look for the `debian-lsp` executable in the s
 let g:debian_lsp_executable = '/custom/path/to/debian-lsp'
 source /path/to/debian-lsp/ale-debian-lsp.vim
 ```
-
-This configuration enables debian-lsp for all supported file types:
-- `debian/control` (debcontrol filetype)
-- `debian/copyright` (debcopyright filetype)
-- `debian/changelog` (debchangelog filetype)
-- `debian/source/format` (debsources filetype)
-- `debian/watch` (make filetype)
-- `debian/tests/control` (make filetype)
-- `debian/upstream/metadata` (yaml filetype)
 
 You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
 
@@ -145,12 +154,6 @@ lspconfig.debian_lsp.setup{}
 ```
 
 Note: Adjust the `cmd` path to match your installation location.
-
-## Usage
-
-Open any `debian/control` or `control` file in your configured editor. The LSP will automatically provide completions for:
-- Field names (Source, Package, Depends, etc.)
-- Common package names
 
 ## Development
 
