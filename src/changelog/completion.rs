@@ -4,8 +4,8 @@ use rowan::ast::AstNode;
 use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
-use super::bug_cache::SharedBugCache;
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
+use crate::bugs::{BugSummary, SharedBugCache};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CursorContext {
@@ -87,7 +87,7 @@ pub async fn get_async_bug_completions(
         bug_cache
             .write()
             .await
-            .get_open_bug_ids_with_prefix(&package_name, &value_prefix)
+            .get_open_bug_summaries_with_prefix(&package_name, &value_prefix)
             .await
     } else {
         Vec::new()
@@ -95,7 +95,7 @@ pub async fn get_async_bug_completions(
 
     Some(merge_unique_completions(
         local,
-        get_bug_completions_from_ids(remote, &value_prefix, "Debian bug (from Debian BTS)"),
+        get_bug_completions_from_summaries(remote, &value_prefix, "Debian bug (from Debian BTS)"),
     ))
 }
 
@@ -324,6 +324,10 @@ fn urgency_prefix_at_offset(
     None
 }
 
+/// Return the decimal prefix after `Closes: #` at `offset` inside an entry.
+///
+/// This only matches detail lines (`DETAIL` tokens) and returns `None` for
+/// non-`Closes:` contexts.
 fn bug_prefix_at_offset(entry: &debian_changelog::Entry, offset: TextSize) -> Option<String> {
     let detail = match entry.syntax().token_at_offset(offset) {
         rowan::TokenAtOffset::Single(token) => Some(token),
@@ -346,6 +350,10 @@ fn bug_prefix_at_offset(entry: &debian_changelog::Entry, offset: TextSize) -> Op
     closes_bug_prefix_at_offset(detail.text(), detail.text_range(), offset)
 }
 
+/// Parse a `Closes:` bug-number prefix from a single detail line slice.
+///
+/// Supports comma-separated references like `Closes: #123, #456` and returns
+/// the digits of the currently edited fragment.
 fn closes_bug_prefix_at_offset(
     detail_text: &str,
     detail_range: TextRange,
@@ -453,6 +461,8 @@ fn get_local_bug_completions(
     get_bug_completions_from_ids(bug_ids, prefix, "Debian bug (from changelog history)")
 }
 
+/// Build completion items for bug IDs, preserving only the suffix beyond
+/// the currently typed decimal prefix.
 fn get_bug_completions_from_ids<I>(bug_ids: I, prefix: &str, detail: &str) -> Vec<CompletionItem>
 where
     I: IntoIterator<Item = u32>,
@@ -467,6 +477,39 @@ where
             label: format!("#{}", id),
             kind: Some(CompletionItemKind::REFERENCE),
             detail: Some(detail.to_string()),
+            insert_text: Some(
+                id.strip_prefix(normalized_prefix)
+                    .unwrap_or(&id)
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Build completion items for Debbugs bug summaries, including titles in the
+/// completion detail when available.
+fn get_bug_completions_from_summaries<I>(
+    bug_summaries: I,
+    prefix: &str,
+    detail: &str,
+) -> Vec<CompletionItem>
+where
+    I: IntoIterator<Item = BugSummary>,
+{
+    let normalized_prefix = prefix.trim();
+
+    bug_summaries
+        .into_iter()
+        .map(|summary| (summary.id.to_string(), summary.title))
+        .filter(|(id, _)| id.starts_with(normalized_prefix))
+        .map(|(id, title)| CompletionItem {
+            label: format!("#{}", id),
+            kind: Some(CompletionItemKind::REFERENCE),
+            detail: Some(match title {
+                Some(title) => format!("{}: {}", detail, title),
+                None => detail.to_string(),
+            }),
             insert_text: Some(
                 id.strip_prefix(normalized_prefix)
                     .unwrap_or(&id)
@@ -757,11 +800,17 @@ foo (1.0-1) unstable; urgency=medium
  -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = parse_for(text);
-        let bug_cache = crate::changelog::bug_cache::new_shared_bug_cache();
+        let bug_cache = crate::bugs::new_shared_bug_cache();
 
         {
             let mut cache = tokio_test::block_on(bug_cache.write());
-            cache.insert_cached_open_bug_ids_for_package("foo", vec![123456, 129999]);
+            cache.insert_cached_open_bugs_for_package(
+                "foo",
+                vec![
+                    (123456, Some("Older fix from BTS")),
+                    (129999, Some("New regression in foo")),
+                ],
+            );
         }
 
         let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
@@ -778,13 +827,20 @@ foo (1.0-1) unstable; urgency=medium
         assert!(labels.contains(&"#129999"));
         let count_123456 = labels.iter().filter(|label| **label == "#123456").count();
         assert_eq!(count_123456, 1);
+        assert!(completions.iter().any(|item| {
+            item.label == "#129999"
+                && item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("New regression in foo"))
+        }));
     }
 
     #[test]
     fn test_get_async_bug_completions_returns_none_outside_bug_context() {
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
-        let bug_cache = crate::changelog::bug_cache::new_shared_bug_cache();
+        let bug_cache = crate::bugs::new_shared_bug_cache();
         let offset = text.find("Initial").unwrap() + 2;
 
         let completions = tokio_test::block_on(get_async_bug_completions(

@@ -10,6 +10,7 @@ use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 mod architecture;
+mod bugs;
 mod changelog;
 mod control;
 mod copyright;
@@ -83,7 +84,7 @@ struct Backend {
     files: Arc<Mutex<HashMap<Uri, FileInfo>>>,
     package_cache: package_cache::SharedPackageCache,
     architecture_list: architecture::SharedArchitectureList,
-    bug_cache: changelog::bug_cache::SharedBugCache,
+    bug_cache: bugs::SharedBugCache,
 }
 
 impl Backend {
@@ -588,7 +589,7 @@ async fn main() {
         architecture::stream_into(&arch_for_loading).await;
     });
 
-    let bug_cache = changelog::bug_cache::new_shared_bug_cache();
+    let bug_cache = bugs::new_shared_bug_cache();
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
