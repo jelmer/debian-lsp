@@ -15,6 +15,7 @@ categories = ["development-tools", "text-editors"]
 async-trait = "0.1"
 chrono = "0.4"
 debian-changelog = "0.2.15"
+debbugs = { version = "0.1", default-features = false, features = ["tokio"] }
 debian-control = { version = "0.3.3" }
 debian-copyright = { version = "0.1.43", features = ["lossless"] }
 debian-watch = { version = "0.4.4", features = ["linebased", "deb822"] }

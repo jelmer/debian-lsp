@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod bug_cache;
 pub mod completion;
 pub mod detection;
 pub mod fields;

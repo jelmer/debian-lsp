@@ -83,6 +83,7 @@ struct Backend {
     files: Arc<Mutex<HashMap<Uri, FileInfo>>>,
     package_cache: package_cache::SharedPackageCache,
     architecture_list: architecture::SharedArchitectureList,
+    bug_cache: changelog::bug_cache::SharedBugCache,
 }
 
 impl Backend {
@@ -125,6 +126,7 @@ impl LanguageServer for Backend {
                         "$".to_string(),
                         "=".to_string(),
                         ",".to_string(),
+                        "#".to_string(),
                     ]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
@@ -330,7 +332,19 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_changelog(source_file);
-                changelog::get_completions(&parsed, &source_text, position)
+                drop(workspace);
+                if let Some(bug_completions) = changelog::get_async_bug_completions(
+                    &parsed,
+                    &source_text,
+                    position,
+                    &self.bug_cache,
+                )
+                .await
+                {
+                    bug_completions
+                } else {
+                    changelog::get_completions(&parsed, &source_text, position)
+                }
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::UpstreamMetadata, source_file)) => {
@@ -574,12 +588,15 @@ async fn main() {
         architecture::stream_into(&arch_for_loading).await;
     });
 
+    let bug_cache = changelog::bug_cache::new_shared_bug_cache();
+
     let (service, socket) = LspService::new(|client| Backend {
         client,
         workspace: Arc::new(Mutex::new(Workspace::new())),
         files: Arc::new(Mutex::new(HashMap::new())),
         package_cache: package_cache.clone(),
         architecture_list: architecture_list.clone(),
+        bug_cache: bug_cache.clone(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
