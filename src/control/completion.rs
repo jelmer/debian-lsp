@@ -55,6 +55,7 @@ pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<Comple
 pub async fn get_async_field_value_completions(
     field_name: &str,
     prefix: &str,
+    position: tower_lsp_server::ls_types::Position,
     package_cache: &SharedPackageCache,
     architecture_list: &SharedArchitectureList,
 ) -> Option<Vec<CompletionItem>> {
@@ -62,6 +63,7 @@ pub async fn get_async_field_value_completions(
         Some(
             relation_completion::get_relationship_completions(
                 prefix,
+                position,
                 package_cache,
                 architecture_list,
             )
@@ -420,10 +422,15 @@ mod tests {
     #[tokio::test]
     async fn test_async_field_value_completions_for_depends() {
         let cache = test_cache();
-        let completions =
-            get_async_field_value_completions("Depends", "cm", &cache, &test_arch_list())
-                .await
-                .expect("Should return completions");
+        let completions = get_async_field_value_completions(
+            "Depends",
+            "cm",
+            Position::new(0, 2),
+            &cache,
+            &test_arch_list(),
+        )
+        .await
+        .expect("Should return completions");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["cmake"]);
     }
@@ -431,18 +438,29 @@ mod tests {
     #[tokio::test]
     async fn test_async_field_value_completions_for_build_depends() {
         let cache = test_cache();
-        let completions =
-            get_async_field_value_completions("Build-Depends", "", &cache, &test_arch_list())
-                .await
-                .expect("Should return completions");
+        let completions = get_async_field_value_completions(
+            "Build-Depends",
+            "",
+            Position::new(0, 0),
+            &cache,
+            &test_arch_list(),
+        )
+        .await
+        .expect("Should return completions");
         assert!(!completions.is_empty());
     }
 
     #[tokio::test]
     async fn test_async_field_value_completions_for_non_relationship() {
         let cache = test_cache();
-        let completions =
-            get_async_field_value_completions("Homepage", "http", &cache, &test_arch_list()).await;
+        let completions = get_async_field_value_completions(
+            "Homepage",
+            "http",
+            Position::new(0, 4),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         assert!(completions.is_none());
     }
 
@@ -470,6 +488,7 @@ mod tests {
                 let completions = get_async_field_value_completions(
                     &field_name,
                     &value_prefix,
+                    tower_lsp_server::ls_types::Position::new(0, 15),
                     &cache,
                     &test_arch_list(),
                 )
@@ -504,6 +523,7 @@ mod tests {
                 let completions = get_async_field_value_completions(
                     &field_name,
                     &value_prefix,
+                    tower_lsp_server::ls_types::Position::new(0, 17),
                     &cache,
                     &test_arch_list(),
                 )
@@ -511,6 +531,49 @@ mod tests {
                 .expect("Should return completions for relationship field");
                 let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
                 assert_eq!(labels, vec!["dh-python"]);
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
+    }
+
+    /// End-to-end test: substvar completion after comma should not eat the comma.
+    #[tokio::test]
+    async fn test_end_to_end_substvar_after_comma() {
+        let text = "Depends: gpg,${misc:\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let position = Position::new(0, 20);
+        let ctx = crate::deb822::completion::get_cursor_context(&deb822, text, position)
+            .expect("Should have context");
+
+        match ctx {
+            crate::deb822::completion::CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Depends");
+                assert_eq!(value_prefix, "gpg,${misc:");
+                let cache = test_cache();
+                let completions = get_async_field_value_completions(
+                    &field_name,
+                    &value_prefix,
+                    position,
+                    &cache,
+                    &test_arch_list(),
+                )
+                .await
+                .expect("Should return completions");
+                let misc_depends = completions
+                    .iter()
+                    .find(|c| c.label == "${misc:Depends}")
+                    .expect("Should have ${misc:Depends} completion");
+                // The text_edit range must start at the "$" (col 13), NOT at the comma (col 12)
+                let edit = match &misc_depends.text_edit {
+                    Some(tower_lsp_server::ls_types::CompletionTextEdit::Edit(e)) => e,
+                    _ => panic!("Expected TextEdit"),
+                };
+                assert_eq!(edit.range.start, Position::new(0, 13));
+                assert_eq!(edit.range.end, position);
+                assert_eq!(edit.new_text, "${misc:Depends}");
             }
             other => panic!("Expected FieldValue, got {:?}", other),
         }

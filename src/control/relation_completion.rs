@@ -1,7 +1,10 @@
 use debian_control::lossless::relations::Relations;
 use debian_control::relations::SyntaxKind as RelSyntaxKind;
 use rowan::NodeOrToken;
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, CompletionTextEdit, Documentation, Position, Range,
+    TextEdit,
+};
 
 use crate::architecture::SharedArchitectureList;
 use crate::package_cache::SharedPackageCache;
@@ -57,7 +60,8 @@ enum RelationCompletionPosition {
     /// Inside `<` — expecting a build profile name.
     BuildProfile(String),
     /// Inside `${` — expecting a substvar name.
-    Substvar(String),
+    /// The `usize` is the length of the substvar opening (`$` or `${`).
+    Substvar(String, usize),
 }
 
 /// Determine the completion position within a relationship field value prefix.
@@ -161,7 +165,12 @@ fn determine_relation_position(prefix: &str) -> RelationCompletionPosition {
             })
             .collect();
 
-        return RelationCompletionPosition::Substvar(partial);
+        // The opening is everything in the node text before the partial
+        // (e.g. "$" or "${").
+        let node_text_len: usize = substvar_node.text().len().into();
+        let opening_len = node_text_len - partial.len();
+
+        return RelationCompletionPosition::Substvar(partial, opening_len);
     }
 
     // Check if we're inside an ARCHQUAL node (i.e. after ":" on a package name).
@@ -301,6 +310,7 @@ fn last_significant_token(
 /// Get completions for a relationship field value.
 pub(crate) async fn get_relationship_completions(
     prefix: &str,
+    position: Position,
     package_cache: &SharedPackageCache,
     architecture_list: &SharedArchitectureList,
 ) -> Vec<CompletionItem> {
@@ -348,7 +358,9 @@ pub(crate) async fn get_relationship_completions(
         RelationCompletionPosition::BuildProfile(partial) => {
             get_build_profile_completions(&partial)
         }
-        RelationCompletionPosition::Substvar(partial) => get_substvar_completions(&partial),
+        RelationCompletionPosition::Substvar(partial, opening_len) => {
+            get_substvar_completions(&partial, opening_len, position)
+        }
     }
 }
 
@@ -502,18 +514,47 @@ const KNOWN_SUBSTVARS: &[(&str, &str)] = &[
 ];
 
 /// Get completion items for substitution variables (inside `${...}`).
-fn get_substvar_completions(partial: &str) -> Vec<CompletionItem> {
+///
+/// Uses a `text_edit` with an explicit range covering the entire `${…`
+/// prefix so that the client replaces the whole substvar token rather
+/// than relying on word-boundary heuristics (which break on `$`, `{`,
+/// and `:`).
+fn get_substvar_completions(
+    partial: &str,
+    opening_len: usize,
+    position: Position,
+) -> Vec<CompletionItem> {
+    // The cursor is at `position` and `partial` is the text after the
+    // substvar opening (e.g. "$" or "${").  `opening_len` is the length
+    // of that opening.  The substvar token starts `opening_len +
+    // partial.len()` characters before the cursor on the same line.
+    let substvar_start_col = position.character - (partial.len() as u32) - (opening_len as u32);
+
+    let edit_start = Position {
+        line: position.line,
+        character: substvar_start_col,
+    };
+    let edit_range = Range {
+        start: edit_start,
+        end: position,
+    };
+
     KNOWN_SUBSTVARS
         .iter()
         .filter(|(name, _)| name.starts_with(partial))
-        .map(|&(name, desc)| CompletionItem {
-            label: format!("${{{}}}", name),
-            kind: Some(CompletionItemKind::VARIABLE),
-            detail: Some(desc.to_string()),
-            // Insert just the name part — the `${` is already typed and `}`
-            // will be added or is already present.
-            insert_text: Some(format!("{}}}", name)),
-            ..Default::default()
+        .map(|&(name, desc)| {
+            let full_text = format!("${{{}}}", name);
+            CompletionItem {
+                label: full_text.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(desc.to_string()),
+                filter_text: Some(full_text.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: edit_range,
+                    new_text: full_text,
+                })),
+                ..Default::default()
+            }
         })
         .collect()
 }
@@ -586,10 +627,19 @@ mod tests {
         ]))
     }
 
+    /// Compute a cursor position at the end of a value prefix string.
+    fn end_position(prefix: &str) -> Position {
+        let line = prefix.matches('\n').count() as u32;
+        let last_line = prefix.rsplit('\n').next().unwrap_or(prefix);
+        let character = last_line.len() as u32;
+        Position { line, character }
+    }
+
     #[tokio::test]
     async fn test_relationship_completions_package_name_empty() {
         let cache = test_cache();
-        let completions = get_relationship_completions("", &cache, &test_arch_list()).await;
+        let completions =
+            get_relationship_completions("", end_position(""), &cache, &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"debhelper-compat"));
         assert!(labels.contains(&"cmake"));
@@ -598,7 +648,9 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_package_name_prefix() {
         let cache = test_cache();
-        let completions = get_relationship_completions("deb", &cache, &test_arch_list()).await;
+        let completions =
+            get_relationship_completions("deb", end_position("deb"), &cache, &test_arch_list())
+                .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["debhelper-compat"]);
     }
@@ -606,8 +658,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_after_comma() {
         let cache = test_cache();
-        let completions =
-            get_relationship_completions("libc6 (>= 2.17), cm", &cache, &test_arch_list()).await;
+        let completions = get_relationship_completions(
+            "libc6 (>= 2.17), cm",
+            end_position("libc6 (>= 2.17), cm"),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["cmake"]);
     }
@@ -615,8 +672,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_after_pipe() {
         let cache = test_cache();
-        let completions =
-            get_relationship_completions("libfoo | cm", &cache, &test_arch_list()).await;
+        let completions = get_relationship_completions(
+            "libfoo | cm",
+            end_position("libfoo | cm"),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["cmake"]);
     }
@@ -624,7 +686,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_version_operator() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (", &cache, &test_arch_list()).await;
+        let completions = get_relationship_completions(
+            "libc6 (",
+            end_position("libc6 ("),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec![">=", "<=", "=", ">>", "<<"]);
     }
@@ -632,7 +700,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_version_operator_partial() {
         let cache = test_cache();
-        let completions = get_relationship_completions("libc6 (>", &cache, &test_arch_list()).await;
+        let completions = get_relationship_completions(
+            "libc6 (>",
+            end_position("libc6 (>"),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec![">=", ">>"]);
     }
@@ -640,8 +714,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_version_position() {
         let cache = test_cache();
-        let completions =
-            get_relationship_completions("libc6 (>= ", &cache, &test_arch_list()).await;
+        let completions = get_relationship_completions(
+            "libc6 (>= ",
+            end_position("libc6 (>= "),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         assert!(completions.is_empty());
     }
 
@@ -660,9 +739,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_multiline_value() {
         let cache = test_cache();
-        let completions =
-            get_relationship_completions("libc6 (>= 2.17),\n dh-py", &cache, &test_arch_list())
-                .await;
+        let completions = get_relationship_completions(
+            "libc6 (>= 2.17),\n dh-py",
+            end_position("libc6 (>= 2.17),\n dh-py"),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["dh-python"]);
     }
@@ -670,7 +753,8 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_with_description() {
         let cache = test_cache();
-        let completions = get_relationship_completions("cm", &cache, &test_arch_list()).await;
+        let completions =
+            get_relationship_completions("cm", end_position("cm"), &cache, &test_arch_list()).await;
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].label, "cmake");
         assert_eq!(
@@ -686,8 +770,13 @@ mod tests {
     #[tokio::test]
     async fn test_relationship_completions_without_description() {
         let cache = test_cache();
-        let completions =
-            get_relationship_completions("debhelper", &cache, &test_arch_list()).await;
+        let completions = get_relationship_completions(
+            "debhelper",
+            end_position("debhelper"),
+            &cache,
+            &test_arch_list(),
+        )
+        .await;
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].label, "debhelper-compat");
         assert_eq!(completions[0].detail, Some("Package".to_string()));
@@ -834,7 +923,9 @@ mod tests {
     async fn test_arch_qualifier_completions_empty() {
         let cache = test_cache();
         let arch_list = test_arch_list();
-        let completions = get_relationship_completions("libc6:", &cache, &arch_list).await;
+        let completions =
+            get_relationship_completions("libc6:", end_position("libc6:"), &cache, &arch_list)
+                .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"any"));
         assert!(labels.contains(&"native"));
@@ -845,7 +936,9 @@ mod tests {
     async fn test_arch_qualifier_completions_partial() {
         let cache = test_cache();
         let arch_list = test_arch_list();
-        let completions = get_relationship_completions("libc6:a", &cache, &arch_list).await;
+        let completions =
+            get_relationship_completions("libc6:a", end_position("libc6:a"), &cache, &arch_list)
+                .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"any"));
         assert!(labels.contains(&"amd64"));
@@ -927,7 +1020,13 @@ mod tests {
     async fn test_relationship_completions_build_profile() {
         let cache = test_cache();
         let arch_list = test_arch_list();
-        let completions = get_relationship_completions("libc6 <no", &cache, &arch_list).await;
+        let completions = get_relationship_completions(
+            "libc6 <no",
+            end_position("libc6 <no"),
+            &cache,
+            &arch_list,
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"nocheck"));
         assert!(!labels.contains(&"cross"));
@@ -937,7 +1036,7 @@ mod tests {
     fn test_determine_relation_position_after_dollar_brace() {
         assert_eq!(
             determine_relation_position("${"),
-            RelationCompletionPosition::Substvar(String::new())
+            RelationCompletionPosition::Substvar(String::new(), 2)
         );
     }
 
@@ -945,7 +1044,7 @@ mod tests {
     fn test_determine_relation_position_partial_substvar() {
         assert_eq!(
             determine_relation_position("${shlibs"),
-            RelationCompletionPosition::Substvar("shlibs".to_string())
+            RelationCompletionPosition::Substvar("shlibs".to_string(), 2)
         );
     }
 
@@ -953,13 +1052,126 @@ mod tests {
     fn test_determine_relation_position_substvar_with_colon() {
         assert_eq!(
             determine_relation_position("${shlibs:Dep"),
-            RelationCompletionPosition::Substvar("shlibs:Dep".to_string())
+            RelationCompletionPosition::Substvar("shlibs:Dep".to_string(), 2)
         );
     }
 
     #[test]
+    fn test_determine_relation_position_substvar_after_comma() {
+        assert_eq!(
+            determine_relation_position("gpg, ${"),
+            RelationCompletionPosition::Substvar(String::new(), 2)
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_substvar_after_comma_partial() {
+        assert_eq!(
+            determine_relation_position("gpg, ${misc:"),
+            RelationCompletionPosition::Substvar("misc:".to_string(), 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_substvar_text_edit_range_after_comma() {
+        // Simulates: "Depends: gpg, ${misc:" with cursor at col 21
+        // value_prefix = "gpg, ${misc:" (12 chars), starts at col 9
+        // The "$" is at col 14 in the document
+        let value_prefix = "gpg, ${misc:";
+        // Cursor position: col 9 (value start) + 12 (value_prefix len) = 21
+        let position = Position {
+            line: 0,
+            character: 21,
+        };
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions =
+            get_relationship_completions(value_prefix, position, &cache, &arch_list).await;
+        let misc_depends = completions
+            .iter()
+            .find(|c| c.label == "${misc:Depends}")
+            .unwrap();
+        let range = text_edit_range(misc_depends).unwrap();
+        // Range should start at col 14 (the "$") not col 13 (the space)
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 14
+            }
+        );
+        assert_eq!(range.end, position);
+        assert_eq!(text_edit_new_text(misc_depends), Some("${misc:Depends}"));
+    }
+
+    #[tokio::test]
+    async fn test_substvar_text_edit_range_after_comma_no_space() {
+        // Simulates: "Depends: gpg,${misc:" with cursor at col 20
+        // value_prefix = "gpg,${misc:" (11 chars), starts at col 9
+        // The "$" is at col 13
+        let value_prefix = "gpg,${misc:";
+        let position = Position {
+            line: 0,
+            character: 20,
+        };
+        let cache = test_cache();
+        let arch_list = test_arch_list();
+        let completions =
+            get_relationship_completions(value_prefix, position, &cache, &arch_list).await;
+        let misc_depends = completions
+            .iter()
+            .find(|c| c.label == "${misc:Depends}")
+            .unwrap();
+        let range = text_edit_range(misc_depends).unwrap();
+        // Range should start at col 13 (the "$") not col 12 (the comma)
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 13
+            }
+        );
+        assert_eq!(range.end, position);
+    }
+
+    #[test]
+    fn test_determine_relation_position_dollar_only() {
+        // When "$" is typed (trigger char), "{" hasn't been typed yet.
+        // The parser still treats this as a SUBSTVAR node, but with
+        // opening_len = 1 (just "$").
+        assert_eq!(
+            determine_relation_position("gpg,$"),
+            RelationCompletionPosition::Substvar(String::new(), 1)
+        );
+    }
+
+    #[test]
+    fn test_determine_relation_position_substvar_after_comma_no_space() {
+        assert_eq!(
+            determine_relation_position("gpg,${"),
+            RelationCompletionPosition::Substvar(String::new(), 2)
+        );
+    }
+
+    /// Extract the new_text from a CompletionItem's text_edit.
+    fn text_edit_new_text(item: &CompletionItem) -> Option<&str> {
+        match &item.text_edit {
+            Some(CompletionTextEdit::Edit(edit)) => Some(&edit.new_text),
+            _ => None,
+        }
+    }
+
+    /// Extract the range from a CompletionItem's text_edit.
+    fn text_edit_range(item: &CompletionItem) -> Option<Range> {
+        match &item.text_edit {
+            Some(CompletionTextEdit::Edit(edit)) => Some(edit.range),
+            _ => None,
+        }
+    }
+
+    #[test]
     fn test_substvar_completions_empty() {
-        let completions = get_substvar_completions("");
+        let completions = get_substvar_completions("", 2, end_position("${"));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"${shlibs:Depends}"));
         assert!(labels.contains(&"${misc:Depends}"));
@@ -967,25 +1179,104 @@ mod tests {
 
     #[test]
     fn test_substvar_completions_partial() {
-        let completions = get_substvar_completions("shlibs");
+        let prefix = "${shlibs";
+        let completions = get_substvar_completions("shlibs", 2, end_position(prefix));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"${shlibs:Depends}"));
         assert!(!labels.contains(&"${misc:Depends}"));
+        let shlibs_depends = completions
+            .iter()
+            .find(|c| c.label == "${shlibs:Depends}")
+            .unwrap();
+        assert_eq!(
+            text_edit_new_text(shlibs_depends),
+            Some("${shlibs:Depends}")
+        );
+        // Range should cover from "$" to cursor
+        let range = text_edit_range(shlibs_depends).unwrap();
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(range.end, end_position(prefix));
     }
 
     #[test]
     fn test_substvar_completions_with_colon() {
-        let completions = get_substvar_completions("misc:D");
+        let prefix = "${misc:D";
+        let completions = get_substvar_completions("misc:D", 2, end_position(prefix));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"${misc:Depends}"));
         assert!(!labels.contains(&"${misc:Recommends}"));
+        let misc_depends = completions
+            .iter()
+            .find(|c| c.label == "${misc:Depends}")
+            .unwrap();
+        assert_eq!(text_edit_new_text(misc_depends), Some("${misc:Depends}"));
+    }
+
+    #[test]
+    fn test_substvar_completions_prefix_not_duplicated() {
+        // Regression: typing "${misc:" should not produce "${misc:misc:Depends}"
+        let prefix = "${misc:";
+        let completions = get_substvar_completions("misc:", 2, end_position(prefix));
+        let misc_depends = completions
+            .iter()
+            .find(|c| c.label == "${misc:Depends}")
+            .unwrap();
+        assert_eq!(text_edit_new_text(misc_depends), Some("${misc:Depends}"));
+        let range = text_edit_range(misc_depends).unwrap();
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            range.end,
+            Position {
+                line: 0,
+                character: 7
+            }
+        );
+    }
+
+    #[test]
+    fn test_substvar_completions_dollar_only() {
+        // When "$" triggers completion before "{" is typed, opening_len = 1.
+        // The range should start at "$", not one char before it.
+        let completions = get_substvar_completions("", 1, Position::new(0, 5));
+        let misc_depends = completions
+            .iter()
+            .find(|c| c.label == "${misc:Depends}")
+            .unwrap();
+        let range = text_edit_range(misc_depends).unwrap();
+        // "$" is at col 4 (position 5 - opening 1 - partial 0)
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 4
+            }
+        );
+        assert_eq!(range.end, Position::new(0, 5));
     }
 
     #[tokio::test]
     async fn test_relationship_completions_substvar() {
         let cache = test_cache();
         let arch_list = test_arch_list();
-        let completions = get_relationship_completions("${shlibs:D", &cache, &arch_list).await;
+        let completions = get_relationship_completions(
+            "${shlibs:D",
+            end_position("${shlibs:D"),
+            &cache,
+            &arch_list,
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"${shlibs:Depends}"));
         assert!(!labels.contains(&"${misc:Depends}"));
@@ -995,7 +1286,13 @@ mod tests {
     async fn test_relationship_completions_substvar_after_comma() {
         let cache = test_cache();
         let arch_list = test_arch_list();
-        let completions = get_relationship_completions("libc6, ${misc", &cache, &arch_list).await;
+        let completions = get_relationship_completions(
+            "libc6, ${misc",
+            end_position("libc6, ${misc"),
+            &cache,
+            &arch_list,
+        )
+        .await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"${misc:Depends}"));
     }

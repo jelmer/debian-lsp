@@ -366,6 +366,62 @@ mod tests {
     }
 
     #[test]
+    fn test_get_cursor_context_substvar_after_comma() {
+        let text = "Depends: gpg,${misc:\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(0, 20)).expect("Should have context");
+        match ctx {
+            CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Depends");
+                assert_eq!(value_prefix, "gpg,${misc:");
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_cursor_context_substvar_multiline() {
+        let text = "Depends:\n gpg,${misc:\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        // Line 1: " gpg,${misc:\n", cursor at col 12 (after last ':')
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(1, 12)).expect("Should have context");
+        match ctx {
+            CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Depends");
+                // value_prefix should NOT include the continuation-line indent
+                assert_eq!(value_prefix, "gpg,${misc:");
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_cursor_context_substvar_after_comma_space() {
+        let text = "Depends: gpg, ${misc:\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let ctx =
+            get_cursor_context(&deb822, text, Position::new(0, 21)).expect("Should have context");
+        match ctx {
+            CursorContext::FieldValue {
+                field_name,
+                value_prefix,
+            } => {
+                assert_eq!(field_name, "Depends");
+                assert_eq!(value_prefix, "gpg, ${misc:");
+            }
+            other => panic!("Expected FieldValue, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_partial_field_between_existing_fields() {
         let text = "Source: debian-codemods\nSection: devel\nHomepa\nPriority: optional\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();

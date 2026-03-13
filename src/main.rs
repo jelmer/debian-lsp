@@ -286,6 +286,7 @@ impl LanguageServer for Backend {
                     if let Some(async_completions) = control::get_async_field_value_completions(
                         field_name,
                         value_prefix,
+                        position,
                         &self.package_cache,
                         &self.architecture_list,
                     )
