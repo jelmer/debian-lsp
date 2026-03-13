@@ -32,6 +32,7 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("Description", "Package description"),
     FieldInfo::new("Essential", "Essential package flag"),
     FieldInfo::new("Rules-Requires-Root", "Root privileges requirement"),
+    FieldInfo::new("Build-Essential", "Build-essential package flag"),
 ];
 
 /// Get the standard casing for a field name
