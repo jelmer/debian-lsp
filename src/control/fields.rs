@@ -132,6 +132,20 @@ pub const CONTROL_SECTION_AREAS: &[&str] = &["contrib", "non-free", "non-free-fi
 pub const CONTROL_SPECIAL_SECTION_VALUES: &[(&str, &str)] =
     &[("debian-installer", "Debian installer components")];
 
+/// Debian essential values.
+pub const ESSENTIAL_VALUES: &[(&str, &str)] = &[
+    ("yes", "Essential package for the system"),
+    ("no", "Not an essential package"),
+];
+
+/// Debian multi-architecture values.
+pub const MULTI_ARCH_VALUES: &[(&str, &str)] = &[
+    ("allowed", "Multi-arch allowed"),
+    ("foreign", "Usable by other architectures"),
+    ("no", "Not multi-arch"),
+    ("same", "Must match dependent architecture"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
