@@ -107,6 +107,24 @@ impl Backend {
             | FileType::UpstreamMetadata => None,
         }
     }
+
+    /// Spawn a background task to prefetch bug data for the source package
+    /// in the given changelog, so completions are fast when the user needs them.
+    fn prefetch_changelog_bugs(&self, source_file: workspace::SourceFile, workspace: &Workspace) {
+        let parsed = workspace.get_parsed_changelog(source_file);
+        let changelog = parsed.tree();
+        let package_name = changelog.iter().next().and_then(|entry| entry.package());
+        if let Some(package_name) = package_name {
+            let bug_cache = self.bug_cache.clone();
+            tokio::spawn(async move {
+                bug_cache
+                    .write()
+                    .await
+                    .prefetch_bugs_for_package(&package_name)
+                    .await;
+            });
+        }
+    }
 }
 
 impl LanguageServer for Backend {
@@ -117,7 +135,7 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: None,
                     trigger_characters: Some(vec![
                         ":".to_string(),
                         " ".to_string(),
@@ -202,6 +220,10 @@ impl LanguageServer for Backend {
                 file_type,
             },
         );
+
+        if file_type == FileType::Changelog {
+            self.prefetch_changelog_bugs(source_file, &workspace);
+        }
 
         if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
             drop(workspace);
@@ -362,6 +384,10 @@ impl LanguageServer for Backend {
         } else {
             Ok(Some(CompletionResponse::Array(completions)))
         }
+    }
+
+    async fn completion_resolve(&self, item: CompletionItem) -> Result<CompletionItem> {
+        Ok(item)
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -573,6 +599,11 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
