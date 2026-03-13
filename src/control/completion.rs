@@ -2,8 +2,9 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 
 use super::fields::{
     CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS, CONTROL_SECTION_VALUES,
-    CONTROL_SPECIAL_SECTION_VALUES,
+    CONTROL_SPECIAL_SECTION_VALUES, ESSENTIAL_VALUES, MULTI_ARCH_VALUES,
 };
+
 use super::relation_completion;
 use crate::architecture::SharedArchitectureList;
 use crate::package_cache::SharedPackageCache;
@@ -39,6 +40,10 @@ pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<Comple
         get_section_value_completions(prefix)
     } else if field_name.eq_ignore_ascii_case("Priority") {
         get_priority_value_completions(prefix)
+    } else if field_name.eq_ignore_ascii_case("Essential") {
+        get_essential_value_completions(prefix)
+    } else if field_name.eq_ignore_ascii_case("Multi-Arch") {
+        get_multiarch_value_completions(prefix)
     } else {
         vec![]
     }
@@ -62,12 +67,34 @@ pub async fn get_async_field_value_completions(
             )
             .await,
         )
+    } else if field_name.eq_ignore_ascii_case("Architecture") {
+        Some(get_architecture_value_completions(prefix, architecture_list).await)
     } else {
         None
     }
 }
 
-/// Get completion items for Debian priority values.
+/// Get completion items for "Architecture" control fields.
+pub async fn get_architecture_value_completions(
+    prefix: &str,
+    architecture_list: &SharedArchitectureList,
+) -> Vec<CompletionItem> {
+    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+
+    let arches = architecture_list.read().await;
+
+    arches
+        .iter()
+        .filter(|arch| arch.starts_with(&normalized_prefix))
+        .map(|arch| CompletionItem {
+            label: arch.clone(),
+            kind: Some(CompletionItemKind::VALUE),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Get completion items for "Priority" control field.
 pub fn get_priority_value_completions(prefix: &str) -> Vec<CompletionItem> {
     let normalized_prefix = prefix.trim().to_ascii_lowercase();
 
@@ -84,7 +111,7 @@ pub fn get_priority_value_completions(prefix: &str) -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Get completion items for Debian section values.
+/// Get completion items for "Section" control field.
 ///
 /// Includes both `section` and `area/section` forms.
 pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
@@ -131,6 +158,40 @@ pub fn get_section_value_completions(prefix: &str) -> Vec<CompletionItem> {
     }
 
     completions
+}
+
+/// Get completion items for "Essential" control field.
+pub fn get_essential_value_completions(prefix: &str) -> Vec<CompletionItem> {
+    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+
+    ESSENTIAL_VALUES
+        .iter()
+        .filter(|(value, _)| value.starts_with(&normalized_prefix))
+        .map(|&(value, description)| CompletionItem {
+            label: value.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(description.to_string()),
+            insert_text: Some(value.to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Get completion items for "Multi-Arch" control fields.
+pub fn get_multiarch_value_completions(prefix: &str) -> Vec<CompletionItem> {
+    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+
+    MULTI_ARCH_VALUES
+        .iter()
+        .filter(|(value, _)| value.starts_with(&normalized_prefix))
+        .map(|&(value, description)| CompletionItem {
+            label: value.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(description.to_string()),
+            insert_text: Some(value.to_string()),
+            ..Default::default()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -278,9 +339,82 @@ mod tests {
     }
 
     #[test]
+    fn test_get_field_value_completions_for_essential() {
+        let completions = get_field_value_completions("Essential", "y");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["yes"]);
+    }
+
+    #[test]
+    fn test_get_field_value_completions_for_multiarch() {
+        let completions = get_field_value_completions("Multi-Arch", "all");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["allowed"]);
+    }
+
+    #[test]
     fn test_get_field_value_completions_for_unknown_field() {
         let completions = get_field_value_completions("Homepage", "http");
         assert!(completions.is_empty());
+    }
+
+    #[test]
+    fn test_get_completions_on_essential_value() {
+        let text = "Source: test\nEssential: y\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+
+        let completions = get_completions(&deb822, text, Position::new(1, 12));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["yes"]);
+    }
+
+    #[test]
+    fn test_essential_value_completions() {
+        let completions = get_essential_value_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"yes"));
+        assert!(labels.contains(&"no"));
+    }
+
+    #[test]
+    fn test_essential_value_completions_with_prefix() {
+        let completions = get_essential_value_completions("n");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["no"]);
+    }
+
+    #[test]
+    fn test_essential_value_completions_with_uppercase_prefix() {
+        let completions = get_essential_value_completions("YE");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["yes"]);
+    }
+
+    #[test]
+    fn test_multiarch_value_completions() {
+        let completions = get_multiarch_value_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"allowed"));
+        assert!(labels.contains(&"foreign"));
+        assert!(labels.contains(&"no"));
+        assert!(labels.contains(&"same"));
+    }
+
+    #[test]
+    fn test_multiarch_value_completions_with_prefix() {
+        let completions = get_multiarch_value_completions("all");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["allowed"]);
+    }
+
+    #[test]
+    fn test_multiarch_value_completions_with_uppercase_prefix() {
+        let completions = get_multiarch_value_completions("ALL");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["allowed"]);
     }
 
     #[tokio::test]
@@ -380,5 +514,36 @@ mod tests {
             }
             other => panic!("Expected FieldValue, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_empty_prefix() {
+        let completions = get_architecture_value_completions("", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"amd64"));
+        assert!(labels.contains(&"arm64"));
+        assert!(labels.contains(&"armhf"));
+        assert!(labels.contains(&"i386"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_with_prefix() {
+        let completions = get_architecture_value_completions("arm", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels.len(), 2);
+        assert!(labels.contains(&"arm64"));
+        assert!(labels.contains(&"armhf"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_uppercase_prefix() {
+        let completions = get_architecture_value_completions("ARM", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels.len(), 2);
+        assert!(labels.contains(&"arm64"));
+        assert!(labels.contains(&"armhf"));
     }
 }
