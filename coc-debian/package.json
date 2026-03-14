@@ -44,7 +44,64 @@
           "description": "Path to debian-lsp executable"
         }
       }
-    }
+    },
+    "semanticTokenTypes": [
+      {
+        "id": "debianField",
+        "superType": "property",
+        "description": "Known Debian control field"
+      },
+      {
+        "id": "debianUnknownField",
+        "superType": "variable",
+        "description": "Unknown or custom Debian control field"
+      },
+      {
+        "id": "debianValue",
+        "superType": "string",
+        "description": "Field value"
+      },
+      {
+        "id": "debianComment",
+        "superType": "comment",
+        "description": "Comment line"
+      },
+      {
+        "id": "changelogPackage",
+        "superType": "namespace",
+        "description": "Package name in changelog entry header"
+      },
+      {
+        "id": "changelogVersion",
+        "superType": "number",
+        "description": "Version string in changelog entry header"
+      },
+      {
+        "id": "changelogDistribution",
+        "superType": "enumMember",
+        "description": "Distribution name (e.g. unstable, UNRELEASED)"
+      },
+      {
+        "id": "changelogUrgency",
+        "superType": "keyword",
+        "description": "Urgency key in changelog metadata"
+      },
+      {
+        "id": "changelogMaintainer",
+        "superType": "variable",
+        "description": "Maintainer name and email in changelog trailer"
+      },
+      {
+        "id": "changelogTimestamp",
+        "superType": "string",
+        "description": "Timestamp in changelog trailer"
+      },
+      {
+        "id": "changelogMetadataValue",
+        "superType": "string",
+        "description": "Metadata value in changelog header (e.g. urgency level)"
+      }
+    ]
   },
   "scripts": {
     "build": "tsc -p .",
