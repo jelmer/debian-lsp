@@ -48,7 +48,7 @@ pub fn generate_semantic_tokens(
             if let Some(tt) = token_type {
                 let range = token.text_range();
                 let start_pos = offset_to_position(source_text, range.start());
-                let length = (usize::from(range.end()) - usize::from(range.start())) as u32;
+                let length = crate::position::utf16_len(token.text());
 
                 if length > 0 {
                     builder.push(start_pos.line, start_pos.character, length, tt, 0);

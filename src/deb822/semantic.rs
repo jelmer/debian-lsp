@@ -114,7 +114,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 SyntaxKind::COMMENT => {
                     let range = token.text_range();
                     let start_pos = offset_to_position(source_text, range.start());
-                    let length = (usize::from(range.end()) - usize::from(range.start())) as u32;
+                    let length = crate::position::utf16_len(token.text());
 
                     builder.push(
                         start_pos.line,
@@ -128,7 +128,7 @@ pub fn generate_tokens<V: FieldValidator>(
                     let range = token.text_range();
                     let start_pos = offset_to_position(source_text, range.start());
                     let key = token.text();
-                    let length = key.len() as u32;
+                    let length = crate::position::utf16_len(key);
 
                     // Check if field is known
                     let token_type = if validator.get_standard_field_name(key).is_some() {
@@ -148,7 +148,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 SyntaxKind::VALUE => {
                     let range = token.text_range();
                     let start_pos = offset_to_position(source_text, range.start());
-                    let length = (usize::from(range.end()) - usize::from(range.start())) as u32;
+                    let length = crate::position::utf16_len(token.text());
 
                     if length > 0 {
                         builder.push(
