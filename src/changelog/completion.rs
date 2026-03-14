@@ -83,20 +83,46 @@ pub async fn get_async_bug_completions(
         (package_name, value_prefix, local)
     };
 
-    let remote = if let Some(package_name) = package_name {
-        bug_cache
+    let mut remote_completions = Vec::new();
+    if let Some(package_name) = package_name {
+        let mut summaries = bug_cache
             .write()
             .await
-            .get_open_bug_summaries_with_prefix(&package_name, &value_prefix)
-            .await
-    } else {
-        Vec::new()
-    };
+            .get_bug_summaries_with_prefix(&package_name, &value_prefix)
+            .await;
 
-    Some(merge_unique_completions(
-        local,
-        get_bug_completions_from_summaries(remote, &value_prefix, "Debian bug (from Debian BTS)"),
-    ))
+        // Sort: open bugs first, then by bug ID descending (highest/newest first).
+        summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
+
+        let normalized_prefix = value_prefix.trim();
+        remote_completions = summaries
+            .into_iter()
+            .enumerate()
+            .map(|(idx, summary)| {
+                let id_str = summary.id.to_string();
+                let detail_text = match &summary.title {
+                    Some(title) => format!("Debian bug (from UDD): {}", title),
+                    None => "Debian bug (from UDD)".to_string(),
+                };
+                CompletionItem {
+                    label: format!("#{}", id_str),
+                    kind: Some(CompletionItemKind::REFERENCE),
+                    detail: Some(detail_text),
+                    documentation: Some(Documentation::String(bug_summary_documentation(&summary))),
+                    sort_text: Some(format!("{:06}", idx)),
+                    insert_text: Some(
+                        id_str
+                            .strip_prefix(normalized_prefix)
+                            .unwrap_or(&id_str)
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                }
+            })
+            .collect();
+    }
+
+    Some(merge_unique_completions(remote_completions, local))
 }
 
 fn get_cursor_context(
@@ -458,17 +484,7 @@ fn get_local_bug_completions(
         ));
     }
 
-    get_bug_completions_from_ids(bug_ids, prefix, "Debian bug (from changelog history)")
-}
-
-/// Build completion items for bug IDs, preserving only the suffix beyond
-/// the currently typed decimal prefix.
-fn get_bug_completions_from_ids<I>(bug_ids: I, prefix: &str, detail: &str) -> Vec<CompletionItem>
-where
-    I: IntoIterator<Item = u32>,
-{
     let normalized_prefix = prefix.trim();
-
     bug_ids
         .into_iter()
         .map(|id| id.to_string())
@@ -476,40 +492,7 @@ where
         .map(|id| CompletionItem {
             label: format!("#{}", id),
             kind: Some(CompletionItemKind::REFERENCE),
-            detail: Some(detail.to_string()),
-            insert_text: Some(
-                id.strip_prefix(normalized_prefix)
-                    .unwrap_or(&id)
-                    .to_string(),
-            ),
-            ..Default::default()
-        })
-        .collect()
-}
-
-/// Build completion items for Debbugs bug summaries, including titles in the
-/// completion detail when available.
-fn get_bug_completions_from_summaries<I>(
-    bug_summaries: I,
-    prefix: &str,
-    detail: &str,
-) -> Vec<CompletionItem>
-where
-    I: IntoIterator<Item = BugSummary>,
-{
-    let normalized_prefix = prefix.trim();
-
-    bug_summaries
-        .into_iter()
-        .map(|summary| (summary.id.to_string(), summary.title))
-        .filter(|(id, _)| id.starts_with(normalized_prefix))
-        .map(|(id, title)| CompletionItem {
-            label: format!("#{}", id),
-            kind: Some(CompletionItemKind::REFERENCE),
-            detail: Some(match title {
-                Some(title) => format!("{}: {}", detail, title),
-                None => detail.to_string(),
-            }),
+            detail: Some("Debian bug (from changelog history)".to_string()),
             insert_text: Some(
                 id.strip_prefix(normalized_prefix)
                     .unwrap_or(&id)
@@ -530,6 +513,33 @@ fn merge_unique_completions(
         .chain(second)
         .filter(|item| seen.insert(item.label.clone()))
         .collect()
+}
+
+fn bug_summary_documentation(summary: &BugSummary) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("https://bugs.debian.org/{}", summary.id));
+    if let Some(severity) = &summary.severity {
+        parts.push(format!("Severity: {}", severity));
+    }
+    if summary.done {
+        parts.push("Status: done".to_string());
+    }
+    if let Some(originator) = &summary.originator {
+        if !originator.is_empty() {
+            parts.push(format!("Reported by: {}", originator));
+        }
+    }
+    if let Some(tags) = &summary.tags {
+        if !tags.is_empty() {
+            parts.push(format!("Tags: {}", tags));
+        }
+    }
+    if let Some(forwarded) = &summary.forwarded {
+        if !forwarded.is_empty() {
+            parts.push(format!("Forwarded: {}", forwarded));
+        }
+    }
+    parts.join("\n")
 }
 
 /// Get completion items for Debian distributions.
@@ -772,20 +782,8 @@ bar (1.0-1) unstable; urgency=low
         assert!(prefix.is_none());
     }
 
-    #[test]
-    fn test_get_bug_completions_from_ids_uses_suffix_insert_text() {
-        let completions = get_bug_completions_from_ids(
-            vec![123456_u32, 999999_u32],
-            "123",
-            "Debian bug (from changelog history)",
-        );
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].label, "#123456");
-        assert_eq!(completions[0].insert_text.as_deref(), Some("456"));
-    }
-
-    #[test]
-    fn test_get_async_bug_completions_merges_local_and_remote() {
+    #[tokio::test]
+    async fn test_get_async_bug_completions_merges_local_and_remote() {
         let text = "\
 foo (1.0-2) unstable; urgency=medium
 
@@ -803,7 +801,7 @@ foo (1.0-1) unstable; urgency=medium
         let bug_cache = crate::bugs::new_shared_bug_cache();
 
         {
-            let mut cache = tokio_test::block_on(bug_cache.write());
+            let mut cache = bug_cache.write().await;
             cache.insert_cached_open_bugs_for_package(
                 "foo",
                 vec![
@@ -814,13 +812,10 @@ foo (1.0-1) unstable; urgency=medium
         }
 
         let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
-        let completions = tokio_test::block_on(get_async_bug_completions(
-            &parsed,
-            text,
-            position_at(text, offset),
-            &bug_cache,
-        ))
-        .expect("bug context should return Some");
+        let completions =
+            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
+                .await
+                .expect("bug context should return Some");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));
@@ -834,21 +829,54 @@ foo (1.0-1) unstable; urgency=medium
                     .as_deref()
                     .is_some_and(|detail| detail.contains("New regression in foo"))
         }));
+        assert!(completions.iter().any(|item| {
+            item.label == "#123456"
+                && item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("Older fix from BTS"))
+        }));
     }
 
-    #[test]
-    fn test_get_async_bug_completions_returns_none_outside_bug_context() {
+    #[tokio::test]
+    async fn test_get_async_bug_completions_local_only_no_cache() {
+        let text = "\
+foo (1.0-2) unstable; urgency=medium
+
+  * Fix regression. Closes: #
+
+ -- John Doe <john@example.com>  Mon, 02 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) unstable; urgency=medium
+
+  * Initial fix. Closes: #654321
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+";
+        let parsed = parse_for(text);
+        let bug_cache = crate::bugs::new_shared_bug_cache();
+        let offset = text.find("Closes: #\n").unwrap() + "Closes: #".len();
+        let completions =
+            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
+                .await
+                .expect("bug context should return Some");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            labels.contains(&"#654321"),
+            "expected #654321, got {:?}",
+            labels
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_async_bug_completions_returns_none_outside_bug_context() {
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let bug_cache = crate::bugs::new_shared_bug_cache();
         let offset = text.find("Initial").unwrap() + 2;
 
-        let completions = tokio_test::block_on(get_async_bug_completions(
-            &parsed,
-            text,
-            position_at(text, offset),
-            &bug_cache,
-        ));
+        let completions =
+            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache).await;
         assert!(completions.is_none());
     }
 }
