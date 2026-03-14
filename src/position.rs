@@ -1,10 +1,15 @@
 use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{Position, Range};
 
-/// Convert TextSize to LSP Position
+/// Return the UTF-16 code unit length of a string.
+pub fn utf16_len(s: &str) -> u32 {
+    s.chars().map(|c| c.len_utf16() as u32).sum()
+}
+
+/// Convert TextSize (byte offset) to LSP Position (line, UTF-16 code unit offset)
 pub fn offset_to_position(text: &str, offset: TextSize) -> Position {
-    let mut line = 0;
-    let mut line_start_offset = TextSize::from(0);
+    let mut line = 0u32;
+    let mut utf16_col = 0u32;
 
     for (i, ch) in text.char_indices() {
         let current_offset = TextSize::try_from(i).unwrap();
@@ -15,13 +20,16 @@ pub fn offset_to_position(text: &str, offset: TextSize) -> Position {
 
         if ch == '\n' {
             line += 1;
-            line_start_offset = TextSize::try_from(i + 1).unwrap();
+            utf16_col = 0;
+        } else {
+            utf16_col += ch.len_utf16() as u32;
         }
     }
 
-    let character = (offset - line_start_offset).into();
-
-    Position { line, character }
+    Position {
+        line,
+        character: utf16_col,
+    }
 }
 
 /// Convert TextRange to LSP Range
@@ -32,7 +40,7 @@ pub fn text_range_to_lsp_range(text: &str, range: TextRange) -> Range {
     }
 }
 
-/// Convert LSP Position to TextSize
+/// Convert LSP Position (line, UTF-16 code unit offset) to TextSize (byte offset)
 pub fn try_position_to_offset(text: &str, position: Position) -> Option<TextSize> {
     let mut line = 0u32;
     let mut line_start = 0usize;
@@ -53,17 +61,29 @@ pub fn try_position_to_offset(text: &str, position: Position) -> Option<TextSize
         return None;
     }
 
-    // If character is beyond the end of the target line, return an error.
-    let line_end = text[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(text.len());
-    let requested = line_start.checked_add(position.character as usize)?;
-    if requested > line_end {
-        return None;
+    // Walk UTF-16 code units to find the byte offset.
+    let mut utf16_col = 0u32;
+    for (i, ch) in text[line_start..].char_indices() {
+        if utf16_col >= position.character {
+            return TextSize::try_from(line_start + i).ok();
+        }
+        if ch == '\n' {
+            break;
+        }
+        utf16_col += ch.len_utf16() as u32;
     }
 
-    TextSize::try_from(requested).ok()
+    // Character position is at or past end of line content.
+    if utf16_col >= position.character {
+        // Position is at the newline or end of text — find the byte offset.
+        let line_end = text[line_start..]
+            .find('\n')
+            .map(|rel| line_start + rel)
+            .unwrap_or(text.len());
+        return TextSize::try_from(line_end).ok();
+    }
+
+    None
 }
 
 /// Convert LSP Range to TextRange
@@ -116,5 +136,51 @@ mod tests {
         let text = "Source: test\n";
         let range = Range::new(Position::new(10, 0), Position::new(10, 1));
         assert!(try_lsp_range_to_text_range(text, &range).is_none());
+    }
+
+    #[test]
+    fn test_offset_to_position_with_multibyte_chars() {
+        // 'ĳ' is U+0133: 2 bytes in UTF-8, 1 code unit in UTF-16
+        let text = "Vernooĳ rest";
+        // 'V' at byte 0 -> col 0
+        assert_eq!(
+            offset_to_position(text, TextSize::from(0u32)),
+            Position::new(0, 0)
+        );
+        // 'ĳ' starts at byte 6, col 6
+        assert_eq!(
+            offset_to_position(text, TextSize::from(6u32)),
+            Position::new(0, 6)
+        );
+        // ' ' after 'ĳ' is at byte 8, but UTF-16 col 7
+        assert_eq!(
+            offset_to_position(text, TextSize::from(8u32)),
+            Position::new(0, 7)
+        );
+        // 'r' of "rest" at byte 9, UTF-16 col 8
+        assert_eq!(
+            offset_to_position(text, TextSize::from(9u32)),
+            Position::new(0, 8)
+        );
+    }
+
+    #[test]
+    fn test_try_position_to_offset_with_multibyte_chars() {
+        let text = "Vernooĳ rest";
+        // col 7 in UTF-16 -> byte 8 (the space after 'ĳ')
+        let offset = try_position_to_offset(text, Position::new(0, 7)).unwrap();
+        assert_eq!(offset, TextSize::from(8u32));
+        // col 8 in UTF-16 -> byte 9 ('r')
+        let offset = try_position_to_offset(text, Position::new(0, 8)).unwrap();
+        assert_eq!(offset, TextSize::from(9u32));
+    }
+
+    #[test]
+    fn test_utf16_len() {
+        assert_eq!(utf16_len("hello"), 5);
+        assert_eq!(utf16_len("Vernooĳ"), 7); // ĳ is 1 UTF-16 code unit
+        assert_eq!(utf16_len(""), 0);
+        // Emoji 😀 (U+1F600) is 2 UTF-16 code units (surrogate pair)
+        assert_eq!(utf16_len("😀"), 2);
     }
 }
