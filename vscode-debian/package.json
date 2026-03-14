@@ -118,6 +118,29 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "configurationDefaults": {
+      "[debchangelog]": {
+        "editor.colorDecorators": false
+      },
+      "[debcontrol]": {
+        "editor.colorDecorators": false
+      },
+      "[debcopyright]": {
+        "editor.colorDecorators": false
+      },
+      "[debwatch]": {
+        "editor.colorDecorators": false
+      },
+      "[debtestscontrol]": {
+        "editor.colorDecorators": false
+      },
+      "[debsourceformat]": {
+        "editor.colorDecorators": false
+      },
+      "[debupstreammetadata]": {
+        "editor.colorDecorators": false
+      }
+    },
     "configuration": {
       "type": "object",
       "title": "Debian Language Server",
