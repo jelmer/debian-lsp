@@ -622,6 +622,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 copyright::generate_document_symbols(&parsed, &source_text)
             }
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                control::generate_document_symbols(&parsed, &source_text)
+            }
             _ => return Ok(None),
         };
 
