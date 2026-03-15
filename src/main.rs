@@ -151,6 +151,7 @@ impl LanguageServer for Backend {
                     all_commit_characters: None,
                     completion_item: None,
                 }),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -593,6 +594,37 @@ impl LanguageServer for Backend {
                 result_id: None,
                 data: tokens,
             })))
+        }
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        let symbols = match file.file_type {
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                changelog::generate_document_symbols(&parsed, &source_text)
+            }
+            _ => return Ok(None),
+        };
+
+        if symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         }
     }
 }
