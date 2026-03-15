@@ -618,6 +618,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_document_symbols(&parsed, &source_text)
             }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                copyright::generate_document_symbols(&parsed, &source_text)
+            }
             _ => return Ok(None),
         };
 
