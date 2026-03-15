@@ -180,10 +180,10 @@ impl Backend {
         if let Some(package_name) = package_name {
             let bug_cache = self.bug_cache.clone();
             tokio::spawn(async move {
-                bug_cache
-                    .write()
-                    .await
-                    .prefetch_bugs_for_package(&package_name)
+                let mut cache = bug_cache.write().await;
+                cache.prefetch_bugs_for_package(&package_name).await;
+                cache
+                    .prefetch_launchpad_bugs_for_package(&package_name)
                     .await;
             });
         }

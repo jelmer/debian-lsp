@@ -5,7 +5,13 @@ use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
-use crate::bugs::{BugSummary, SharedBugCache};
+use crate::bugs::{BugSummary, LaunchpadBugSummary, SharedBugCache};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BugTracker {
+    Debian,
+    Launchpad,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CursorContext {
@@ -19,6 +25,7 @@ enum CursorContext {
         value_prefix: String,
     },
     BugNumber {
+        tracker: BugTracker,
         package_name: Option<String>,
         value_prefix: String,
     },
@@ -29,7 +36,7 @@ enum CursorContext {
 /// Uses changelog CST context to return only relevant value completions:
 /// package names at header start, distributions in header distribution
 /// position, urgency levels for `urgency=` metadata values, and local
-/// changelog bug numbers in `Closes: #...` detail contexts.
+/// changelog bug numbers in `Closes: #...` and `LP: #...` detail contexts.
 pub fn get_completions(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
     source_text: &str,
@@ -49,15 +56,21 @@ pub fn get_completions(
             get_distribution_completions(&value_prefix)
         }
         Some(CursorContext::Urgency { value_prefix }) => get_urgency_completions(&value_prefix),
-        Some(CursorContext::BugNumber { value_prefix, .. }) => {
-            get_local_bug_completions(&changelog, &value_prefix)
-        }
+        Some(CursorContext::BugNumber {
+            tracker,
+            value_prefix,
+            ..
+        }) => match tracker {
+            BugTracker::Debian => get_local_debian_bug_completions(&changelog, &value_prefix),
+            BugTracker::Launchpad => get_local_launchpad_bug_completions(&changelog, &value_prefix),
+        },
         None => Vec::new(),
     }
 }
 
-/// Get bug-number completions for changelog `Closes: #...` context using
-/// both local changelog data and cached Debbugs lookups.
+/// Get bug-number completions for changelog bug-reference contexts
+/// (`Closes: #...` and `LP: #...`) using local changelog data and
+/// cached tracker lookups.
 ///
 /// Returns `None` when the cursor is not in bug-number context.
 pub async fn get_async_bug_completions(
@@ -68,10 +81,11 @@ pub async fn get_async_bug_completions(
 ) -> Option<Vec<CompletionItem>> {
     // Keep all CST-backed values in a short scope and drop them before await
     // so this future remains Send for tower-lsp.
-    let (package_name, value_prefix, local) = {
+    let (tracker, package_name, value_prefix, local) = {
         let changelog = debian_changelog::ChangeLog::cast(parse.syntax_node())?;
 
         let CursorContext::BugNumber {
+            tracker,
             package_name,
             value_prefix,
         } = get_cursor_context(&changelog, source_text, position)?
@@ -79,48 +93,52 @@ pub async fn get_async_bug_completions(
             return None;
         };
 
-        let local = get_local_bug_completions(&changelog, &value_prefix);
-        (package_name, value_prefix, local)
+        let local = match tracker {
+            BugTracker::Debian => get_local_debian_bug_completions(&changelog, &value_prefix),
+            BugTracker::Launchpad => get_local_launchpad_bug_completions(&changelog, &value_prefix),
+        };
+        (tracker, package_name, value_prefix, local)
     };
 
-    let mut remote_completions = Vec::new();
-    if let Some(package_name) = package_name {
-        let mut summaries = bug_cache
-            .write()
-            .await
-            .get_bug_summaries_with_prefix(&package_name, &value_prefix)
-            .await;
-
-        // Sort: open bugs first, then by bug ID descending (highest/newest first).
-        summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
-
+    let remote_completions = if let Some(package_name) = package_name {
         let normalized_prefix = value_prefix.trim();
-        remote_completions = summaries
-            .into_iter()
-            .enumerate()
-            .map(|(idx, summary)| {
-                let id_str = summary.id.to_string();
-                let detail_text = match &summary.title {
-                    Some(title) => format!("Debian bug (from UDD): {}", title),
-                    None => "Debian bug (from UDD)".to_string(),
-                };
-                CompletionItem {
-                    label: format!("#{}", id_str),
-                    kind: Some(CompletionItemKind::REFERENCE),
-                    detail: Some(detail_text),
-                    documentation: Some(Documentation::String(bug_summary_documentation(&summary))),
-                    sort_text: Some(format!("{:06}", idx)),
-                    insert_text: Some(
-                        id_str
-                            .strip_prefix(normalized_prefix)
-                            .unwrap_or(&id_str)
-                            .to_string(),
-                    ),
-                    ..Default::default()
-                }
-            })
-            .collect();
-    }
+        match tracker {
+            BugTracker::Debian => {
+                let mut summaries = bug_cache
+                    .write()
+                    .await
+                    .get_bug_summaries_with_prefix(&package_name, &value_prefix)
+                    .await;
+                // Sort: open bugs first, then by bug ID descending (highest/newest first).
+                summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
+                summaries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, summary)| {
+                        remote_debian_bug_completion(&summary, idx, normalized_prefix)
+                    })
+                    .collect()
+            }
+            BugTracker::Launchpad => {
+                let mut summaries = bug_cache
+                    .write()
+                    .await
+                    .get_launchpad_bug_summaries_with_prefix(&package_name, &value_prefix)
+                    .await;
+                // Sort: open bugs first, then by bug ID descending (highest/newest first).
+                summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
+                summaries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, summary)| {
+                        remote_launchpad_bug_completion(&summary, idx, normalized_prefix)
+                    })
+                    .collect()
+            }
+        }
+    } else {
+        Vec::new()
+    };
 
     Some(merge_unique_completions(remote_completions, local))
 }
@@ -147,8 +165,9 @@ fn get_cursor_context(
         }
     }
 
-    if let Some(value_prefix) = bug_prefix_at_offset(&entry, offset) {
+    if let Some((tracker, value_prefix)) = bug_prefix_at_offset(&entry, offset) {
         return Some(CursorContext::BugNumber {
+            tracker,
             package_name: entry.package(),
             value_prefix,
         });
@@ -350,11 +369,14 @@ fn urgency_prefix_at_offset(
     None
 }
 
-/// Return the decimal prefix after `Closes: #` at `offset` inside an entry.
+/// Return bug-reference context at `offset` inside an entry.
 ///
-/// This only matches detail lines (`DETAIL` tokens) and returns `None` for
-/// non-`Closes:` contexts.
-fn bug_prefix_at_offset(entry: &debian_changelog::Entry, offset: TextSize) -> Option<String> {
+/// Supports Debian bug references (`Closes: #...`) and Launchpad bug
+/// references (`LP: #...`) on detail lines (`DETAIL` tokens).
+fn bug_prefix_at_offset(
+    entry: &debian_changelog::Entry,
+    offset: TextSize,
+) -> Option<(BugTracker, String)> {
     let detail = match entry.syntax().token_at_offset(offset) {
         rowan::TokenAtOffset::Single(token) => Some(token),
         rowan::TokenAtOffset::Between(left, right) => {
@@ -373,7 +395,16 @@ fn bug_prefix_at_offset(entry: &debian_changelog::Entry, offset: TextSize) -> Op
         return None;
     }
 
-    closes_bug_prefix_at_offset(detail.text(), detail.text_range(), offset)
+    if let Some(prefix) = closes_bug_prefix_at_offset(detail.text(), detail.text_range(), offset) {
+        return Some((BugTracker::Debian, prefix));
+    }
+
+    if let Some(prefix) = launchpad_bug_prefix_at_offset(detail.text(), detail.text_range(), offset)
+    {
+        return Some((BugTracker::Launchpad, prefix));
+    }
+
+    None
 }
 
 /// Parse a `Closes:` bug-number prefix from a single detail line slice.
@@ -384,6 +415,28 @@ fn closes_bug_prefix_at_offset(
     detail_text: &str,
     detail_range: TextRange,
     offset: TextSize,
+) -> Option<String> {
+    prefixed_bug_prefix_at_offset(detail_text, detail_range, offset, "closes:")
+}
+
+/// Parse an `LP:` bug-number prefix from a single detail line slice.
+///
+/// Supports comma-separated references like `LP: #123, #456` and returns
+/// the digits of the currently edited fragment.
+fn launchpad_bug_prefix_at_offset(
+    detail_text: &str,
+    detail_range: TextRange,
+    offset: TextSize,
+) -> Option<String> {
+    prefixed_bug_prefix_at_offset(detail_text, detail_range, offset, "lp:")
+}
+
+/// Parse a marker-prefixed bug number fragment (e.g. `closes:` or `lp:`).
+fn prefixed_bug_prefix_at_offset(
+    detail_text: &str,
+    detail_range: TextRange,
+    offset: TextSize,
+    marker: &str,
 ) -> Option<String> {
     if !range_contains_offset(detail_range, offset) {
         return None;
@@ -398,20 +451,33 @@ fn closes_bug_prefix_at_offset(
     let up_to_cursor = &detail_text[..prefix_end];
 
     let lower = up_to_cursor.to_ascii_lowercase();
-    let closes_pos = lower.rfind("closes:")?;
-    let after_closes = &up_to_cursor[closes_pos + "closes:".len()..];
+    let mut marker_pos = None;
+    for (idx, _) in lower.match_indices(marker) {
+        let is_word_boundary = if idx == 0 {
+            true
+        } else {
+            let prev = lower.as_bytes()[idx - 1];
+            !(prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_')
+        };
 
-    if after_closes
+        if is_word_boundary {
+            marker_pos = Some(idx);
+        }
+    }
+    let marker_pos = marker_pos?;
+    let after_marker = &up_to_cursor[marker_pos + marker.len()..];
+
+    if after_marker
         .chars()
         .any(|c| !(c.is_ascii_whitespace() || c == ',' || c == '#' || c.is_ascii_digit()))
     {
         return None;
     }
 
-    let current_fragment = after_closes
+    let current_fragment = after_marker
         .rsplit(',')
         .next()
-        .unwrap_or(after_closes)
+        .unwrap_or(after_marker)
         .trim_start();
     let digits = current_fragment.strip_prefix('#')?;
 
@@ -471,7 +537,8 @@ fn get_package_completions(
         .collect()
 }
 
-fn get_local_bug_completions(
+/// Suggest Debian bug references found in changelog history.
+fn get_local_debian_bug_completions(
     changelog: &debian_changelog::ChangeLog,
     prefix: &str,
 ) -> Vec<CompletionItem> {
@@ -503,6 +570,39 @@ fn get_local_bug_completions(
         .collect()
 }
 
+/// Suggest Launchpad bug references found in changelog history.
+fn get_local_launchpad_bug_completions(
+    changelog: &debian_changelog::ChangeLog,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let mut bug_ids = BTreeSet::new();
+    for entry in changelog.iter() {
+        let lines: Vec<_> = entry.change_lines().collect();
+        let line_refs: Vec<_> = lines.iter().map(|line| line.as_str()).collect();
+        bug_ids.extend(debian_changelog::changes::find_closed_launchpad_bugs(
+            &line_refs,
+        ));
+    }
+
+    let normalized_prefix = prefix.trim();
+    bug_ids
+        .into_iter()
+        .map(|id| id.to_string())
+        .filter(|id| id.starts_with(normalized_prefix))
+        .map(|id| CompletionItem {
+            label: format!("#{}", id),
+            kind: Some(CompletionItemKind::REFERENCE),
+            detail: Some("Launchpad bug (from changelog history)".to_string()),
+            insert_text: Some(
+                id.strip_prefix(normalized_prefix)
+                    .unwrap_or(&id)
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .collect()
+}
+
 fn merge_unique_completions(
     first: Vec<CompletionItem>,
     second: Vec<CompletionItem>,
@@ -515,7 +615,65 @@ fn merge_unique_completions(
         .collect()
 }
 
-fn bug_summary_documentation(summary: &BugSummary) -> String {
+/// Build a completion item from a Debian bug summary.
+fn remote_debian_bug_completion(
+    summary: &BugSummary,
+    idx: usize,
+    normalized_prefix: &str,
+) -> CompletionItem {
+    let id_str = summary.id.to_string();
+    let detail_text = match &summary.title {
+        Some(title) => format!("Debian bug (from UDD): {}", title),
+        None => "Debian bug (from UDD)".to_string(),
+    };
+    CompletionItem {
+        label: format!("#{}", id_str),
+        kind: Some(CompletionItemKind::REFERENCE),
+        detail: Some(detail_text),
+        documentation: Some(Documentation::String(debian_bug_summary_documentation(
+            summary,
+        ))),
+        sort_text: Some(format!("{:06}", idx)),
+        insert_text: Some(
+            id_str
+                .strip_prefix(normalized_prefix)
+                .unwrap_or(&id_str)
+                .to_string(),
+        ),
+        ..Default::default()
+    }
+}
+
+/// Build a completion item from a Launchpad bug summary.
+fn remote_launchpad_bug_completion(
+    summary: &LaunchpadBugSummary,
+    idx: usize,
+    normalized_prefix: &str,
+) -> CompletionItem {
+    let id_str = summary.id.to_string();
+    let detail_text = match &summary.title {
+        Some(title) => format!("Launchpad bug: {}", title),
+        None => "Launchpad bug".to_string(),
+    };
+    CompletionItem {
+        label: format!("#{}", id_str),
+        kind: Some(CompletionItemKind::REFERENCE),
+        detail: Some(detail_text),
+        documentation: Some(Documentation::String(launchpad_bug_summary_documentation(
+            summary,
+        ))),
+        sort_text: Some(format!("{:06}", idx)),
+        insert_text: Some(
+            id_str
+                .strip_prefix(normalized_prefix)
+                .unwrap_or(&id_str)
+                .to_string(),
+        ),
+        ..Default::default()
+    }
+}
+
+fn debian_bug_summary_documentation(summary: &BugSummary) -> String {
     let mut parts = Vec::new();
     parts.push(format!("https://bugs.debian.org/{}", summary.id));
     if let Some(severity) = &summary.severity {
@@ -539,6 +697,20 @@ fn bug_summary_documentation(summary: &BugSummary) -> String {
             parts.push(format!("Forwarded: {}", forwarded));
         }
     }
+    parts.join("\n")
+}
+
+fn launchpad_bug_summary_documentation(summary: &LaunchpadBugSummary) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("https://bugs.launchpad.net/bugs/{}", summary.id));
+    if let Some(status) = &summary.status {
+        parts.push(format!("Status: {}", status));
+    }
+    parts.push(if summary.done {
+        "Completion: complete".to_string()
+    } else {
+        "Completion: open".to_string()
+    });
     parts.join("\n")
 }
 
@@ -668,8 +840,39 @@ foo (1.0-1) unstable; urgency=medium
     }
 
     #[test]
+    fn test_get_completions_on_lp_bug_value() {
+        let text = "\
+foo (1.0-2) unstable; urgency=medium
+
+  * Follow-up release.
+
+ -- John Doe <john@example.com>  Mon, 02 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) unstable; urgency=medium
+
+  * Fix issue. LP: #123456
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+";
+        let parsed = parse_for(text);
+        let offset = text.find("LP: #12").unwrap() + "LP: #12".len();
+        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"#123456"));
+    }
+
+    #[test]
     fn test_get_completions_on_non_closes_bug_context_returns_empty() {
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Ref #123456 without closes tag.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let offset = text.find("#123456").unwrap() + 4;
+        let completions = get_completions(&parsed, text, position_at(text, offset));
+        assert!(completions.is_empty());
+    }
+
+    #[test]
+    fn test_get_completions_on_non_lp_bug_context_returns_empty() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Ref LP #123456 without colon.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("#123456").unwrap() + 4;
         let completions = get_completions(&parsed, text, position_at(text, offset));
@@ -782,6 +985,66 @@ bar (1.0-1) unstable; urgency=low
         assert!(prefix.is_none());
     }
 
+    #[test]
+    fn test_closes_bug_prefix_rejects_embedded_marker() {
+        let text = "  * This line says discloses: #123456";
+        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
+        let prefix = closes_bug_prefix_at_offset(
+            text,
+            TextRange::new(
+                TextSize::from(0u32),
+                TextSize::try_from(text.len()).unwrap(),
+            ),
+            offset,
+        );
+        assert!(prefix.is_none());
+    }
+
+    #[test]
+    fn test_lp_bug_prefix_detection() {
+        let text = "  * Fix issue. LP: #1234, #5678";
+        let offset = TextSize::try_from(text.find("#567").unwrap() + 4).unwrap();
+        let prefix = launchpad_bug_prefix_at_offset(
+            text,
+            TextRange::new(
+                TextSize::from(0u32),
+                TextSize::try_from(text.len()).unwrap(),
+            ),
+            offset,
+        );
+        assert_eq!(prefix.as_deref(), Some("567"));
+    }
+
+    #[test]
+    fn test_lp_bug_prefix_rejects_non_lp_context() {
+        let text = "  * Mention #123456";
+        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
+        let prefix = launchpad_bug_prefix_at_offset(
+            text,
+            TextRange::new(
+                TextSize::from(0u32),
+                TextSize::try_from(text.len()).unwrap(),
+            ),
+            offset,
+        );
+        assert!(prefix.is_none());
+    }
+
+    #[test]
+    fn test_lp_bug_prefix_rejects_embedded_marker() {
+        let text = "  * This line says help: #123456";
+        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
+        let prefix = launchpad_bug_prefix_at_offset(
+            text,
+            TextRange::new(
+                TextSize::from(0u32),
+                TextSize::try_from(text.len()).unwrap(),
+            ),
+            offset,
+        );
+        assert!(prefix.is_none());
+    }
+
     #[tokio::test]
     async fn test_get_async_bug_completions_merges_local_and_remote() {
         let text = "\
@@ -835,6 +1098,67 @@ foo (1.0-1) unstable; urgency=medium
                     .detail
                     .as_deref()
                     .is_some_and(|detail| detail.contains("Older fix from BTS"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_get_async_bug_completions_merges_local_and_remote_launchpad() {
+        let text = "\
+foo (1.0-2) unstable; urgency=medium
+
+  * Follow-up work. LP: #12
+
+ -- John Doe <john@example.com>  Mon, 02 Jan 2024 12:00:00 +0000
+
+foo (1.0-1) unstable; urgency=medium
+
+  * Older fix. LP: #123456
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+";
+        let parsed = parse_for(text);
+        let bug_cache = crate::bugs::new_shared_bug_cache();
+
+        {
+            let mut cache = bug_cache.write().await;
+            cache.insert_cached_launchpad_bugs_for_package(
+                "foo",
+                vec![
+                    (
+                        123456,
+                        Some("Older fix from Launchpad"),
+                        Some("Fix Released"),
+                        true,
+                    ),
+                    (129999, Some("New regression in foo"), Some("New"), false),
+                ],
+            );
+        }
+
+        let offset = text.find("LP: #12").unwrap() + "LP: #12".len();
+        let completions =
+            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
+                .await
+                .expect("bug context should return Some");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"#123456"));
+        assert!(labels.contains(&"#129999"));
+        let count_123456 = labels.iter().filter(|label| **label == "#123456").count();
+        assert_eq!(count_123456, 1);
+        assert!(completions.iter().any(|item| {
+            item.label == "#129999"
+                && item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("New regression in foo"))
+        }));
+        assert!(completions.iter().any(|item| {
+            item.label == "#123456"
+                && item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("Older fix from Launchpad"))
         }));
     }
 
