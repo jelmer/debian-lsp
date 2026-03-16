@@ -120,7 +120,8 @@
     ],
     "configurationDefaults": {
       "[debchangelog]": {
-        "editor.colorDecorators": false
+        "editor.colorDecorators": false,
+        "editor.formatOnType": true
       },
       "[debcontrol]": {
         "editor.colorDecorators": false

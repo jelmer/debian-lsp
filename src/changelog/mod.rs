@@ -3,6 +3,7 @@ pub mod completion;
 pub mod detection;
 pub mod fields;
 pub mod folding;
+pub mod on_type_formatting;
 pub mod semantic;
 pub mod symbols;
 
