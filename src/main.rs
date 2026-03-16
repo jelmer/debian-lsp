@@ -179,6 +179,10 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+                    first_trigger_character: "\n".to_string(),
+                    more_trigger_character: Some(vec!["-".to_string()]),
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -683,6 +687,36 @@ impl LanguageServer for Backend {
             Ok(None)
         } else {
             Ok(Some(ranges))
+        }
+    }
+
+    async fn on_type_formatting(
+        &self,
+        params: DocumentOnTypeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Changelog => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                Ok(changelog::on_type_formatting::on_type_formatting(
+                    &parsed,
+                    &source_text,
+                    position,
+                    &params.ch,
+                ))
+            }
+            _ => Ok(None),
         }
     }
 }
