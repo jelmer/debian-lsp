@@ -666,6 +666,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_folding_ranges(&parsed, &source_text)
             }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                watch::generate_folding_ranges(&parsed, &source_text)
+            }
             FileType::TestsControl => {
                 match deb822_lossless::Deb822::parse(&source_text).to_result() {
                     Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, &source_text),
