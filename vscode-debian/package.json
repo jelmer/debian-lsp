@@ -124,16 +124,20 @@
         "editor.formatOnType": true
       },
       "[debcontrol]": {
-        "editor.colorDecorators": false
+        "editor.colorDecorators": false,
+        "editor.formatOnType": true
       },
       "[debcopyright]": {
-        "editor.colorDecorators": false
+        "editor.colorDecorators": false,
+        "editor.formatOnType": true
       },
       "[debwatch]": {
-        "editor.colorDecorators": false
+        "editor.colorDecorators": false,
+        "editor.formatOnType": true
       },
       "[debtestscontrol]": {
-        "editor.colorDecorators": false
+        "editor.colorDecorators": false,
+        "editor.formatOnType": true
       },
       "[debsourceformat]": {
         "editor.colorDecorators": false

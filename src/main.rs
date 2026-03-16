@@ -180,8 +180,8 @@ impl LanguageServer for Backend {
                     ),
                 ),
                 document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
-                    first_trigger_character: "\n".to_string(),
-                    more_trigger_character: Some(vec!["-".to_string()]),
+                    first_trigger_character: ":".to_string(),
+                    more_trigger_character: Some(vec!["\n".to_string(), "-".to_string()]),
                 }),
                 ..Default::default()
             },
@@ -704,10 +704,54 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
         match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                Ok(deb822::on_type_formatting::on_type_formatting(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    position,
+                    &params.ch,
+                ))
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                Ok(deb822::on_type_formatting::on_type_formatting(
+                    parsed.to_copyright().as_deb822(),
+                    &source_text,
+                    position,
+                    &params.ch,
+                ))
+            }
+            FileType::TestsControl => {
+                let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                Ok(deb822::on_type_formatting::on_type_formatting(
+                    &deb822,
+                    &source_text,
+                    position,
+                    &params.ch,
+                ))
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                let wf = parsed.to_watch_file();
+                match &wf {
+                    debian_watch::parse::ParsedWatchFile::Deb822(_) => {
+                        let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                        Ok(deb822::on_type_formatting::on_type_formatting(
+                            &deb822,
+                            &source_text,
+                            position,
+                            &params.ch,
+                        ))
+                    }
+                    _ => Ok(None),
+                }
+            }
             FileType::Changelog => {
-                let workspace = self.workspace.lock().await;
-                let source_text = workspace.source_text(file.source_file);
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 Ok(changelog::on_type_formatting::on_type_formatting(
                     &parsed,
