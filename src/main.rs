@@ -151,6 +151,7 @@ impl LanguageServer for Backend {
                     all_commit_characters: None,
                     completion_item: None,
                 }),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
@@ -633,6 +634,55 @@ impl LanguageServer for Backend {
             Ok(None)
         } else {
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        }
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        let ranges = match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), &source_text)
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                deb822::folding::generate_folding_ranges(
+                    parsed.to_copyright().as_deb822(),
+                    &source_text,
+                )
+            }
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                changelog::generate_folding_ranges(&parsed, &source_text)
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                watch::generate_folding_ranges(&parsed, &source_text)
+            }
+            FileType::TestsControl => {
+                match deb822_lossless::Deb822::parse(&source_text).to_result() {
+                    Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, &source_text),
+                    Err(_) => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+
+        if ranges.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ranges))
         }
     }
 }
