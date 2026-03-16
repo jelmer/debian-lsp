@@ -64,6 +64,18 @@ Available settings in coc-settings.json:
 - `debian.enable` (boolean, default: true) - Enable/disable the extension
 - `debian.serverPath` (string, default: "debian-lsp") - Path to the debian-lsp executable
 
+### On-Type Formatting
+
+The server supports on-type formatting for deb822-based files (auto-inserting a
+space after `:` in field names, continuation-line indentation on Enter). To
+enable this, add the following to your coc-settings.json (`:CocConfig`):
+
+```json
+{
+  "coc.preferences.formatOnType": true
+}
+```
+
 ## Development
 
 To work on the extension:

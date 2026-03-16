@@ -55,6 +55,19 @@ Language Server Protocol implementation for Debian packaging files.
 - **Add changelog entry** - create a new changelog entry with incremented version, UNRELEASED distribution, and auto-populated maintainer
 - **Mark for upload** - replace UNRELEASED with the target distribution
 
+### On-Type Formatting
+
+For deb822-based files (control, copyright, watch, tests/control), the server provides on-type formatting:
+- Automatically inserts a space after typing `:` at the end of a field name
+- Inserts continuation-line indentation after pressing Enter inside a field value
+
+This requires the editor to have format-on-type enabled:
+
+- **VS Code**: Enabled by default via the extension's `configurationDefaults`
+- **coc.nvim**: Set `"coc.preferences.formatOnType": true` in your coc-settings.json (`:CocConfig`)
+- **Native Neovim LSP**: Pass `on_type_formatting = true` in your client capabilities, or call `vim.lsp.buf.format()` manually
+- **ALE**: Not supported (ALE does not handle `textDocument/onTypeFormatting`)
+
 ### Semantic Highlighting
 
 Custom token types for syntax highlighting of Debian-specific constructs:

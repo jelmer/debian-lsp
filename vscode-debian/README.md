@@ -50,6 +50,21 @@ Add to your VS Code `settings.json`:
 }
 ```
 
+### On-Type Formatting
+
+Format-on-type is enabled by default for deb822-based file types (control, copyright, watch, tests/control). This automatically inserts a space after typing `:` at the end of a field name and adds continuation-line indentation when pressing Enter inside a field value.
+
+To disable this, add to your `settings.json`:
+
+```json
+{
+  "[debcontrol]": { "editor.formatOnType": false },
+  "[debcopyright]": { "editor.formatOnType": false },
+  "[debwatch]": { "editor.formatOnType": false },
+  "[debtestscontrol]": { "editor.formatOnType": false }
+}
+```
+
 ## Usage
 
 Simply open any Debian package file:
