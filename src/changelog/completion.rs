@@ -5,7 +5,7 @@ use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
-use crate::bugs::{BugSummary, LaunchpadBugSummary, SharedBugCache};
+use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BugTracker {
@@ -617,7 +617,7 @@ fn merge_unique_completions(
 
 /// Build a completion item from a Debian bug summary.
 fn remote_debian_bug_completion(
-    summary: &BugSummary,
+    summary: &DebbugsBugSummary,
     idx: usize,
     normalized_prefix: &str,
 ) -> CompletionItem {
@@ -673,7 +673,7 @@ fn remote_launchpad_bug_completion(
     }
 }
 
-fn debian_bug_summary_documentation(summary: &BugSummary) -> String {
+fn debian_bug_summary_documentation(summary: &DebbugsBugSummary) -> String {
     let mut parts = Vec::new();
     parts.push(format!("https://bugs.debian.org/{}", summary.id));
     if let Some(severity) = &summary.severity {
@@ -1117,7 +1117,7 @@ foo (1.0-1) unstable; urgency=medium
  -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = parse_for(text);
-        let bug_cache = crate::bugs::new_shared_bug_cache();
+        let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
 
         {
             let mut cache = bug_cache.write().await;
