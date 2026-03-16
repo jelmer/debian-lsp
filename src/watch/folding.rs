@@ -15,19 +15,13 @@ pub fn generate_folding_ranges(
     source_text: &str,
 ) -> Vec<FoldingRange> {
     match parse.to_watch_file() {
-        debian_watch::parse::ParsedWatchFile::Deb822(_) => {
-            generate_deb822_folding_ranges(source_text)
+        debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
+            crate::deb822::folding::generate_folding_ranges(wf.as_deb822(), source_text)
         }
         debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
             generate_linebased_folding_ranges(&wf, source_text)
         }
     }
-}
-
-fn generate_deb822_folding_ranges(source_text: &str) -> Vec<FoldingRange> {
-    let deb822_parse = deb822_lossless::Deb822::parse(source_text);
-    let deb822 = deb822_parse.tree();
-    crate::deb822::folding::generate_folding_ranges(&deb822, source_text)
 }
 
 fn generate_linebased_folding_ranges(

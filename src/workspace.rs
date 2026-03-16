@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use rowan::ast::AstNode;
+use salsa::Setter;
 use text_size::TextRange;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Uri};
 
@@ -18,6 +21,7 @@ pub struct UnreleasedUploadInfo {
 }
 
 #[salsa::input]
+#[derive(Debug)]
 pub struct SourceFile {
     pub url: Uri,
     pub text: String,
@@ -57,11 +61,21 @@ pub fn parse_changelog(
     debian_changelog::ChangeLog::parse(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_deb822(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> deb822_lossless::Parse<deb822_lossless::Deb822> {
+    let text = file.text(db);
+    deb822_lossless::Deb822::parse(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
 pub struct Workspace {
     storage: salsa::Storage<Self>,
+    files: HashMap<Uri, SourceFile>,
 }
 
 impl salsa::Database for Workspace {}
@@ -72,7 +86,14 @@ impl Workspace {
     }
 
     pub fn update_file(&mut self, url: Uri, text: String) -> SourceFile {
-        SourceFile::new(self, url, text)
+        if let Some(&existing) = self.files.get(&url) {
+            existing.set_text(self).to(text);
+            existing
+        } else {
+            let sf = SourceFile::new(self, url.clone(), text);
+            self.files.insert(url, sf);
+            sf
+        }
     }
 
     pub fn get_parsed_control(
@@ -218,6 +239,13 @@ impl Workspace {
 
     pub fn get_parsed_watch(&self, file: SourceFile) -> debian_watch::parse::Parse {
         parse_watch(self, file)
+    }
+
+    pub fn get_parsed_deb822(
+        &self,
+        file: SourceFile,
+    ) -> deb822_lossless::Parse<deb822_lossless::Deb822> {
+        parse_deb822(self, file)
     }
 
     pub fn get_parsed_changelog(
