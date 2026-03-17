@@ -18,8 +18,9 @@ let g:ale_linters.debcontrol = ['debian-lsp']
 let g:ale_linters.debcopyright = ['debian-lsp']
 let g:ale_linters.debchangelog = ['debian-lsp']
 let g:ale_linters.debsources = ['debian-lsp']
-let g:ale_linters.make = get(g:ale_linters, 'make', []) + ['debian-lsp']
-let g:ale_linters.yaml = get(g:ale_linters, 'yaml', []) + ['debian-lsp']
+let g:ale_linters.debwatch = ['debian-lsp']
+let g:ale_linters.debupstream = ['debian-lsp']
+let g:ale_linters.autopkgtest = ['debian-lsp']
 
 " Define debian-lsp for debian/control files
 call ale#linter#Define('debcontrol', {
@@ -57,8 +58,8 @@ call ale#linter#Define('debsources', {
 \   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
 \})
 
-" Define debian-lsp for debian/watch and debian/tests/control files (make filetype)
-call ale#linter#Define('make', {
+" Define debian-lsp for debian/watch files
+call ale#linter#Define('debwatch', {
 \   'name': 'debian-lsp',
 \   'lsp': 'stdio',
 \   'executable': g:debian_lsp_executable,
@@ -66,8 +67,17 @@ call ale#linter#Define('make', {
 \   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
 \})
 
-" Define debian-lsp for debian/upstream/metadata files (yaml filetype)
-call ale#linter#Define('yaml', {
+" Define debian-lsp for debian/upstream/metadata files
+call ale#linter#Define('debupstream', {
+\   'name': 'debian-lsp',
+\   'lsp': 'stdio',
+\   'executable': g:debian_lsp_executable,
+\   'command': '%e',
+\   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
+\})
+
+" Define debian-lsp for debian/tests/control files
+call ale#linter#Define('autopkgtest', {
 \   'name': 'debian-lsp',
 \   'lsp': 'stdio',
 \   'executable': g:debian_lsp_executable,
@@ -76,11 +86,14 @@ call ale#linter#Define('yaml', {
 \})
 
 " Set filetypes for Debian packaging files
+" Note: Vim already detects debcontrol, debcopyright, debchangelog,
+" debsources, and autopkgtest.
 augroup debian_filetypes
   autocmd!
   autocmd BufNewFile,BufRead */debian/control setfiletype debcontrol
   autocmd BufNewFile,BufRead */debian/copyright setfiletype debcopyright
   autocmd BufNewFile,BufRead */debian/changelog setfiletype debchangelog
   autocmd BufNewFile,BufRead */debian/source/format setfiletype debsources
-  " watch and tests/control are typically detected as 'make' filetype
+  autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
+  autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
 augroup END
