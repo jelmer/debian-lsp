@@ -30,9 +30,11 @@ impl FieldValidator for TestsControlFieldValidator {
 }
 
 /// Generate semantic tokens for a debian/tests/control file
-pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
-    let parsed = deb822_lossless::Deb822::parse(source_text);
-    let deb822 = parsed.tree();
+pub fn generate_semantic_tokens(
+    deb822_parse: &deb822_lossless::Parse<deb822_lossless::Deb822>,
+    source_text: &str,
+) -> Vec<SemanticToken> {
+    let deb822 = deb822_parse.tree();
     let validator = TestsControlFieldValidator;
     generate_tokens(&deb822, source_text, &validator)
 }
@@ -45,7 +47,8 @@ mod tests {
     #[test]
     fn test_known_fields() {
         let text = "Tests: my-test\nDepends: @\nRestrictions: needs-root\n";
-        let tokens = generate_semantic_tokens(text);
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let tokens = generate_semantic_tokens(&parsed, text);
 
         assert_eq!(tokens.len(), 6);
 
@@ -62,7 +65,8 @@ mod tests {
     #[test]
     fn test_unknown_field() {
         let text = "Tests: my-test\nX-Custom: value\n";
-        let tokens = generate_semantic_tokens(text);
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let tokens = generate_semantic_tokens(&parsed, text);
 
         assert_eq!(tokens[2].token_type, TokenType::UnknownField as u32);
         assert_eq!(tokens[2].length, 8); // "X-Custom"
@@ -71,7 +75,8 @@ mod tests {
     #[test]
     fn test_case_insensitive() {
         let text = "tests: my-test\n";
-        let tokens = generate_semantic_tokens(text);
+        let parsed = deb822_lossless::Deb822::parse(text);
+        let tokens = generate_semantic_tokens(&parsed, text);
 
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
     }

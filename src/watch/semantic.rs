@@ -22,19 +22,14 @@ pub fn generate_semantic_tokens(
     source_text: &str,
 ) -> Vec<SemanticToken> {
     match parse.to_watch_file() {
-        debian_watch::parse::ParsedWatchFile::Deb822(_) => generate_deb822_tokens(source_text),
+        debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
+            let validator = WatchFieldValidator;
+            crate::deb822::semantic::generate_tokens(wf.as_deb822(), source_text, &validator)
+        }
         debian_watch::parse::ParsedWatchFile::LineBased(_) => {
             generate_linebased_tokens(source_text)
         }
     }
-}
-
-/// Generate tokens for v5 deb822 watch files
-fn generate_deb822_tokens(source_text: &str) -> Vec<SemanticToken> {
-    let deb822_parse = deb822_lossless::Deb822::parse(source_text);
-    let deb822 = deb822_parse.tree();
-    let validator = WatchFieldValidator;
-    crate::deb822::semantic::generate_tokens(&deb822, source_text, &validator)
 }
 
 /// Generate tokens for v1-4 line-based watch files

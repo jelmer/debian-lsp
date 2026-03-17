@@ -132,7 +132,7 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                    TextDocumentSyncKind::INCREMENTAL,
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: None,
@@ -249,8 +249,8 @@ impl LanguageServer for Backend {
 
         // Get or detect the file type
         let mut files = self.files.lock().await;
-        let file_type = files
-            .get(&params.text_document.uri)
+        let file_info = files.get(&params.text_document.uri).copied();
+        let file_type = file_info
             .map(|info| info.file_type)
             .or_else(|| FileType::detect(&params.text_document.uri));
 
@@ -258,14 +258,31 @@ impl LanguageServer for Backend {
             return;
         };
 
-        // Apply the content changes
-        let Some(changes) = params.content_changes.first() else {
+        if params.content_changes.is_empty() {
             return;
-        };
+        }
 
+        // Apply incremental content changes to the current text
         let mut workspace = self.workspace.lock().await;
-        let source_file =
-            workspace.update_file(params.text_document.uri.clone(), changes.text.clone());
+        let mut text = file_info
+            .map(|info| workspace.source_text(info.source_file))
+            .unwrap_or_default();
+
+        for change in &params.content_changes {
+            if let Some(range) = &change.range {
+                // Incremental change: splice the range
+                if let Some(text_range) = position::try_lsp_range_to_text_range(&text, range) {
+                    let start: usize = text_range.start().into();
+                    let end: usize = text_range.end().into();
+                    text.replace_range(start..end, &change.text);
+                }
+            } else {
+                // Full replacement
+                text = change.text.clone();
+            }
+        }
+
+        let source_file = workspace.update_file(params.text_document.uri.clone(), text);
         files.insert(
             params.text_document.uri.clone(),
             FileInfo {
@@ -304,13 +321,13 @@ impl LanguageServer for Backend {
                     &source_text,
                     position,
                 );
-                drop(workspace);
                 if let Some(deb822::completion::CursorContext::FieldValue {
                     field_name,
                     value_prefix,
                 }) = &cursor_context
                 {
-                    // Try async completions (relationship fields via package cache)
+                    drop(workspace); // Release lock before async operations
+                                     // Try async completions (relationship fields via package cache)
                     if let Some(async_completions) = control::get_async_field_value_completions(
                         field_name,
                         value_prefix,
@@ -327,9 +344,7 @@ impl LanguageServer for Backend {
                     }
                 } else {
                     // Not on a field value — get field name completions
-                    let workspace = self.workspace.lock().await;
-                    let source_text = workspace.source_text(source_file);
-                    let parsed = workspace.get_parsed_control(source_file);
+                    // (workspace lock and parsed result already held)
                     control::get_completions(parsed.tree().as_deb822(), &source_text, position)
                 }
             }
@@ -349,11 +364,8 @@ impl LanguageServer for Backend {
                     debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
                         watch::get_linebased_completions(&uri, wf, &source_text, position)
                     }
-                    debian_watch::parse::ParsedWatchFile::Deb822(_) => {
-                        deb822_lossless::Deb822::parse(&source_text)
-                            .to_result()
-                            .map(|d| watch::get_completions_deb822(&d, &source_text, position))
-                            .unwrap_or_default()
+                    debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
+                        watch::get_completions_deb822(wf.as_deb822(), &source_text, position)
                     }
                 }
             }
@@ -586,7 +598,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_watch(file.source_file);
                 watch::generate_semantic_tokens(&parsed, &source_text)
             }
-            FileType::TestsControl => tests::generate_semantic_tokens(&source_text),
+            FileType::TestsControl => {
+                let deb822_parse = workspace.get_parsed_deb822(file.source_file);
+                tests::generate_semantic_tokens(&deb822_parse, &source_text)
+            }
             FileType::UpstreamMetadata => upstream_metadata::generate_semantic_tokens(&source_text),
             // TODO: Implement semantic tokens for other file types
             _ => vec![],
@@ -675,7 +690,8 @@ impl LanguageServer for Backend {
                 watch::generate_folding_ranges(&parsed, &source_text)
             }
             FileType::TestsControl => {
-                match deb822_lossless::Deb822::parse(&source_text).to_result() {
+                let deb822_parse = workspace.get_parsed_deb822(file.source_file);
+                match deb822_parse.to_result() {
                     Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, &source_text),
                     Err(_) => return Ok(None),
                 }
@@ -944,6 +960,67 @@ mod main_tests {
 
         assert_eq!(FileType::detect(&changelog_uri), Some(FileType::Changelog));
         assert_eq!(FileType::detect(&control_uri), Some(FileType::Control));
+    }
+
+    #[test]
+    fn test_incremental_edit_apply() {
+        // Simulate applying an incremental edit like did_change does
+        let mut text = "Source: test\nMaintainer: Alice\n".to_string();
+        let range = Range::new(Position::new(0, 8), Position::new(0, 12));
+        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let start: usize = text_range.start().into();
+        let end: usize = text_range.end().into();
+        text.replace_range(start..end, "hello");
+        assert_eq!(text, "Source: hello\nMaintainer: Alice\n");
+    }
+
+    #[test]
+    fn test_incremental_edit_insert() {
+        let mut text = "Source: test\n".to_string();
+        // Insert at end of line 0
+        let range = Range::new(Position::new(0, 12), Position::new(0, 12));
+        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let start: usize = text_range.start().into();
+        let end: usize = text_range.end().into();
+        text.replace_range(start..end, "-pkg");
+        assert_eq!(text, "Source: test-pkg\n");
+    }
+
+    #[test]
+    fn test_incremental_edit_delete() {
+        let mut text = "Source: test-pkg\n".to_string();
+        let range = Range::new(Position::new(0, 8), Position::new(0, 16));
+        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let start: usize = text_range.start().into();
+        let end: usize = text_range.end().into();
+        text.replace_range(start..end, "");
+        assert_eq!(text, "Source: \n");
+    }
+
+    #[test]
+    fn test_incremental_edit_multiline() {
+        let mut text = "Source: test\nMaintainer: Alice\nPriority: optional\n".to_string();
+        // Replace entire second line
+        let range = Range::new(Position::new(1, 0), Position::new(2, 0));
+        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let start: usize = text_range.start().into();
+        let end: usize = text_range.end().into();
+        text.replace_range(start..end, "Maintainer: Bob\n");
+        assert_eq!(text, "Source: test\nMaintainer: Bob\nPriority: optional\n");
+    }
+
+    #[test]
+    fn test_workspace_update_file_reuses_input() {
+        let mut workspace = workspace::Workspace::new();
+        let url: Uri = str::parse("file:///debian/control").unwrap();
+
+        let file1 = workspace.update_file(url.clone(), "Source: a\n".to_string());
+        let file2 = workspace.update_file(url.clone(), "Source: b\n".to_string());
+
+        // Should reuse the same SourceFile input
+        assert_eq!(file1, file2);
+        // Text should be updated
+        assert_eq!(workspace.source_text(file2), "Source: b\n");
     }
 
     #[test]

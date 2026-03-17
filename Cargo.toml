@@ -17,7 +17,7 @@ chrono = "0.4"
 debian-changelog = "0.2.15"
 debian-control = { version = "0.3.3" }
 debian-copyright = { version = "0.1.43", features = ["lossless"] }
-debian-watch = { version = "0.4.5", features = ["linebased", "deb822"] }
+debian-watch = { version = "0.4.6", features = ["linebased", "deb822"] }
 distro-info = "0.4"
 rowan = "0.16.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }

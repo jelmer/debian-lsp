@@ -501,9 +501,9 @@ dependencies = [
 
 [[package]]
 name = "debian-watch"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90c65dcd9d3e23f941e8e4eb80bbcf9c6643cf3064f4b5a19a14bc43b176440a"
+checksum = "2caf4ad059a6070b2baf8563486434236985ff41628c0a3a62e7a7faaa2f0a28"
 dependencies = [
  "clap",
  "deb822-lossless",
