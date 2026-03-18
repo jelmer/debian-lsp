@@ -15,6 +15,7 @@ mod changelog;
 mod control;
 mod copyright;
 mod deb822;
+mod distros;
 mod package_cache;
 mod position;
 mod rules;

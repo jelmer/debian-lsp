@@ -547,7 +547,7 @@ pub fn get_distribution_completions(prefix: &str) -> Vec<CompletionItem> {
     let normalized_prefix = prefix.trim().to_ascii_lowercase();
 
     get_debian_distributions()
-        .into_iter()
+        .iter()
         .filter(|dist| dist.to_ascii_lowercase().starts_with(&normalized_prefix))
         .map(|dist| CompletionItem {
             label: dist.clone(),
@@ -557,7 +557,7 @@ pub fn get_distribution_completions(prefix: &str) -> Vec<CompletionItem> {
                 "Target distribution: {}",
                 dist
             ))),
-            insert_text: Some(dist),
+            insert_text: Some(dist.clone()),
             ..Default::default()
         })
         .collect()

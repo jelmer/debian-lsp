@@ -1,5 +1,4 @@
-/// Debian changelog field definitions and common values
-use distro_info::{DebianDistroInfo, DistroInfo};
+//! Debian changelog field definitions and common values
 
 /// Debian urgency levels for changelog entries
 pub struct UrgencyLevel {
@@ -23,31 +22,9 @@ pub const URGENCY_LEVELS: &[UrgencyLevel] = &[
 ];
 
 /// Get Debian distribution names from distro-info-data
-/// Returns a vector of distribution names (codenames and aliases)
-pub fn get_debian_distributions() -> Vec<String> {
-    // Add common aliases first
-    let mut distributions = vec![
-        "unstable".to_string(),
-        "stable".to_string(),
-        "testing".to_string(),
-        "oldstable".to_string(),
-        "experimental".to_string(),
-        "sid".to_string(),
-        "UNRELEASED".to_string(),
-    ];
-
-    // Try to get distribution data from distro-info
-    if let Ok(debian_info) = DebianDistroInfo::new() {
-        // Add all release codenames
-        for release in debian_info.iter() {
-            let series = release.series();
-            if !distributions.contains(&series.to_string()) {
-                distributions.push(series.to_string());
-            }
-        }
-    }
-
-    distributions
+/// Returns a slice of distribution names (codenames and aliases)
+pub fn get_debian_distributions() -> &'static [String] {
+    crate::distros::get_all_distributions()
 }
 
 #[cfg(test)]
