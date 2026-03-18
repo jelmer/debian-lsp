@@ -22,6 +22,7 @@ mod rules;
 mod source_format;
 mod tests;
 mod upstream_metadata;
+mod vcswatch;
 mod watch;
 mod workspace;
 
@@ -91,6 +92,7 @@ struct Backend {
     package_cache: package_cache::SharedPackageCache,
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
+    vcswatch_cache: vcswatch::SharedVcsWatchCache,
 }
 
 impl Backend {
@@ -898,6 +900,7 @@ impl LanguageServer for Backend {
                     &params.range,
                     &self.package_cache,
                     &resolved_substvars,
+                    &self.vcswatch_cache,
                 )
                 .await;
 
@@ -951,6 +954,7 @@ async fn main() {
     });
 
     let bug_cache = bugs::new_shared_bug_cache();
+    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache();
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -959,6 +963,7 @@ async fn main() {
         package_cache: package_cache.clone(),
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
+        vcswatch_cache: vcswatch_cache.clone(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
