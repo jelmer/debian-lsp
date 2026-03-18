@@ -821,6 +821,24 @@ impl LanguageServer for Backend {
                     Ok(Some(hints))
                 }
             }
+            FileType::Control => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                drop(workspace); // Release lock before async package cache access
+                let hints = control::generate_inlay_hints(
+                    &parsed,
+                    &source_text,
+                    &params.range,
+                    &self.package_cache,
+                )
+                .await;
+                if hints.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(hints))
+                }
+            }
             _ => Ok(None),
         }
     }
