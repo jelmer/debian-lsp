@@ -276,6 +276,7 @@ fn find_relations(
 /// Currently provides hints for:
 /// - Standards-Version: shows `[latest: X.Y.Z]` if outdated
 /// - debhelper-compat (= N): shows `[current: M]`
+/// - Archive versions: shows `[available: X.Y.Z]` for real packages
 /// - Virtual packages: shows `[-> provider1 | provider2 | ...]`
 pub async fn generate_inlay_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
@@ -363,61 +364,84 @@ pub async fn generate_inlay_hints(
         }
     }
 
-    // Virtual package hints — use only cached data (read lock, no
-    // subprocess spawns) to avoid blocking the LSP response.
+    // Per-relation hints (archive versions, virtual package providers).
+    // Use only cached data (read lock) to avoid blocking the LSP response.
     let mut uncached_packages = Vec::new();
     {
         let cache = package_cache.read().await;
         for rel in &rel_entries {
-            // Skip packages known to be real
-            if cache
+            let is_real = cache
                 .get_packages_with_prefix(&rel.name)
                 .iter()
-                .any(|p| p == &rel.name)
-            {
-                continue;
-            }
+                .any(|p| p == &rel.name);
 
-            let Some(providers) = cache.get_cached_providers(&rel.name) else {
-                uncached_packages.push(rel.name.clone());
-                continue;
-            };
+            if is_real {
+                // Show available archive version for real packages
+                if let Some(versions) = cache.get_cached_versions(&rel.name) {
+                    if let Some(newest) = versions.first() {
+                        let lsp_range = text_range_to_lsp_range(
+                            source_text,
+                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                        );
 
-            if providers.is_empty() {
-                continue;
-            }
-
-            let lsp_range = text_range_to_lsp_range(
-                source_text,
-                text_size::TextRange::new(rel.relation_end, rel.relation_end),
-            );
-
-            let label = if providers.len() <= 3 {
-                format!("[-> {}]", providers.join(" | "))
+                        hints.push(InlayHint {
+                            position: lsp_range.start,
+                            label: InlayHintLabel::String(format!(
+                                "[available: {}]",
+                                newest.version
+                            )),
+                            kind: Some(InlayHintKind::TYPE),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: Some(true),
+                            padding_right: None,
+                            data: None,
+                        });
+                    }
+                } else {
+                    uncached_packages.push(rel.name.clone());
+                }
             } else {
-                format!("[-> {} | ...]", providers[..3].join(" | "))
-            };
+                // Show providers for virtual packages
+                if let Some(providers) = cache.get_cached_providers(&rel.name) {
+                    if !providers.is_empty() {
+                        let lsp_range = text_range_to_lsp_range(
+                            source_text,
+                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                        );
 
-            hints.push(InlayHint {
-                position: lsp_range.start,
-                label: InlayHintLabel::String(label),
-                kind: Some(InlayHintKind::TYPE),
-                text_edits: None,
-                tooltip: None,
-                padding_left: Some(true),
-                padding_right: None,
-                data: None,
-            });
+                        let label = if providers.len() <= 3 {
+                            format!("[-> {}]", providers.join(" | "))
+                        } else {
+                            format!("[-> {} | ...]", providers[..3].join(" | "))
+                        };
+
+                        hints.push(InlayHint {
+                            position: lsp_range.start,
+                            label: InlayHintLabel::String(label),
+                            kind: Some(InlayHintKind::TYPE),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: Some(true),
+                            padding_right: None,
+                            data: None,
+                        });
+                    }
+                } else {
+                    uncached_packages.push(rel.name.clone());
+                }
+            }
         }
     }
 
-    // Pre-populate provider cache in the background for packages we
-    // haven't seen yet. Hints will appear on the next editor refresh.
+    // Pre-populate caches in the background for packages we haven't
+    // seen yet. Hints will appear on the next editor refresh.
     if !uncached_packages.is_empty() {
         let cache = package_cache.clone();
         tokio::spawn(async move {
             for name in uncached_packages {
                 let mut cache = cache.write().await;
+                cache.load_versions(&name).await;
                 cache.load_providers(&name).await;
             }
         });
@@ -825,5 +849,78 @@ Description: A test
             }
             _ => panic!("Expected string label"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_archive_version() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache
+            .packages
+            .push(("python3-all".to_string(), Some("Python 3".to_string())));
+        cache.versions.insert(
+            "python3-all".to_string(),
+            vec![VersionInfo {
+                version: "3.12.8-1".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: python3-all
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[available: 3.12.8-1]"),
+            _ => panic!("Expected string label"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_archive_version_not_shown_without_cache() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        // Package is known but versions are not cached yet
+        cache
+            .packages
+            .push(("python3-all".to_string(), Some("Python 3".to_string())));
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: python3-all
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        // No hint yet — versions will be loaded in background
+        assert_eq!(hints.len(), 0);
     }
 }
