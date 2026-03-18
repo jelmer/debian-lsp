@@ -35,7 +35,8 @@
     "onLanguage:debtestscontrol",
     "onLanguage:debchangelog",
     "onLanguage:debsourceformat",
-    "onLanguage:debupstreammetadata"
+    "onLanguage:debupstreammetadata",
+    "onLanguage:debrules"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -116,6 +117,16 @@
           "**/debian/upstream/metadata"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "debrules",
+        "aliases": [
+          "Debian Rules",
+          "debrules"
+        ],
+        "filenamePatterns": [
+          "**/debian/rules"
+        ]
       }
     ],
     "configurationDefaults": {
@@ -143,6 +154,9 @@
         "editor.colorDecorators": false
       },
       "[debupstreammetadata]": {
+        "editor.colorDecorators": false
+      },
+      "[debrules]": {
         "editor.colorDecorators": false
       }
     },
@@ -268,6 +282,15 @@
       },
       {
         "language": "debupstreammetadata",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
+      },
+      {
+        "language": "debrules",
         "scopes": {
           "debianField": ["entity.name.tag"],
           "debianUnknownField": ["variable.other"],
