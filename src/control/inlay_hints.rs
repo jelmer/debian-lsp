@@ -2,7 +2,12 @@
 //!
 //! Shows whether the Standards-Version is current or outdated:
 //!   Standards-Version: 4.6.2   [latest: 4.7.0]
+//!
+//! Shows whether the debhelper compat level is current:
+//!   debhelper-compat (= 13)   [current: 14]
 
+use debian_control::lossless::relations::Relations;
+use debian_control::relations::VersionConstraint;
 use text_size::TextSize;
 use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel};
 
@@ -42,9 +47,7 @@ fn find_standards_versions(
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
 ) -> Vec<StandardsVersionInfo> {
-    let Ok(control) = parsed.clone().to_result() else {
-        return Vec::new();
-    };
+    let control = parsed.tree();
 
     let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
         return Vec::new();
@@ -88,60 +91,212 @@ fn find_standards_versions(
     results
 }
 
-/// Generate inlay hints for the Standards-Version field in a control file.
+/// Build-Depends field names that may contain debhelper-compat.
+const BUILD_DEPENDS_FIELDS: &[&str] =
+    &["Build-Depends", "Build-Depends-Indep", "Build-Depends-Arch"];
+
+/// Info about a debhelper-compat relation found in the control file.
+struct DebhelperCompatInfo {
+    /// The end position of the relation (after closing paren) in the source text.
+    relation_end: TextSize,
+}
+
+/// Extract the major version (compat level) from a debhelper package version
+/// string like "13.31" → 13.
+fn debhelper_version_to_compat_level(version: &str) -> Option<u32> {
+    let major = version.split('.').next()?;
+    // Strip any epoch prefix (e.g. "1:13" → "13")
+    let major = major.rsplit(':').next()?;
+    major.parse().ok()
+}
+
+/// Map an offset in the joined value string (as produced by `entry.value()`)
+/// back to an absolute source position using the individual VALUE token ranges.
 ///
-/// If the Standards-Version is outdated compared to the latest debian-policy
-/// version available in the package cache, an inlay hint is shown after the
-/// value: `[latest: X.Y.Z]`.
+/// `entry.value()` joins VALUE tokens with `\n`, so for multi-line values the
+/// offsets in the joined string don't correspond 1:1 to source positions.
+fn joined_offset_to_source_offset(
+    line_ranges: &[text_size::TextRange],
+    joined_offset: usize,
+) -> Option<TextSize> {
+    let mut remaining = joined_offset;
+    for (i, lr) in line_ranges.iter().enumerate() {
+        let line_len: usize = lr.len().into();
+        if remaining <= line_len {
+            return Some(lr.start() + TextSize::from(remaining as u32));
+        }
+        remaining -= line_len;
+        // Account for the '\n' separator that entry.value() inserts
+        // between VALUE tokens (except after the last one)
+        if i < line_ranges.len() - 1 {
+            if remaining == 0 {
+                // The offset points exactly at the '\n' separator;
+                // map to the end of this line
+                return Some(lr.end());
+            }
+            remaining -= 1; // skip the '\n'
+        }
+    }
+    None
+}
+
+/// Find debhelper-compat relations in a parsed control file within the given range.
+fn find_debhelper_compat(
+    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
+    source_text: &str,
+    range: &tower_lsp_server::ls_types::Range,
+) -> Vec<DebhelperCompatInfo> {
+    let control = parsed.tree();
+
+    let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
+        return Vec::new();
+    };
+
+    let mut results = Vec::new();
+
+    for paragraph in control.as_deb822().paragraphs() {
+        for entry in paragraph.entries() {
+            let entry_range = entry.text_range();
+
+            if entry_range.start() >= text_range.end() || entry_range.end() <= text_range.start() {
+                continue;
+            }
+
+            let Some(field_name) = entry.key() else {
+                continue;
+            };
+
+            if !BUILD_DEPENDS_FIELDS
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case(&field_name))
+            {
+                continue;
+            }
+
+            let value = entry.value();
+            let (relations, _errors) = Relations::parse_relaxed(&value, true);
+
+            // Build a mapping from offsets in the joined value string
+            // to absolute source positions. entry.value() joins VALUE
+            // tokens with '\n', stripping INDENT/NEWLINE tokens, so
+            // positions don't map 1:1 for multi-line values.
+            let line_ranges = entry.value_line_ranges();
+
+            for rel_entry in relations.entries() {
+                for relation in rel_entry.relations() {
+                    if relation.name() != "debhelper-compat" {
+                        continue;
+                    }
+
+                    let Some((VersionConstraint::Equal, _)) = relation.version() else {
+                        continue;
+                    };
+
+                    let rel_end: usize = relation.syntax().text_range().end().into();
+                    let Some(absolute_end) = joined_offset_to_source_offset(&line_ranges, rel_end)
+                    else {
+                        continue;
+                    };
+
+                    results.push(DebhelperCompatInfo {
+                        relation_end: absolute_end,
+                    });
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Generate inlay hints for a control file.
+///
+/// Currently provides hints for:
+/// - Standards-Version: shows `[latest: X.Y.Z]` if outdated
+/// - debhelper-compat (= N): shows `[current: M]` if outdated
 pub async fn generate_inlay_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
     package_cache: &crate::package_cache::SharedPackageCache,
 ) -> Vec<InlayHint> {
-    // Extract Standards-Version info synchronously (CST types are not Send)
+    // Extract info synchronously (CST types are not Send)
     let sv_entries = find_standards_versions(parsed, source_text, range);
-    if sv_entries.is_empty() {
+    let dh_entries = find_debhelper_compat(parsed, source_text, range);
+
+    if sv_entries.is_empty() && dh_entries.is_empty() {
         return Vec::new();
     }
 
-    // Look up latest debian-policy version from the package cache (async)
-    let latest_standards = {
-        let mut cache = package_cache.write().await;
-        let versions = cache.load_versions("debian-policy").await;
-        versions.and_then(|vs| {
-            vs.first()
-                .and_then(|v| policy_version_to_standards_version(&v.version))
-                .map(|s| s.to_string())
-        })
-    };
-
-    let Some(latest) = latest_standards else {
-        return Vec::new();
-    };
-
     let mut hints = Vec::new();
 
-    for sv in &sv_entries {
-        if sv.value == latest || !is_outdated(&sv.value, &latest) {
-            continue;
+    // Standards-Version hints
+    if !sv_entries.is_empty() {
+        let latest_standards = {
+            let mut cache = package_cache.write().await;
+            let versions = cache.load_versions("debian-policy").await;
+            versions.and_then(|vs| {
+                vs.first()
+                    .and_then(|v| policy_version_to_standards_version(&v.version))
+                    .map(|s| s.to_string())
+            })
+        };
+
+        if let Some(latest) = latest_standards {
+            for sv in &sv_entries {
+                if sv.value == latest || !is_outdated(&sv.value, &latest) {
+                    continue;
+                }
+
+                let lsp_range = text_range_to_lsp_range(
+                    source_text,
+                    text_size::TextRange::new(sv.value_end, sv.value_end),
+                );
+
+                hints.push(InlayHint {
+                    position: lsp_range.start,
+                    label: InlayHintLabel::String(format!("[latest: {}]", latest)),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: None,
+                    data: None,
+                });
+            }
         }
+    }
 
-        let lsp_range = text_range_to_lsp_range(
-            source_text,
-            text_size::TextRange::new(sv.value_end, sv.value_end),
-        );
+    // debhelper-compat hints
+    if !dh_entries.is_empty() {
+        let latest_compat = {
+            let mut cache = package_cache.write().await;
+            let versions = cache.load_versions("debhelper").await;
+            versions.and_then(|vs| {
+                vs.first()
+                    .and_then(|v| debhelper_version_to_compat_level(&v.version))
+            })
+        };
 
-        hints.push(InlayHint {
-            position: lsp_range.start,
-            label: InlayHintLabel::String(format!("[latest: {}]", latest)),
-            kind: Some(InlayHintKind::TYPE),
-            text_edits: None,
-            tooltip: None,
-            padding_left: Some(true),
-            padding_right: None,
-            data: None,
-        });
+        if let Some(latest) = latest_compat {
+            for dh in &dh_entries {
+                let lsp_range = text_range_to_lsp_range(
+                    source_text,
+                    text_size::TextRange::new(dh.relation_end, dh.relation_end),
+                );
+
+                hints.push(InlayHint {
+                    position: lsp_range.start,
+                    label: InlayHintLabel::String(format!("[current: {}]", latest)),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: None,
+                    data: None,
+                });
+            }
+        }
     }
 
     hints
@@ -256,5 +411,173 @@ mod tests {
         let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 0);
+    }
+
+    #[test]
+    fn test_debhelper_version_to_compat_level() {
+        assert_eq!(debhelper_version_to_compat_level("13.31"), Some(13));
+        assert_eq!(debhelper_version_to_compat_level("14.0"), Some(14));
+        assert_eq!(debhelper_version_to_compat_level("13"), Some(13));
+        assert_eq!(debhelper_version_to_compat_level("13.3.4"), Some(13));
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_outdated_debhelper_compat() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache.versions.insert(
+            "debhelper".to_string(),
+            vec![VersionInfo {
+                version: "14.2".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+Build-Depends: debhelper-compat (= 13), pkg-config
+Maintainer: Test <test@example.com>
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(3, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
+            _ => panic!("Expected string label"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_when_compat_current() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache.versions.insert(
+            "debhelper".to_string(),
+            vec![VersionInfo {
+                version: "13.31".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+Build-Depends: debhelper-compat (= 13), pkg-config
+Maintainer: Test <test@example.com>
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(3, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[current: 13]"),
+            _ => panic!("Expected string label"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_both_standards_version_and_debhelper_compat_hints() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache.versions.insert(
+            "debian-policy".to_string(),
+            vec![VersionInfo {
+                version: "4.7.3.0".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
+        cache.versions.insert(
+            "debhelper".to_string(),
+            vec![VersionInfo {
+                version: "14.2".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+Standards-Version: 4.6.2
+Build-Depends: debhelper-compat (= 13), pkg-config
+Maintainer: Test <test@example.com>
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(4, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 2);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[latest: 4.7.3]"),
+            _ => panic!("Expected string label"),
+        }
+        match &hints[1].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
+            _ => panic!("Expected string label"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_multiline_build_depends() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache.versions.insert(
+            "debhelper".to_string(),
+            vec![VersionInfo {
+                version: "14.2".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+Build-Depends: debhelper (>= 13.5),
+               debhelper-compat (= 13),
+               pkg-config
+Maintainer: Test <test@example.com>
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
+            _ => panic!("Expected string label"),
+        }
+        // The hint should be on line 2 (the debhelper-compat line)
+        assert_eq!(hints[0].position.line, 2);
     }
 }
