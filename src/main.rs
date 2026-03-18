@@ -185,6 +185,7 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
                     first_trigger_character: ":".to_string(),
                     more_trigger_character: Some(vec!["\n".to_string(), "-".to_string()]),
@@ -792,6 +793,32 @@ impl LanguageServer for Backend {
                     position,
                     &params.ch,
                 ))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Changelog => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                let hints = changelog::generate_inlay_hints(&parsed, &source_text, &params.range);
+                if hints.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(hints))
+                }
             }
             _ => Ok(None),
         }
