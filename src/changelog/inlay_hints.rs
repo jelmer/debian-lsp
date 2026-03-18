@@ -4,6 +4,9 @@
 //! - When distribution is UNRELEASED, shows the target distribution from the previous entry
 //! - When distribution is an alias (e.g. "unstable"), shows the codename (e.g. "sid")
 //! - When distribution is a codename (e.g. "trixie"), shows the alias (e.g. "testing")
+//!
+//! Suite resolution is date-aware: an entry from 2020 with "stable" will
+//! resolve to "buster", not the current stable release.
 
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel};
@@ -39,7 +42,14 @@ pub fn generate_inlay_hints(
         let hint_text = if dist == "UNRELEASED" {
             Some(format!("-> {}", target_distribution))
         } else {
-            crate::distros::get_distribution_mapping(dist).map(|mapped| format!("= {}", mapped))
+            // Use the entry's timestamp for date-aware suite resolution,
+            // falling back to today if the timestamp can't be parsed.
+            let date = entry
+                .datetime()
+                .map(|dt| dt.date_naive())
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
+            crate::distros::get_distribution_mapping_at(dist, date)
+                .map(|mapped| format!("= {}", mapped))
         };
 
         let Some(hint_text) = hint_text else {
@@ -160,5 +170,34 @@ foo (1.0-1) unstable; urgency=medium
         let hints = generate_inlay_hints(&parsed, changelog_text, &range);
 
         assert_eq!(hints.len(), 0);
+    }
+
+    #[test]
+    fn test_stable_resolves_to_date_of_entry() {
+        if !crate::distros::has_distro_info() {
+            return; // distro-info-data not available (e.g. Windows)
+        }
+        // An entry from 2020 with "stable" should resolve to "buster"
+        let changelog_text = r#"foo (1.0-1) stable; urgency=medium
+
+  * Stable update.
+
+ -- John Doe <john@example.com>  Mon, 01 Jun 2020 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(4, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, changelog_text, &range);
+
+        assert_eq!(hints.len(), 1);
+
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "= buster"),
+            _ => panic!("Expected string label"),
+        }
     }
 }

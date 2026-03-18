@@ -552,7 +552,7 @@ pub fn get_distribution_completions(prefix: &str) -> Vec<CompletionItem> {
         .map(|dist| CompletionItem {
             label: dist.clone(),
             kind: Some(CompletionItemKind::VALUE),
-            detail: Some("Debian distribution".to_string()),
+            detail: crate::distros::get_distribution_detail(dist),
             documentation: Some(Documentation::String(format!(
                 "Target distribution: {}",
                 dist
