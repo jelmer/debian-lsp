@@ -111,6 +111,49 @@ source /path/to/debian-lsp/ale-debian-lsp.vim
 
 You can trigger code actions in ALE with `:ALECodeAction` when your cursor is on a diagnostic.
 
+#### vim-lsp
+
+Add the following configuration to your `.vimrc` or `init.vim`:
+
+```vim
+" Configure vim-lsp for debian-lsp
+function! s:config_debian_lsp()
+  if executable('debian-lsp')
+    augroup debian_lsp
+      autocmd!
+      autocmd User lsp_setup call lsp#register_server({
+        \ 'name': 'debian-lsp',
+        \ 'cmd': {server_info -> ['debian-lsp']},
+        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debwatch', 'debupstream', 'autopkgtest'],
+        \ 'blocklist': [],
+        \ 'enabled': 1,
+        \ })
+    augroup END
+  endif
+endfunction
+
+call s:config_debian_lsp()
+
+" Set filetypes for Debian packaging files (if not already set by ftdetect)
+augroup debian_filetypes
+  autocmd!
+  autocmd BufNewFile,BufRead */debian/control setfiletype debcontrol
+  autocmd BufNewFile,BufRead */debian/copyright setfiletype debcopyright
+  autocmd BufNewFile,BufRead */debian/changelog setfiletype debchangelog
+  autocmd BufNewFile,BufRead */debian/source/format setfiletype debsources
+  autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
+  autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
+augroup END
+```
+
+Replace `debian-lsp` with the full path to the executable if it's not on your PATH.
+
+You can then use vim-lsp commands like:
+- `:LspDocumentDiagnostics` - Show diagnostics
+- `:LspCodeAction` - Show code actions
+- `:LspDefinition` - Go to definition
+- `:LspHover` - Show hover information
+
 #### Native Neovim LSP
 
 Add the following configuration to your Neovim config (init.lua):
