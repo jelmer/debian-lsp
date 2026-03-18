@@ -28,12 +28,6 @@ pub trait PackageCache: Send + Sync {
     /// Load and cache the list of packages that provide a given virtual package.
     async fn load_providers(&mut self, package: &str) -> Option<&[String]>;
 
-    /// Get already-cached versions for a package, without triggering a lookup.
-    fn get_cached_versions(&self, package: &str) -> Option<&[VersionInfo]>;
-
-    /// Get already-cached providers for a package, without triggering a lookup.
-    fn get_cached_providers(&self, package: &str) -> Option<&[String]>;
-
     /// Insert a package name with its short description into the cache.
     fn insert_package(&mut self, name: String, description: String);
 }
@@ -114,14 +108,6 @@ impl PackageCache for AptPackageCache {
             }
             _ => None,
         }
-    }
-
-    fn get_cached_versions(&self, package: &str) -> Option<&[VersionInfo]> {
-        self.versions.get(package).map(|v| v.as_slice())
-    }
-
-    fn get_cached_providers(&self, package: &str) -> Option<&[String]> {
-        self.providers.get(package).map(|v| v.as_slice())
     }
 
     async fn load_providers(&mut self, package: &str) -> Option<&[String]> {
@@ -239,14 +225,6 @@ impl PackageCache for TestPackageCache {
 
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]> {
         self.versions.get(package).map(|v| v.as_slice())
-    }
-
-    fn get_cached_versions(&self, package: &str) -> Option<&[VersionInfo]> {
-        self.versions.get(package).map(|v| v.as_slice())
-    }
-
-    fn get_cached_providers(&self, package: &str) -> Option<&[String]> {
-        self.providers.get(package).map(|v| v.as_slice())
     }
 
     async fn load_providers(&mut self, package: &str) -> Option<&[String]> {

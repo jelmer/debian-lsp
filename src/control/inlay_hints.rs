@@ -365,86 +365,75 @@ pub async fn generate_inlay_hints(
     }
 
     // Per-relation hints (archive versions, virtual package providers).
-    // Use only cached data (read lock) to avoid blocking the LSP response.
-    let mut uncached_packages = Vec::new();
-    {
-        let cache = package_cache.read().await;
-        for rel in &rel_entries {
-            let is_real = cache
+    // Load versions/providers on demand (cached after first call).
+    for rel in &rel_entries {
+        let is_real = {
+            let cache = package_cache.read().await;
+            cache
                 .get_packages_with_prefix(&rel.name)
                 .iter()
-                .any(|p| p == &rel.name);
+                .any(|p| p == &rel.name)
+        };
 
-            if is_real {
-                // Show available archive version for real packages
-                if let Some(versions) = cache.get_cached_versions(&rel.name) {
-                    if let Some(newest) = versions.first() {
-                        let lsp_range = text_range_to_lsp_range(
-                            source_text,
-                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                        );
+        if is_real {
+            // Show available archive version for real packages
+            let version = {
+                let mut cache = package_cache.write().await;
+                let versions = cache.load_versions(&rel.name).await;
+                versions
+                    .and_then(|vs| vs.first())
+                    .map(|v| v.version.clone())
+            };
 
-                        hints.push(InlayHint {
-                            position: lsp_range.start,
-                            label: InlayHintLabel::String(format!(
-                                "[available: {}]",
-                                newest.version
-                            )),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: Some(true),
-                            padding_right: None,
-                            data: None,
-                        });
-                    }
+            if let Some(version) = version {
+                let lsp_range = text_range_to_lsp_range(
+                    source_text,
+                    text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                );
+
+                hints.push(InlayHint {
+                    position: lsp_range.start,
+                    label: InlayHintLabel::String(format!("[available: {}]", version)),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: None,
+                    data: None,
+                });
+            }
+        } else {
+            // Show providers for virtual packages
+            let providers = {
+                let mut cache = package_cache.write().await;
+                let providers = cache.load_providers(&rel.name).await;
+                providers.filter(|p| !p.is_empty()).map(|p| p.to_vec())
+            };
+
+            if let Some(providers) = providers {
+                let lsp_range = text_range_to_lsp_range(
+                    source_text,
+                    text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                );
+
+                let label = if providers.len() <= 3 {
+                    format!("[-> {}]", providers.join(" | "))
                 } else {
-                    uncached_packages.push(rel.name.clone());
-                }
-            } else {
-                // Show providers for virtual packages
-                if let Some(providers) = cache.get_cached_providers(&rel.name) {
-                    if !providers.is_empty() {
-                        let lsp_range = text_range_to_lsp_range(
-                            source_text,
-                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                        );
+                    format!("[-> {} | ...]", providers[..3].join(" | "))
+                };
 
-                        let label = if providers.len() <= 3 {
-                            format!("[-> {}]", providers.join(" | "))
-                        } else {
-                            format!("[-> {} | ...]", providers[..3].join(" | "))
-                        };
-
-                        hints.push(InlayHint {
-                            position: lsp_range.start,
-                            label: InlayHintLabel::String(label),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: Some(true),
-                            padding_right: None,
-                            data: None,
-                        });
-                    }
-                } else {
-                    uncached_packages.push(rel.name.clone());
-                }
+                hints.push(InlayHint {
+                    position: lsp_range.start,
+                    label: InlayHintLabel::String(label),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: None,
+                    data: None,
+                });
             }
         }
-    }
-
-    // Pre-populate caches in the background for packages we haven't
-    // seen yet. Hints will appear on the next editor refresh.
-    if !uncached_packages.is_empty() {
-        let cache = package_cache.clone();
-        tokio::spawn(async move {
-            for name in uncached_packages {
-                let mut cache = cache.write().await;
-                cache.load_versions(&name).await;
-                cache.load_providers(&name).await;
-            }
-        });
     }
 
     hints
