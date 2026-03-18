@@ -1101,6 +1101,7 @@ foo (1.0-1) unstable; urgency=medium
         }));
     }
 
+    #[cfg(feature = "launchpad")]
     #[tokio::test]
     async fn test_get_async_bug_completions_merges_local_and_remote_launchpad() {
         let text = "\

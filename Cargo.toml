@@ -10,6 +10,10 @@ repository = "https://github.com/jelmer/debian-lsp"
 keywords = ["lsp", "debian", "control", "language-server"]
 categories = ["development-tools", "text-editors"]
 
+[features]
+default = ["launchpad"]
+launchpad = ["dep:launchpadlib"]
+
 [dependencies]
 # debian-analyzer = "0.159.0"
 async-trait = "0.1"
@@ -33,7 +37,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 salsa = ">=0.23, <0.27"
 text-size = "1.1"
-launchpadlib = { version = "0.5.6", default-features = false, features = ["async", "blocking", "api-v1_0", "bugs", "packages"] }
+launchpadlib = { version = "0.5.6", optional = true, default-features = false, features = ["async", "blocking", "api-v1_0", "bugs", "packages"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

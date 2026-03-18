@@ -12,6 +12,7 @@ pub use launchpad::LaunchpadBugSummary;
 /// Thread-safe shared cache for bug tracker lookups.
 pub type SharedBugCache = Arc<RwLock<BugCache>>;
 
+#[cfg(feature = "launchpad")]
 const LAUNCHPAD_CONSUMER_KEY: &str = "debian-lsp";
 
 /// Cached bug data used by changelog completions.
@@ -19,8 +20,11 @@ pub struct BugCache {
     pool: crate::udd::SharedPool,
     bug_ids_by_package: HashMap<String, Vec<u32>>,
     bug_details_by_id: HashMap<u32, CachedDebbugsBugDetails>,
+    #[cfg(feature = "launchpad")]
     launchpad_client: launchpadlib::r#async::Client,
+    #[cfg(feature = "launchpad")]
     launchpad_bug_ids_by_package: HashMap<String, Vec<u32>>,
+    #[cfg(feature = "launchpad")]
     launchpad_bug_details_by_id: HashMap<u32, CachedLaunchpadBugDetails>,
 }
 
@@ -37,6 +41,7 @@ struct CachedDebbugsBugDetails {
 
 /// Cached details for a Launchpad bug relevant to completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "launchpad")]
 struct CachedLaunchpadBugDetails {
     title: Option<String>,
     status: Option<String>,
@@ -61,8 +66,11 @@ impl BugCache {
             pool,
             bug_ids_by_package: HashMap::new(),
             bug_details_by_id: HashMap::new(),
+            #[cfg(feature = "launchpad")]
             launchpad_client: launchpadlib::r#async::Client::anonymous(LAUNCHPAD_CONSUMER_KEY),
+            #[cfg(feature = "launchpad")]
             launchpad_bug_ids_by_package: HashMap::new(),
+            #[cfg(feature = "launchpad")]
             launchpad_bug_details_by_id: HashMap::new(),
         }
     }

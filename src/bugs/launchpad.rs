@@ -1,8 +1,14 @@
+#[cfg(feature = "launchpad")]
 use std::collections::BTreeMap;
 
+#[cfg(feature = "launchpad")]
 use launchpadlib::r#async::v1_0::{Distribution, DistributionSourcePackage};
+#[cfg(feature = "launchpad")]
+use launchpadlib::Resource;
 
-use super::{BugCache, CachedLaunchpadBugDetails};
+use super::BugCache;
+#[cfg(feature = "launchpad")]
+use super::CachedLaunchpadBugDetails;
 
 /// Launchpad bug data returned to completion providers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,10 +19,11 @@ pub struct LaunchpadBugSummary {
     pub title: Option<String>,
     /// Most relevant Launchpad task status, when available.
     pub status: Option<String>,
-    /// Whether the bug is complete across known tasks.
+    /// Whether the package-specific Launchpad task is complete.
     pub done: bool,
 }
 
+#[cfg(feature = "launchpad")]
 impl BugCache {
     /// Return Launchpad bug summaries for `package` that match a decimal prefix.
     pub async fn get_launchpad_bug_summaries_with_prefix(
@@ -104,7 +111,7 @@ impl BugCache {
             .insert(package.to_string(), ids);
     }
 
-    /// Query Launchpad bug tasks for a source package and fold them by bug ID.
+    /// Query Launchpad bug tasks for a source package and index them by bug ID.
     async fn search_launchpad_tasks(
         &self,
         source_package: &DistributionSourcePackage,
@@ -151,6 +158,7 @@ impl BugCache {
         };
 
         let mut by_id: BTreeMap<u32, CachedLaunchpadBugDetails> = BTreeMap::new();
+        let source_package_url = source_package.url().clone();
         let mut index = 0usize;
         loop {
             let task = match tasks.get(index).await {
@@ -166,14 +174,27 @@ impl BugCache {
             };
             index += 1;
 
-            let Some(id) = Self::launchpad_bug_id_from_link(task.bug_link.as_str()) else {
+            // Keep only the task for the source package we're querying.
+            if task.target_link != source_package_url {
+                continue;
+            }
+
+            let bug = match task.bug().get(&self.launchpad_client).await {
+                Ok(bug) => bug,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Launchpad bug lookup failed");
+                    continue;
+                }
+            };
+
+            let Some(id) = u32::try_from(bug.id).ok() else {
                 continue;
             };
 
-            let title = if task.title.trim().is_empty() {
+            let title = if bug.title.trim().is_empty() {
                 None
             } else {
-                Some(task.title.clone())
+                Some(bug.title.clone())
             };
             let status_value = task.status.to_string();
             let status = if status_value.trim().is_empty() {
@@ -185,15 +206,12 @@ impl BugCache {
 
             match by_id.get_mut(&id) {
                 Some(existing) => {
-                    let was_done = existing.done;
-                    existing.done &= done;
+                    existing.done = done;
                     if existing.title.is_none() && title.is_some() {
-                        existing.title = title;
+                        existing.title = title.clone();
                     }
-                    if !done && was_done {
+                    if existing.status.is_none() && status.is_some() {
                         existing.status = status.clone();
-                    } else if existing.status.is_none() && status.is_some() {
-                        existing.status = status;
                     }
                 }
                 None => {
@@ -253,12 +271,6 @@ impl BugCache {
         Some(distribution)
     }
 
-    /// Extract the numeric bug ID from a Launchpad bug API URL.
-    fn launchpad_bug_id_from_link(link: &str) -> Option<u32> {
-        let trimmed = link.trim_end_matches('/');
-        trimmed.rsplit('/').next()?.parse().ok()
-    }
-
     /// Pre-fetch Launchpad bug IDs and their details for an Ubuntu source package.
     pub async fn prefetch_launchpad_bugs_for_package(&mut self, package: &str) {
         self.fetch_launchpad_bugs_for_package(package).await;
@@ -289,7 +301,30 @@ impl BugCache {
     }
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "launchpad"))]
+impl BugCache {
+    /// Return Launchpad bug summaries for `package` that match a decimal prefix.
+    pub async fn get_launchpad_bug_summaries_with_prefix(
+        &mut self,
+        _package: &str,
+        _prefix: &str,
+    ) -> Vec<LaunchpadBugSummary> {
+        Vec::new()
+    }
+
+    /// Pre-fetch Launchpad bug IDs and their details for an Ubuntu source package.
+    pub async fn prefetch_launchpad_bugs_for_package(&mut self, _package: &str) {}
+
+    #[cfg(test)]
+    pub(crate) fn insert_cached_launchpad_bugs_for_package(
+        &mut self,
+        _package: &str,
+        _bugs: Vec<(u32, Option<&str>, Option<&str>, bool)>,
+    ) {
+    }
+}
+
+#[cfg(all(test, feature = "launchpad"))]
 mod tests {
     use super::*;
 
@@ -322,19 +357,18 @@ mod tests {
         assert!(summaries[1].done);
     }
 
-    #[test]
-    fn test_launchpad_bug_id_from_link() {
-        assert_eq!(
-            BugCache::launchpad_bug_id_from_link("https://api.launchpad.net/1.0/bugs/123456"),
-            Some(123456)
+    #[tokio::test]
+    async fn test_launchpad_bug_summary_done_is_package_specific() {
+        let mut cache = BugCache::new(crate::udd::shared_pool());
+        cache.insert_cached_launchpad_bugs_for_package(
+            "foo",
+            vec![(123456, Some("Launchpad crash report"), Some("New"), false)],
         );
-        assert_eq!(
-            BugCache::launchpad_bug_id_from_link("https://api.launchpad.net/1.0/bugs/123456/"),
-            Some(123456)
-        );
-        assert_eq!(
-            BugCache::launchpad_bug_id_from_link("https://api.launchpad.net/1.0/bugs/not-a-number"),
-            None
-        );
+
+        let summaries = cache
+            .get_launchpad_bug_summaries_with_prefix("foo", "")
+            .await;
+        assert_eq!(summaries.len(), 1);
+        assert!(!summaries[0].done);
     }
 }
