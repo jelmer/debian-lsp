@@ -21,6 +21,7 @@ let g:ale_linters.debsources = ['debian-lsp']
 let g:ale_linters.debwatch = ['debian-lsp']
 let g:ale_linters.debupstream = ['debian-lsp']
 let g:ale_linters.autopkgtest = ['debian-lsp']
+let g:ale_linters.debrules = ['debian-lsp']
 
 " Define debian-lsp for debian/control files
 call ale#linter#Define('debcontrol', {
@@ -76,6 +77,15 @@ call ale#linter#Define('debupstream', {
 \   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
 \})
 
+" Define debian-lsp for debian/rules files
+call ale#linter#Define('debrules', {
+\   'name': 'debian-lsp',
+\   'lsp': 'stdio',
+\   'executable': g:debian_lsp_executable,
+\   'command': '%e',
+\   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
+\})
+
 " Define debian-lsp for debian/tests/control files
 call ale#linter#Define('autopkgtest', {
 \   'name': 'debian-lsp',
@@ -96,4 +106,5 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/source/format setfiletype debsources
   autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
   autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
+  autocmd BufNewFile,BufRead */debian/rules setfiletype debrules
 augroup END
