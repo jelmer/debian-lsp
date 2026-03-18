@@ -363,57 +363,63 @@ pub async fn generate_inlay_hints(
         }
     }
 
-    // Virtual package hints
-    for rel in &rel_entries {
-        let providers = {
-            let mut cache = package_cache.write().await;
-            let providers = cache.load_providers(&rel.name).await;
-            providers.map(|p| p.to_vec())
-        };
+    // Virtual package hints — use only cached data (read lock, no
+    // subprocess spawns) to avoid blocking the LSP response.
+    let mut uncached_packages = Vec::new();
+    {
+        let cache = package_cache.read().await;
+        for rel in &rel_entries {
+            // Skip packages known to be real
+            if cache
+                .get_packages_with_prefix(&rel.name)
+                .iter()
+                .any(|p| p == &rel.name)
+            {
+                continue;
+            }
 
-        let Some(providers) = providers else {
-            continue;
-        };
+            let Some(providers) = cache.get_cached_providers(&rel.name) else {
+                uncached_packages.push(rel.name.clone());
+                continue;
+            };
 
-        if providers.is_empty() {
-            continue;
+            if providers.is_empty() {
+                continue;
+            }
+
+            let lsp_range = text_range_to_lsp_range(
+                source_text,
+                text_size::TextRange::new(rel.relation_end, rel.relation_end),
+            );
+
+            let label = if providers.len() <= 3 {
+                format!("[-> {}]", providers.join(" | "))
+            } else {
+                format!("[-> {} | ...]", providers[..3].join(" | "))
+            };
+
+            hints.push(InlayHint {
+                position: lsp_range.start,
+                label: InlayHintLabel::String(label),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(true),
+                padding_right: None,
+                data: None,
+            });
         }
+    }
 
-        // Only show hint if the package is virtual (i.e. it's not also a
-        // real package — real packages that happen to be provided by others
-        // don't need this hint).
-        let is_real_package = {
-            let cache = package_cache.read().await;
-            !cache.get_packages_with_prefix(&rel.name).is_empty()
-                && cache
-                    .get_packages_with_prefix(&rel.name)
-                    .iter()
-                    .any(|p| p == &rel.name)
-        };
-        if is_real_package {
-            continue;
-        }
-
-        let lsp_range = text_range_to_lsp_range(
-            source_text,
-            text_size::TextRange::new(rel.relation_end, rel.relation_end),
-        );
-
-        let label = if providers.len() <= 3 {
-            format!("[-> {}]", providers.join(" | "))
-        } else {
-            format!("[-> {} | ...]", providers[..3].join(" | "))
-        };
-
-        hints.push(InlayHint {
-            position: lsp_range.start,
-            label: InlayHintLabel::String(label),
-            kind: Some(InlayHintKind::TYPE),
-            text_edits: None,
-            tooltip: None,
-            padding_left: Some(true),
-            padding_right: None,
-            data: None,
+    // Pre-populate provider cache in the background for packages we
+    // haven't seen yet. Hints will appear on the next editor refresh.
+    if !uncached_packages.is_empty() {
+        let cache = package_cache.clone();
+        tokio::spawn(async move {
+            for name in uncached_packages {
+                let mut cache = cache.write().await;
+                cache.load_providers(&name).await;
+            }
         });
     }
 
