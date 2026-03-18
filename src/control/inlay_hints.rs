@@ -278,19 +278,23 @@ fn find_relations(
 /// - debhelper-compat (= N): shows `[current: M]`
 /// - Archive versions: shows `[available: X.Y.Z]` for real packages
 /// - Virtual packages: shows `[-> provider1 | provider2 | ...]`
+///
+/// Returns `(hints, uncached_packages)`. The caller should load versions and
+/// providers for uncached packages in the background and then send
+/// `workspace/inlayHint/refresh` to the client.
 pub async fn generate_inlay_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
     package_cache: &crate::package_cache::SharedPackageCache,
-) -> Vec<InlayHint> {
+) -> (Vec<InlayHint>, Vec<String>) {
     // Extract info synchronously (CST types are not Send)
     let sv_entries = find_standards_versions(parsed, source_text, range);
     let dh_entries = find_debhelper_compat(parsed, source_text, range);
     let rel_entries = find_relations(parsed, source_text, range);
 
     if sv_entries.is_empty() && dh_entries.is_empty() && rel_entries.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut hints = Vec::new();
@@ -365,78 +369,73 @@ pub async fn generate_inlay_hints(
     }
 
     // Per-relation hints (archive versions, virtual package providers).
-    // Load versions/providers on demand (cached after first call).
-    for rel in &rel_entries {
-        let is_real = {
-            let cache = package_cache.read().await;
-            cache
+    // Use only cached data (read lock) to avoid blocking the LSP response.
+    // Returns uncached package names so the caller can trigger background
+    // loading and an inlayHint/refresh.
+    let mut uncached_packages = Vec::new();
+    {
+        let cache = package_cache.read().await;
+        for rel in &rel_entries {
+            let is_real = cache
                 .get_packages_with_prefix(&rel.name)
                 .iter()
-                .any(|p| p == &rel.name)
-        };
+                .any(|p| p == &rel.name);
 
-        if is_real {
-            // Show available archive version for real packages
-            let version = {
-                let mut cache = package_cache.write().await;
-                let versions = cache.load_versions(&rel.name).await;
-                versions
-                    .and_then(|vs| vs.first())
-                    .map(|v| v.version.clone())
-            };
-
-            if let Some(version) = version {
-                let lsp_range = text_range_to_lsp_range(
-                    source_text,
-                    text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                );
-
-                hints.push(InlayHint {
-                    position: lsp_range.start,
-                    label: InlayHintLabel::String(format!("[available: {}]", version)),
-                    kind: Some(InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(true),
-                    padding_right: None,
-                    data: None,
-                });
-            }
-        } else {
-            // Show providers for virtual packages
-            let providers = {
-                let mut cache = package_cache.write().await;
-                let providers = cache.load_providers(&rel.name).await;
-                providers.filter(|p| !p.is_empty()).map(|p| p.to_vec())
-            };
-
-            if let Some(providers) = providers {
-                let lsp_range = text_range_to_lsp_range(
-                    source_text,
-                    text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                );
-
-                let label = if providers.len() <= 3 {
-                    format!("[-> {}]", providers.join(" | "))
+            if is_real {
+                if let Some(versions) = cache.get_cached_versions(&rel.name) {
+                    if let Some(newest) = versions.first() {
+                        let lsp_range = text_range_to_lsp_range(
+                            source_text,
+                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                        );
+                        hints.push(InlayHint {
+                            position: lsp_range.start,
+                            label: InlayHintLabel::String(format!(
+                                "[available: {}]",
+                                newest.version
+                            )),
+                            kind: Some(InlayHintKind::TYPE),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: Some(true),
+                            padding_right: None,
+                            data: None,
+                        });
+                    }
                 } else {
-                    format!("[-> {} | ...]", providers[..3].join(" | "))
-                };
+                    uncached_packages.push(rel.name.clone());
+                }
+            } else if let Some(providers) = cache.get_cached_providers(&rel.name) {
+                if !providers.is_empty() {
+                    let lsp_range = text_range_to_lsp_range(
+                        source_text,
+                        text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                    );
 
-                hints.push(InlayHint {
-                    position: lsp_range.start,
-                    label: InlayHintLabel::String(label),
-                    kind: Some(InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(true),
-                    padding_right: None,
-                    data: None,
-                });
+                    let label = if providers.len() <= 3 {
+                        format!("[-> {}]", providers.join(" | "))
+                    } else {
+                        format!("[-> {} | ...]", providers[..3].join(" | "))
+                    };
+
+                    hints.push(InlayHint {
+                        position: lsp_range.start,
+                        label: InlayHintLabel::String(label),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: Some(true),
+                        padding_right: None,
+                        data: None,
+                    });
+                }
+            } else {
+                uncached_packages.push(rel.name.clone());
             }
         }
     }
 
-    hints
+    (hints, uncached_packages)
 }
 
 /// Compare two dotted version strings and return true if `current` is older
@@ -512,7 +511,8 @@ mod tests {
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -545,7 +545,8 @@ mod tests {
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 0);
     }
@@ -585,7 +586,8 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -621,7 +623,8 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -665,7 +668,8 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(4, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 2);
         match &hints[0].label {
@@ -707,7 +711,8 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -749,7 +754,8 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -789,7 +795,8 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 0);
     }
@@ -826,7 +833,8 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -872,7 +880,8 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -907,7 +916,8 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
         // No hint yet — versions will be loaded in background
         assert_eq!(hints.len(), 0);

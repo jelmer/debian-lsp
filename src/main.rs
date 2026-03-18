@@ -826,13 +826,29 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(file.source_file);
                 let parsed = workspace.get_parsed_control(file.source_file);
                 drop(workspace); // Release lock before async package cache access
-                let hints = control::generate_inlay_hints(
+                let (hints, uncached_packages) = control::generate_inlay_hints(
                     &parsed,
                     &source_text,
                     &params.range,
                     &self.package_cache,
                 )
                 .await;
+
+                // Load uncached packages in the background, then ask the
+                // editor to re-request inlay hints.
+                if !uncached_packages.is_empty() {
+                    let cache = self.package_cache.clone();
+                    let client = self.client.clone();
+                    tokio::spawn(async move {
+                        for name in uncached_packages {
+                            let mut c = cache.write().await;
+                            c.load_versions(&name).await;
+                            c.load_providers(&name).await;
+                        }
+                        let _ = client.inlay_hint_refresh().await;
+                    });
+                }
+
                 if hints.is_empty() {
                     Ok(None)
                 } else {
