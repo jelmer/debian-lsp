@@ -209,11 +209,74 @@ fn find_debhelper_compat(
     results
 }
 
+/// Info about a relation in a dependency field.
+struct RelationInfo {
+    /// The package name.
+    name: String,
+    /// The end position of the relation in the source text.
+    relation_end: TextSize,
+}
+
+/// Find all relations in relationship fields within the given range.
+fn find_relations(
+    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
+    source_text: &str,
+    range: &tower_lsp_server::ls_types::Range,
+) -> Vec<RelationInfo> {
+    let control = parsed.tree();
+
+    let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
+        return Vec::new();
+    };
+
+    let mut results = Vec::new();
+
+    for paragraph in control.as_deb822().paragraphs() {
+        for entry in paragraph.entries() {
+            let entry_range = entry.text_range();
+
+            if entry_range.start() >= text_range.end() || entry_range.end() <= text_range.start() {
+                continue;
+            }
+
+            let Some(field_name) = entry.key() else {
+                continue;
+            };
+
+            if !super::relation_completion::is_relationship_field(&field_name) {
+                continue;
+            }
+
+            let value = entry.value();
+            let (relations, _errors) = Relations::parse_relaxed(&value, true);
+            let line_ranges = entry.value_line_ranges();
+
+            for rel_entry in relations.entries() {
+                for relation in rel_entry.relations() {
+                    let rel_end: usize = relation.syntax().text_range().end().into();
+                    let Some(absolute_end) = joined_offset_to_source_offset(&line_ranges, rel_end)
+                    else {
+                        continue;
+                    };
+
+                    results.push(RelationInfo {
+                        name: relation.name(),
+                        relation_end: absolute_end,
+                    });
+                }
+            }
+        }
+    }
+
+    results
+}
+
 /// Generate inlay hints for a control file.
 ///
 /// Currently provides hints for:
 /// - Standards-Version: shows `[latest: X.Y.Z]` if outdated
-/// - debhelper-compat (= N): shows `[current: M]` if outdated
+/// - debhelper-compat (= N): shows `[current: M]`
+/// - Virtual packages: shows `[-> provider1 | provider2 | ...]`
 pub async fn generate_inlay_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
@@ -223,8 +286,9 @@ pub async fn generate_inlay_hints(
     // Extract info synchronously (CST types are not Send)
     let sv_entries = find_standards_versions(parsed, source_text, range);
     let dh_entries = find_debhelper_compat(parsed, source_text, range);
+    let rel_entries = find_relations(parsed, source_text, range);
 
-    if sv_entries.is_empty() && dh_entries.is_empty() {
+    if sv_entries.is_empty() && dh_entries.is_empty() && rel_entries.is_empty() {
         return Vec::new();
     }
 
@@ -297,6 +361,60 @@ pub async fn generate_inlay_hints(
                 });
             }
         }
+    }
+
+    // Virtual package hints
+    for rel in &rel_entries {
+        let providers = {
+            let mut cache = package_cache.write().await;
+            let providers = cache.load_providers(&rel.name).await;
+            providers.map(|p| p.to_vec())
+        };
+
+        let Some(providers) = providers else {
+            continue;
+        };
+
+        if providers.is_empty() {
+            continue;
+        }
+
+        // Only show hint if the package is virtual (i.e. it's not also a
+        // real package — real packages that happen to be provided by others
+        // don't need this hint).
+        let is_real_package = {
+            let cache = package_cache.read().await;
+            !cache.get_packages_with_prefix(&rel.name).is_empty()
+                && cache
+                    .get_packages_with_prefix(&rel.name)
+                    .iter()
+                    .any(|p| p == &rel.name)
+        };
+        if is_real_package {
+            continue;
+        }
+
+        let lsp_range = text_range_to_lsp_range(
+            source_text,
+            text_size::TextRange::new(rel.relation_end, rel.relation_end),
+        );
+
+        let label = if providers.len() <= 3 {
+            format!("[-> {}]", providers.join(" | "))
+        } else {
+            format!("[-> {} | ...]", providers[..3].join(" | "))
+        };
+
+        hints.push(InlayHint {
+            position: lsp_range.start,
+            label: InlayHintLabel::String(label),
+            kind: Some(InlayHintKind::TYPE),
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(true),
+            padding_right: None,
+            data: None,
+        });
     }
 
     hints
@@ -579,5 +697,127 @@ Maintainer: Test <test@example.com>
         }
         // The hint should be on line 2 (the debhelper-compat line)
         assert_eq!(hints[0].position.line, 2);
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_virtual_package() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache.providers.insert(
+            "default-mta".to_string(),
+            vec![
+                "exim4-daemon-light".to_string(),
+                "postfix".to_string(),
+                "sendmail-bin".to_string(),
+            ],
+        );
+        // default-mta is NOT in the packages list (it's virtual)
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: default-mta, libc6
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => {
+                assert_eq!(s, "[-> exim4-daemon-light | postfix | sendmail-bin]")
+            }
+            _ => panic!("Expected string label"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_inlay_hint_for_real_package() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        // libc6 is a real package AND has providers
+        cache
+            .packages
+            .push(("libc6".to_string(), Some("C library".to_string())));
+        cache
+            .providers
+            .insert("libc6".to_string(), vec!["libc6-udeb".to_string()]);
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: libc6
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_virtual_package_truncated() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache.providers.insert(
+            "mail-transport-agent".to_string(),
+            vec![
+                "courier-mta".to_string(),
+                "exim4-daemon-heavy".to_string(),
+                "exim4-daemon-light".to_string(),
+                "postfix".to_string(),
+                "sendmail-bin".to_string(),
+            ],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: mail-transport-agent
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let hints = generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => {
+                assert_eq!(
+                    s,
+                    "[-> courier-mta | exim4-daemon-heavy | exim4-daemon-light | ...]"
+                )
+            }
+            _ => panic!("Expected string label"),
+        }
     }
 }

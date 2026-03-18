@@ -25,6 +25,9 @@ pub trait PackageCache: Send + Sync {
     /// Load and cache versions for a package.
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]>;
 
+    /// Load and cache the list of packages that provide a given virtual package.
+    async fn load_providers(&mut self, package: &str) -> Option<&[String]>;
+
     /// Insert a package name with its short description into the cache.
     fn insert_package(&mut self, name: String, description: String);
 }
@@ -40,6 +43,8 @@ pub struct AptPackageCache {
     descriptions: HashMap<String, String>,
     /// Cached versions for specific packages.
     versions: HashMap<String, Vec<VersionInfo>>,
+    /// Cached providers for virtual packages.
+    providers: HashMap<String, Vec<String>>,
 }
 
 impl AptPackageCache {
@@ -49,6 +54,7 @@ impl AptPackageCache {
             packages: Vec::new(),
             descriptions: HashMap::new(),
             versions: HashMap::new(),
+            providers: HashMap::new(),
         }
     }
 }
@@ -104,6 +110,44 @@ impl PackageCache for AptPackageCache {
         }
     }
 
+    async fn load_providers(&mut self, package: &str) -> Option<&[String]> {
+        if self.providers.contains_key(package) {
+            return self.providers.get(package).map(|v| v.as_slice());
+        }
+
+        match Command::new("apt-cache")
+            .arg("showpkg")
+            .arg(package)
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let mut providers = Vec::new();
+                let mut in_reverse_provides = false;
+
+                for line in text.lines() {
+                    if line.starts_with("Reverse Provides:") {
+                        in_reverse_provides = true;
+                        continue;
+                    }
+                    if in_reverse_provides {
+                        if let Some(name) = line.split_whitespace().next() {
+                            if !providers.contains(&name.to_string()) {
+                                providers.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+
+                providers.sort();
+                self.providers.insert(package.to_string(), providers);
+                self.providers.get(package).map(|v| v.as_slice())
+            }
+            _ => None,
+        }
+    }
+
     fn insert_package(&mut self, name: String, description: String) {
         let pos = self.packages.binary_search(&name).unwrap_or_else(|p| p);
         self.packages.insert(pos, name.clone());
@@ -153,6 +197,8 @@ pub struct TestPackageCache {
     pub packages: Vec<(String, Option<String>)>,
     /// Cached versions.
     pub versions: HashMap<String, Vec<VersionInfo>>,
+    /// Cached providers for virtual packages.
+    pub providers: HashMap<String, Vec<String>>,
 }
 
 #[cfg(test)]
@@ -179,6 +225,10 @@ impl PackageCache for TestPackageCache {
 
     async fn load_versions(&mut self, package: &str) -> Option<&[VersionInfo]> {
         self.versions.get(package).map(|v| v.as_slice())
+    }
+
+    async fn load_providers(&mut self, package: &str) -> Option<&[String]> {
+        self.providers.get(package).map(|v| v.as_slice())
     }
 
     fn insert_package(&mut self, name: String, description: String) {
