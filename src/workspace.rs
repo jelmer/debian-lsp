@@ -53,6 +53,15 @@ pub fn parse_watch(db: &dyn salsa::Database, file: SourceFile) -> debian_watch::
 }
 
 #[salsa::tracked]
+pub fn parse_rules(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> makefile_lossless::Parse<makefile_lossless::Makefile> {
+    let text = file.text(db);
+    makefile_lossless::Parse::parse_makefile(&text)
+}
+
+#[salsa::tracked]
 pub fn parse_changelog(
     db: &dyn salsa::Database,
     file: SourceFile,
@@ -235,6 +244,13 @@ impl Workspace {
         }
 
         diagnostics
+    }
+
+    pub fn get_parsed_rules(
+        &self,
+        file: SourceFile,
+    ) -> makefile_lossless::Parse<makefile_lossless::Makefile> {
+        parse_rules(self, file)
     }
 
     pub fn get_parsed_watch(&self, file: SourceFile) -> debian_watch::parse::Parse {

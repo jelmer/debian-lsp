@@ -17,6 +17,7 @@ mod copyright;
 mod deb822;
 mod package_cache;
 mod position;
+mod rules;
 mod source_format;
 mod tests;
 mod upstream_metadata;
@@ -44,6 +45,8 @@ enum FileType {
     SourceFormat,
     /// debian/upstream/metadata file
     UpstreamMetadata,
+    /// debian/rules file
+    Rules,
 }
 
 impl FileType {
@@ -63,6 +66,8 @@ impl FileType {
             Some(Self::SourceFormat)
         } else if upstream_metadata::is_upstream_metadata_file(uri) {
             Some(Self::UpstreamMetadata)
+        } else if rules::is_rules_file(uri) {
+            Some(Self::Rules)
         } else {
             None
         }
@@ -104,7 +109,8 @@ impl Backend {
             | FileType::TestsControl
             | FileType::Changelog
             | FileType::SourceFormat
-            | FileType::UpstreamMetadata => None,
+            | FileType::UpstreamMetadata
+            | FileType::Rules => None,
         }
     }
 
@@ -394,6 +400,13 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 upstream_metadata::get_completions(&source_text, position)
             }
+            Some((FileType::Rules, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_rules(source_file);
+                let makefile = parsed.tree();
+                rules::get_completions(&makefile, &source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -603,8 +616,12 @@ impl LanguageServer for Backend {
                 tests::generate_semantic_tokens(&deb822_parse, &source_text)
             }
             FileType::UpstreamMetadata => upstream_metadata::generate_semantic_tokens(&source_text),
-            // TODO: Implement semantic tokens for other file types
-            _ => vec![],
+            FileType::Rules => {
+                let parsed = workspace.get_parsed_rules(file.source_file);
+                let makefile = parsed.tree();
+                rules::generate_semantic_tokens(&makefile, &source_text)
+            }
+            FileType::SourceFormat => vec![],
         };
 
         if tokens.is_empty() {

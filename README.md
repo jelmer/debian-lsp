@@ -14,6 +14,7 @@ Language Server Protocol implementation for Debian packaging files.
 - `debian/source/format` - Source format declaration files
 - `debian/tests/control` - Autopkgtest control files (basic support)
 - `debian/upstream/metadata` - DEP-12 upstream metadata files
+- `debian/rules` - Package build rules (Makefile)
 
 ## Features
 
@@ -43,6 +44,11 @@ Language Server Protocol implementation for Debian packaging files.
 **debian/upstream/metadata:**
 - Field name completions for all DEP-12 fields (Repository, Bug-Database, Contact, etc.)
 
+**debian/rules:**
+- Target name completions for standard Debian Policy targets (clean, build, binary, etc.) and debhelper override/execute targets
+- Variable name completions for common build variables (DEB_BUILD_OPTIONS, DEB_HOST_MULTIARCH, etc.)
+- Excludes already-defined targets from completions
+
 ### Diagnostics
 
 - Field casing validation (e.g. `source` instead of `Source`)
@@ -71,7 +77,7 @@ This requires the editor to have format-on-type enabled:
 ### Semantic Highlighting
 
 Custom token types for syntax highlighting of Debian-specific constructs:
-- Control/copyright/watch/upstream-metadata files: field names, unknown fields, values, comments
+- Control/copyright/watch/upstream-metadata/rules files: field names, unknown fields, values, comments
 - Changelog files: package name, version, distribution, urgency, maintainer, timestamp
 
 ## Installation
@@ -124,7 +130,7 @@ function! s:config_debian_lsp()
       autocmd User lsp_setup call lsp#register_server({
         \ 'name': 'debian-lsp',
         \ 'cmd': {server_info -> ['debian-lsp']},
-        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debwatch', 'debupstream', 'autopkgtest'],
+        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debwatch', 'debupstream', 'autopkgtest', 'debrules'],
         \ 'blocklist': [],
         \ 'enabled': 1,
         \ })
@@ -143,6 +149,7 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/source/format setfiletype debsources
   autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
   autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
+  autocmd BufNewFile,BufRead */debian/rules setfiletype debrules
 augroup END
 ```
 
@@ -169,6 +176,7 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
     '*/debian/watch',
     '*/debian/tests/control',
     '*/debian/upstream/metadata',
+    '*/debian/rules',
   },
   callback = function()
     vim.lsp.start({
@@ -196,7 +204,7 @@ if not configs.debian_lsp then
         'debcopyright',
         'debchangelog',
         'debsources',
-        'make',
+        'debrules',
         'yaml',
       },
       root_dir = lspconfig.util.root_pattern('debian', '.git'),
