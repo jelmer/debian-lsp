@@ -161,12 +161,35 @@ You can then use vim-lsp commands like:
 - `:LspDefinition` - Go to definition
 - `:LspHover` - Show hover information
 
-#### Native Neovim LSP
+#### Neovim 0.11+ with bundled config
 
-Add the following configuration to your Neovim config (init.lua):
+A bundled LSP config is provided in the `nvim-lspconfig/` directory. Copy it to your Neovim config:
+
+```sh
+mkdir -p ~/.config/nvim/lsp
+cp nvim-lspconfig/lsp/debian_lsp.lua ~/.config/nvim/lsp/
+```
+
+Then enable it in your `init.lua`:
 
 ```lua
--- Configure debian-lsp
+vim.lsp.enable('debian_lsp')
+```
+
+To use a custom path to the `debian-lsp` binary:
+
+```lua
+vim.lsp.config('debian_lsp', {
+  cmd = { '/path/to/debian-lsp' },
+})
+vim.lsp.enable('debian_lsp')
+```
+
+#### Native Neovim LSP (without nvim-lspconfig)
+
+If you don't use nvim-lspconfig, add the following to your `init.lua`:
+
+```lua
 vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
   pattern = {
     '*/debian/control',
@@ -181,43 +204,12 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
   callback = function()
     vim.lsp.start({
       name = 'debian-lsp',
-      cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
+      cmd = {'debian-lsp'},
       root_dir = vim.fn.getcwd(),
     })
   end,
 })
 ```
-
-Or if you prefer using lspconfig:
-
-```lua
-local lspconfig = require('lspconfig')
-local configs = require('lspconfig.configs')
-
--- Define the debian-lsp configuration
-if not configs.debian_lsp then
-  configs.debian_lsp = {
-    default_config = {
-      cmd = {vim.fn.expand('~/src/debian-lsp/target/release/debian-lsp')},
-      filetypes = {
-        'debcontrol',
-        'debcopyright',
-        'debchangelog',
-        'debsources',
-        'debrules',
-        'yaml',
-      },
-      root_dir = lspconfig.util.root_pattern('debian', '.git'),
-      settings = {},
-    },
-  }
-end
-
--- Enable debian-lsp
-lspconfig.debian_lsp.setup{}
-```
-
-Note: Adjust the `cmd` path to match your installation location.
 
 ## Development
 
