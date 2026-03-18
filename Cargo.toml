@@ -42,3 +42,7 @@ tower-service = "0.3"
 [[bin]]
 name = "debian-lsp"
 test = true
+
+[workspace]
+members = [".", "zed-debian"]
+resolver = "2"
