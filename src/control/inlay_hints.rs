@@ -250,26 +250,22 @@ fn find_relations(
     (rel_results, sv_results)
 }
 
-/// Format a compact version hint from cached version info.
+/// Format version info as a compact string without brackets.
 ///
 /// Examples:
-///   `[sid,trixie: 13.31 | bullseye: 13.3.4]`
-///   `[sid,trixie: 13.31]` (single version across all suites)
-///   `[available: 13.31]` (no suite info)
-fn format_version_hint(versions: &[crate::package_cache::VersionInfo]) -> Option<String> {
+///   `"sid,trixie: 13.31 | bullseye: 13.3.4"`
+///   `"available: 13.31"` (no suite info)
+fn format_version_info(versions: &[crate::package_cache::VersionInfo]) -> Option<String> {
     if versions.is_empty() {
         return None;
     }
 
-    // Check if any version has suite info
     let has_suites = versions.iter().any(|v| !v.suites.is_empty());
 
     if !has_suites {
-        // No suite info — just show the candidate version
-        return Some(format!("[available: {}]", versions[0].version));
+        return Some(format!("available: {}", versions[0].version));
     }
 
-    // Group by version, show "suite1,suite2: version" for each
     let parts: Vec<String> = versions
         .iter()
         .filter(|v| !v.suites.is_empty())
@@ -277,10 +273,19 @@ fn format_version_hint(versions: &[crate::package_cache::VersionInfo]) -> Option
         .collect();
 
     if parts.is_empty() {
-        return Some(format!("[available: {}]", versions[0].version));
+        return Some(format!("available: {}", versions[0].version));
     }
 
-    Some(format!("[{}]", parts.join(" | ")))
+    Some(parts.join(" | "))
+}
+
+/// Format a compact version hint from cached version info, wrapped in brackets.
+///
+/// Examples:
+///   `[sid,trixie: 13.31 | bullseye: 13.3.4]`
+///   `[available: 13.31]` (no suite info)
+fn format_version_hint(versions: &[crate::package_cache::VersionInfo]) -> Option<String> {
+    format_version_info(versions).map(|s| format!("[{}]", s))
 }
 
 /// Format a version string for a single package, showing just the candidate
@@ -307,7 +312,7 @@ fn format_provider_hint(
         .iter()
         .map(|p| {
             if let Some(versions) = cache.get_cached_versions(p) {
-                let full = format_version_hint(versions);
+                let full = format_version_info(versions);
                 let short = format_short_version(versions);
                 (p.clone(), full, short)
             } else {
@@ -321,7 +326,7 @@ fn format_provider_hint(
     let full_parts: Vec<String> = annotated
         .iter()
         .map(|(name, full, _)| match full {
-            Some(v) => format!("{} {}", name, v),
+            Some(v) => format!("{} ({})", name, v),
             None => name.clone(),
         })
         .collect();
