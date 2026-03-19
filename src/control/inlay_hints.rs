@@ -6,6 +6,8 @@
 //! Shows whether the debhelper compat level is current:
 //!   debhelper-compat (= 13)   [current: 14]
 
+use std::collections::HashMap;
+
 use debian_control::lossless::relations::Relations;
 use debian_control::relations::VersionConstraint;
 use text_size::TextSize;
@@ -184,7 +186,7 @@ fn find_debhelper_compat(
 
             for rel_entry in relations.entries() {
                 for relation in rel_entry.relations() {
-                    if relation.name() != "debhelper-compat" {
+                    if relation.try_name().as_deref() != Some("debhelper-compat") {
                         continue;
                     }
 
@@ -217,19 +219,28 @@ struct RelationInfo {
     relation_end: TextSize,
 }
 
-/// Find all relations in relationship fields within the given range.
+/// Info about a substvar in a dependency field.
+struct SubstvarInfo {
+    /// The substvar name (e.g. "binary:Version").
+    name: String,
+    /// The end position of the substvar in the source text.
+    substvar_end: TextSize,
+}
+
+/// Find all relations and substvars in relationship fields within the given range.
 fn find_relations(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
-) -> Vec<RelationInfo> {
+) -> (Vec<RelationInfo>, Vec<SubstvarInfo>) {
     let control = parsed.tree();
 
     let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
-    let mut results = Vec::new();
+    let mut rel_results = Vec::new();
+    let mut sv_results = Vec::new();
 
     for paragraph in control.as_deb822().paragraphs() {
         for entry in paragraph.entries() {
@@ -248,27 +259,50 @@ fn find_relations(
             }
 
             let value = entry.value();
-            let (relations, _errors) = Relations::parse_relaxed(&value, true);
+            let (parsed_rels, _errors) = Relations::parse_relaxed(&value, true);
             let line_ranges = entry.value_line_ranges();
 
-            for rel_entry in relations.entries() {
+            for rel_entry in parsed_rels.entries() {
                 for relation in rel_entry.relations() {
+                    let Some(name) = relation.try_name() else {
+                        continue;
+                    };
+
                     let rel_end: usize = relation.syntax().text_range().end().into();
                     let Some(absolute_end) = joined_offset_to_source_offset(&line_ranges, rel_end)
                     else {
                         continue;
                     };
 
-                    results.push(RelationInfo {
-                        name: relation.name(),
+                    rel_results.push(RelationInfo {
+                        name,
                         relation_end: absolute_end,
                     });
                 }
             }
+
+            for sv in parsed_rels.substvar_nodes() {
+                let sv_end: usize = sv.syntax().text_range().end().into();
+                let Some(absolute_end) = joined_offset_to_source_offset(&line_ranges, sv_end)
+                else {
+                    continue;
+                };
+                // The substvar text is "${name}", strip the delimiters
+                let raw = sv.to_string();
+                let name = raw
+                    .strip_prefix("${")
+                    .and_then(|s| s.strip_suffix('}'))
+                    .unwrap_or(&raw)
+                    .to_string();
+                sv_results.push(SubstvarInfo {
+                    name,
+                    substvar_end: absolute_end,
+                });
+            }
         }
     }
 
-    results
+    (rel_results, sv_results)
 }
 
 /// Format a compact version hint from cached version info.
@@ -311,6 +345,10 @@ fn format_version_hint(versions: &[crate::package_cache::VersionInfo]) -> Option
 /// - debhelper-compat (= N): shows `[current: M]`
 /// - Archive versions: shows `[available: X.Y.Z]` for real packages
 /// - Virtual packages: shows `[-> provider1 | provider2 | ...]`
+/// - Substvars: shows `[= value]` for known substitution variables
+///
+/// The `resolved_substvars` map provides values for substvar names
+/// (e.g. `"binary:Version"` → `"1.2.3-1"`).
 ///
 /// Returns `(hints, uncached_packages)`. The caller should load versions and
 /// providers for uncached packages in the background and then send
@@ -320,13 +358,18 @@ pub async fn generate_inlay_hints(
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
     package_cache: &crate::package_cache::SharedPackageCache,
+    resolved_substvars: &HashMap<String, String>,
 ) -> (Vec<InlayHint>, Vec<String>) {
     // Extract info synchronously (CST types are not Send)
     let sv_entries = find_standards_versions(parsed, source_text, range);
     let dh_entries = find_debhelper_compat(parsed, source_text, range);
-    let rel_entries = find_relations(parsed, source_text, range);
+    let (rel_entries, substvar_entries) = find_relations(parsed, source_text, range);
 
-    if sv_entries.is_empty() && dh_entries.is_empty() && rel_entries.is_empty() {
+    if sv_entries.is_empty()
+        && dh_entries.is_empty()
+        && rel_entries.is_empty()
+        && substvar_entries.is_empty()
+    {
         return (Vec::new(), Vec::new());
     }
 
@@ -465,6 +508,27 @@ pub async fn generate_inlay_hints(
         }
     }
 
+    // Substvar hints
+    for sv in &substvar_entries {
+        if let Some(value) = resolved_substvars.get(&sv.name) {
+            let lsp_range = text_range_to_lsp_range(
+                source_text,
+                text_size::TextRange::new(sv.substvar_end, sv.substvar_end),
+            );
+
+            hints.push(InlayHint {
+                position: lsp_range.start,
+                label: InlayHintLabel::String(format!("[= {}]", value)),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(true),
+                padding_right: None,
+                data: None,
+            });
+        }
+    }
+
     (hints, uncached_packages)
 }
 
@@ -542,7 +606,7 @@ mod tests {
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -576,7 +640,7 @@ mod tests {
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 0);
     }
@@ -617,7 +681,7 @@ Maintainer: Test <test@example.com>
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -654,7 +718,7 @@ Maintainer: Test <test@example.com>
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -699,7 +763,7 @@ Maintainer: Test <test@example.com>
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 2);
         match &hints[0].label {
@@ -742,7 +806,7 @@ Maintainer: Test <test@example.com>
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         // Expect debhelper-compat hint + debhelper version hint
         assert_eq!(hints.len(), 2);
@@ -791,7 +855,7 @@ Description: A test
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -839,7 +903,7 @@ Description: A test
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         // Should show version hint, NOT provider hint
         assert_eq!(hints.len(), 1);
@@ -885,7 +949,7 @@ Description: A test
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -932,7 +996,7 @@ Description: A test
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -968,7 +1032,7 @@ Description: A test
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         // No hint yet — versions will be loaded in background
         assert_eq!(hints.len(), 0);
@@ -1013,12 +1077,57 @@ Description: A test
         };
 
         let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
             InlayHintLabel::String(s) => {
                 assert_eq!(s, "[unstable,testing: 13.31 | bullseye: 13.3.4]")
+            }
+            _ => panic!("Expected string label"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_substvar() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let cache = TestPackageCache::default();
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            "shlibs:Depends".to_string(),
+            "libc6 (>= 2.17), libfoo1 (>= 1.0)".to_string(),
+        );
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache, &resolved).await;
+
+        // Should have hint for ${shlibs:Depends} only (not ${misc:Depends})
+        let sv_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(&h.label, InlayHintLabel::String(s) if s.starts_with("[= ")))
+            .collect();
+        assert_eq!(sv_hints.len(), 1);
+        match &sv_hints[0].label {
+            InlayHintLabel::String(s) => {
+                assert_eq!(s, "[= libc6 (>= 2.17), libfoo1 (>= 1.0)]")
             }
             _ => panic!("Expected string label"),
         }

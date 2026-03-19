@@ -568,7 +568,7 @@ fn extract_package_for_version(prefix: &str) -> Option<String> {
     // The last entry's last relation is the one with the version being typed.
     let last_entry = relations.entries().last()?;
     let last_relation = last_entry.relations().last()?;
-    Some(last_relation.name())
+    last_relation.try_name()
 }
 
 /// Get version completions for a package.
