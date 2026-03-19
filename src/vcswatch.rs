@@ -6,14 +6,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 /// Thread-safe shared cache for VCS watch lookups.
 pub type SharedVcsWatchCache = Arc<RwLock<VcsWatchCache>>;
-
-const UDD_URL: &str = "postgres://udd-mirror:udd-mirror@udd-mirror.debian.net/udd";
 
 /// Cached VCS watch data from UDD.
 pub struct VcsWatchCache {
@@ -31,12 +28,8 @@ struct VcsWatchRow {
 impl VcsWatchCache {
     /// Create a new VCS watch cache with a lazy connection to UDD.
     pub fn new() -> Self {
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_lazy(UDD_URL)
-            .expect("invalid UDD connection URL");
         Self {
-            pool,
+            pool: crate::udd::connect_lazy(),
             version_by_url: HashMap::new(),
         }
     }

@@ -21,6 +21,7 @@ mod position;
 mod rules;
 mod source_format;
 mod tests;
+mod udd;
 mod upstream_metadata;
 mod vcswatch;
 mod watch;
