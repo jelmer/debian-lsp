@@ -92,28 +92,24 @@ impl PackageCache for AptPackageCache {
         }
 
         match Command::new("apt-cache")
-            .arg("madison")
+            .arg("policy")
             .arg(package)
             .output()
             .await
         {
             Ok(output) if output.status.success() => {
                 let text = String::from_utf8_lossy(&output.stdout);
-                let mut version_suites: HashMap<String, Vec<String>> = HashMap::new();
+                let mut versions = Vec::new();
                 for line in text.lines() {
-                    let parts: Vec<&str> = line.split('|').collect();
-                    if parts.len() >= 3 {
-                        let version = parts[1].trim().to_string();
-                        let suite = parts[2].trim().to_string();
-                        version_suites.entry(version).or_default().push(suite);
+                    if let Some(candidate) = line.strip_prefix("  Candidate: ") {
+                        if candidate != "(none)" {
+                            versions.push(VersionInfo {
+                                version: candidate.to_string(),
+                                suites: Vec::new(),
+                            });
+                        }
                     }
                 }
-
-                let mut versions: Vec<VersionInfo> = version_suites
-                    .into_iter()
-                    .map(|(version, suites)| VersionInfo { version, suites })
-                    .collect();
-                versions.sort_by(|a, b| b.version.cmp(&a.version));
 
                 self.versions.insert(package.to_string(), versions);
                 self.versions.get(package).map(|v| v.as_slice())
@@ -170,7 +166,7 @@ impl PackageCache for AptPackageCache {
         }
 
         let Ok(output) = Command::new("apt-cache")
-            .arg("madison")
+            .arg("policy")
             .args(&uncached)
             .output()
             .await
@@ -187,32 +183,31 @@ impl PackageCache for AptPackageCache {
             self.versions.entry(pkg.to_string()).or_default();
         }
 
+        // Parse apt-cache policy output:
+        //   package-name:
+        //     Installed: ...
+        //     Candidate: 1.2.3
+        //     Version table: ...
         let text = String::from_utf8_lossy(&output.stdout);
-        // Each madison line: " package | version | suite"
-        // Group by package name.
-        let mut pkg_version_suites: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
-        for line in text.lines() {
-            let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() >= 3 {
-                let pkg = parts[0].trim().to_string();
-                let version = parts[1].trim().to_string();
-                let suite = parts[2].trim().to_string();
-                pkg_version_suites
-                    .entry(pkg)
-                    .or_default()
-                    .entry(version)
-                    .or_default()
-                    .push(suite);
-            }
-        }
+        let mut current_package: Option<String> = None;
 
-        for (pkg, version_suites) in pkg_version_suites {
-            let mut versions: Vec<VersionInfo> = version_suites
-                .into_iter()
-                .map(|(version, suites)| VersionInfo { version, suites })
-                .collect();
-            versions.sort_by(|a, b| b.version.cmp(&a.version));
-            self.versions.insert(pkg, versions);
+        for line in text.lines() {
+            if !line.starts_with(' ') && line.ends_with(':') {
+                // Package header line, e.g. "debhelper:"
+                current_package = Some(line.trim_end_matches(':').to_string());
+            } else if let Some(candidate) = line.strip_prefix("  Candidate: ") {
+                if candidate != "(none)" {
+                    if let Some(pkg) = &current_package {
+                        self.versions.insert(
+                            pkg.clone(),
+                            vec![VersionInfo {
+                                version: candidate.to_string(),
+                                suites: Vec::new(),
+                            }],
+                        );
+                    }
+                }
+            }
         }
     }
 
