@@ -115,6 +115,59 @@ impl Backend {
         }
     }
 
+    /// Look up the version from `debian/changelog` for the same project as the
+    /// given control file URI. Checks open files first.
+    fn get_changelog_version(
+        control_uri: &Uri,
+        files: &Arc<Mutex<HashMap<Uri, FileInfo>>>,
+        workspace: &Workspace,
+    ) -> Option<String> {
+        let control_path = control_uri.to_file_path()?;
+        let changelog_path = control_path.parent()?.join("changelog");
+        let changelog_uri = Uri::from_file_path(&changelog_path)?;
+
+        // Check if the changelog is open in the workspace
+        let files_guard = files.try_lock().ok()?;
+        let changelog_file = files_guard.get(&changelog_uri)?;
+        let parsed = workspace.get_parsed_changelog(changelog_file.source_file);
+        let changelog = parsed.tree();
+        let entry = changelog.iter().next()?;
+        Some(entry.version()?.to_string())
+    }
+
+    /// Read `*.substvars` files from the same directory as the control file
+    /// and populate the map with their key=value pairs.
+    fn read_substvars_files(
+        control_uri: &Uri,
+        map: &mut std::collections::HashMap<String, String>,
+    ) {
+        let control_path = control_uri.to_file_path();
+        let Some(control_path) = control_path.as_deref() else {
+            return;
+        };
+        let Some(debian_dir) = control_path.parent() else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(debian_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("substvars") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in content.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    map.entry(key.to_string())
+                        .or_insert_with(|| value.to_string());
+                }
+            }
+        }
+    }
+
     /// Spawn a background task to prefetch bug data for the source package
     /// in the given changelog, so completions are fast when the user needs them.
     fn prefetch_changelog_bugs(&self, source_file: workspace::SourceFile, workspace: &Workspace) {
@@ -825,14 +878,43 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
                 let parsed = workspace.get_parsed_control(file.source_file);
+
+                // Resolve substvars from changelog and .substvars files
+                let resolved_substvars = {
+                    let mut map = std::collections::HashMap::new();
+                    if let Some(version) = Self::get_changelog_version(uri, &self.files, &workspace)
+                    {
+                        map.insert("binary:Version".to_string(), version.clone());
+                        map.insert("source:Version".to_string(), version);
+                    }
+                    Self::read_substvars_files(uri, &mut map);
+                    map
+                };
+
                 drop(workspace); // Release lock before async package cache access
-                let hints = control::generate_inlay_hints(
+                let (hints, uncached_packages) = control::generate_inlay_hints(
                     &parsed,
                     &source_text,
                     &params.range,
                     &self.package_cache,
+                    &resolved_substvars,
                 )
                 .await;
+
+                // Load uncached packages in the background (two batch
+                // subprocess calls), then ask the editor to re-request hints.
+                if !uncached_packages.is_empty() {
+                    let cache = self.package_cache.clone();
+                    let client = self.client.clone();
+                    tokio::spawn(async move {
+                        let mut c = cache.write().await;
+                        c.load_versions_batch(&uncached_packages).await;
+                        c.load_providers_batch(&uncached_packages).await;
+                        drop(c);
+                        let _ = client.inlay_hint_refresh().await;
+                    });
+                }
+
                 if hints.is_empty() {
                     Ok(None)
                 } else {
