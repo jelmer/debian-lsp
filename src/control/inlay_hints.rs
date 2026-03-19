@@ -271,6 +271,39 @@ fn find_relations(
     results
 }
 
+/// Format a compact version hint from cached version info.
+///
+/// Examples:
+///   `[sid,trixie: 13.31 | bullseye: 13.3.4]`
+///   `[sid,trixie: 13.31]` (single version across all suites)
+///   `[available: 13.31]` (no suite info)
+fn format_version_hint(versions: &[crate::package_cache::VersionInfo]) -> Option<String> {
+    if versions.is_empty() {
+        return None;
+    }
+
+    // Check if any version has suite info
+    let has_suites = versions.iter().any(|v| !v.suites.is_empty());
+
+    if !has_suites {
+        // No suite info — just show the candidate version
+        return Some(format!("[available: {}]", versions[0].version));
+    }
+
+    // Group by version, show "suite1,suite2: version" for each
+    let parts: Vec<String> = versions
+        .iter()
+        .filter(|v| !v.suites.is_empty())
+        .map(|v| format!("{}: {}", v.suites.join(","), v.version))
+        .collect();
+
+    if parts.is_empty() {
+        return Some(format!("[available: {}]", versions[0].version));
+    }
+
+    Some(format!("[{}]", parts.join(" | ")))
+}
+
 /// Generate inlay hints for a control file.
 ///
 /// Currently provides hints for:
@@ -383,17 +416,14 @@ pub async fn generate_inlay_hints(
 
             if is_real {
                 if let Some(versions) = cache.get_cached_versions(&rel.name) {
-                    if let Some(newest) = versions.first() {
+                    if let Some(label) = format_version_hint(versions) {
                         let lsp_range = text_range_to_lsp_range(
                             source_text,
                             text_size::TextRange::new(rel.relation_end, rel.relation_end),
                         );
                         hints.push(InlayHint {
                             position: lsp_range.start,
-                            label: InlayHintLabel::String(format!(
-                                "[available: {}]",
-                                newest.version
-                            )),
+                            label: InlayHintLabel::String(label),
                             kind: Some(InlayHintKind::TYPE),
                             text_edits: None,
                             tooltip: None,
@@ -885,7 +915,7 @@ Description: A test
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[available: 3.12.8-1]"),
+            InlayHintLabel::String(s) => assert_eq!(s, "[unstable: 3.12.8-1]"),
             _ => panic!("Expected string label"),
         }
     }
@@ -921,5 +951,55 @@ Description: A test
 
         // No hint yet — versions will be loaded in background
         assert_eq!(hints.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_inlay_hint_archive_version_multiple_suites() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut cache = TestPackageCache::default();
+        cache
+            .packages
+            .push(("debhelper".to_string(), Some("helper".to_string())));
+        cache.versions.insert(
+            "debhelper".to_string(),
+            vec![
+                VersionInfo {
+                    version: "13.31".to_string(),
+                    suites: vec!["unstable".to_string(), "testing".to_string()],
+                },
+                VersionInfo {
+                    version: "13.3.4".to_string(),
+                    suites: vec!["bullseye".to_string()],
+                },
+            ],
+        );
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+
+        let content = "\
+Source: test-package
+
+Package: test-package
+Depends: debhelper
+Description: A test
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+        let range = tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position::new(0, 0),
+            end: tower_lsp_server::ls_types::Position::new(5, 0),
+        };
+
+        let (hints, _uncached) =
+            generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => {
+                assert_eq!(s, "[unstable,testing: 13.31 | bullseye: 13.3.4]")
+            }
+            _ => panic!("Expected string label"),
+        }
     }
 }

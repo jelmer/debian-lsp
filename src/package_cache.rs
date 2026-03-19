@@ -71,6 +71,72 @@ impl AptPackageCache {
     }
 }
 
+/// Extract the suite name from an apt source line like
+/// `500 http://deb.debian.org/debian unstable/main amd64 Packages`.
+/// Returns the suite component (e.g. "unstable", "bullseye").
+fn extract_suite_from_apt_line(line: &str) -> Option<&str> {
+    // Format: "PRIORITY URL SUITE/COMPONENT ARCH TYPE"
+    // or:     "PRIORITY /var/lib/dpkg/status"
+    let trimmed = line.trim();
+    let mut parts = trimmed.split_whitespace();
+    let _priority = parts.next()?;
+    let url_or_path = parts.next()?;
+    if url_or_path.starts_with('/') {
+        return None; // local dpkg status, not an archive
+    }
+    let suite_component = parts.next()?;
+    suite_component.split('/').next()
+}
+
+/// Parse a single line of `apt-cache policy` output, updating the
+/// current version list.  Call this for every line after the package
+/// header (the `name:` line).
+fn parse_policy_line(line: &str, versions: &mut Vec<VersionInfo>) {
+    let trimmed = line.trim();
+
+    // Version line: "VERSION PRIORITY" or "*** VERSION PRIORITY"
+    if trimmed.starts_with("***") || trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        let version_str = if let Some(rest) = trimmed.strip_prefix("*** ") {
+            rest.split_whitespace().next()
+        } else {
+            trimmed.split_whitespace().next()
+        };
+        if let Some(v) = version_str {
+            versions.push(VersionInfo {
+                version: v.to_string(),
+                suites: Vec::new(),
+            });
+        }
+    } else if let Some(last) = versions.last_mut() {
+        // Suite line under a version
+        if let Some(suite) = extract_suite_from_apt_line(trimmed) {
+            let suite = suite.to_string();
+            if !last.suites.contains(&suite) {
+                last.suites.push(suite);
+            }
+        }
+    }
+}
+
+/// Parse the full output of `apt-cache policy <single-package>` into
+/// a list of `VersionInfo` entries (newest first, following apt order).
+fn parse_policy_versions(text: &str) -> Vec<VersionInfo> {
+    let mut versions = Vec::new();
+    let mut in_version_table = false;
+
+    for line in text.lines() {
+        if line.starts_with("  Version table:") {
+            in_version_table = true;
+            continue;
+        }
+        if in_version_table {
+            parse_policy_line(line, &mut versions);
+        }
+    }
+
+    versions
+}
+
 #[async_trait::async_trait]
 impl PackageCache for AptPackageCache {
     fn get_packages_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -99,18 +165,7 @@ impl PackageCache for AptPackageCache {
         {
             Ok(output) if output.status.success() => {
                 let text = String::from_utf8_lossy(&output.stdout);
-                let mut versions = Vec::new();
-                for line in text.lines() {
-                    if let Some(candidate) = line.strip_prefix("  Candidate: ") {
-                        if candidate != "(none)" {
-                            versions.push(VersionInfo {
-                                version: candidate.to_string(),
-                                suites: Vec::new(),
-                            });
-                        }
-                    }
-                }
-
+                let versions = parse_policy_versions(&text);
                 self.versions.insert(package.to_string(), versions);
                 self.versions.get(package).map(|v| v.as_slice())
             }
@@ -183,30 +238,33 @@ impl PackageCache for AptPackageCache {
             self.versions.entry(pkg.to_string()).or_default();
         }
 
-        // Parse apt-cache policy output:
-        //   package-name:
-        //     Installed: ...
-        //     Candidate: 1.2.3
-        //     Version table: ...
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_package: Option<String> = None;
+        let mut current_versions: Vec<VersionInfo> = Vec::new();
+        let mut in_version_table = false;
 
         for line in text.lines() {
             if !line.starts_with(' ') && line.ends_with(':') {
-                // Package header line, e.g. "debhelper:"
-                current_package = Some(line.trim_end_matches(':').to_string());
-            } else if let Some(candidate) = line.strip_prefix("  Candidate: ") {
-                if candidate != "(none)" {
-                    if let Some(pkg) = &current_package {
-                        self.versions.insert(
-                            pkg.clone(),
-                            vec![VersionInfo {
-                                version: candidate.to_string(),
-                                suites: Vec::new(),
-                            }],
-                        );
+                // New package header — save previous package's versions
+                if let Some(pkg) = current_package.take() {
+                    if !current_versions.is_empty() {
+                        self.versions
+                            .insert(pkg, std::mem::take(&mut current_versions));
                     }
                 }
+                current_package = Some(line.trim_end_matches(':').to_string());
+                current_versions.clear();
+                in_version_table = false;
+            } else if line.starts_with("  Version table:") {
+                in_version_table = true;
+            } else if in_version_table {
+                parse_policy_line(line, &mut current_versions);
+            }
+        }
+        // Save last package
+        if let Some(pkg) = current_package {
+            if !current_versions.is_empty() {
+                self.versions.insert(pkg, current_versions);
             }
         }
     }
