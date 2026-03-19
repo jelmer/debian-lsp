@@ -3,7 +3,7 @@
 //! - Standards-Version: `[latest: 4.7.0]` when outdated
 //! - debhelper-compat: `[current: 14]` showing latest compat level
 //! - Archive versions: `[unstable: 13.31 | bullseye: 13.3.4]` per suite
-//! - Virtual packages: `[-> exim4 (4.99) | postfix (3.11)]` with providers
+//! - Virtual packages: `→ [exim4 (4.99) | postfix (3.11)]` with providers
 //! - Substvars: `[= libc6 (>= 2.17), ...]` showing resolved values
 
 use std::collections::HashMap;
@@ -311,7 +311,7 @@ fn format_provider_hint(
             None => name.clone(),
         })
         .collect();
-    let candidate = format!("[-> {}]", full_parts.join(" | "));
+    let candidate = format!("→ [{}]", full_parts.join(" | "));
     if candidate.len() <= max_len {
         return candidate;
     }
@@ -328,14 +328,14 @@ fn format_provider_hint(
     // Try fitting all short parts, then progressively fewer
     for n in (1..=short_parts.len()).rev() {
         let suffix = if n < short_parts.len() { " | ..." } else { "" };
-        let candidate = format!("[-> {}{}]", short_parts[..n].join(" | "), suffix);
+        let candidate = format!("→ [{}{}]", short_parts[..n].join(" | "), suffix);
         if candidate.len() <= max_len {
             return candidate;
         }
     }
 
     // Last resort: just the first provider
-    format!("[-> {} | ...]", short_parts[0])
+    format!("→ [{} | ...]", short_parts[0])
 }
 
 /// Generate inlay hints for a control file.
@@ -344,7 +344,7 @@ fn format_provider_hint(
 /// - Standards-Version: shows `[latest: X.Y.Z]` if outdated
 /// - debhelper-compat (= N): shows `[current: M]`
 /// - Archive versions: shows `[available: X.Y.Z]` for real packages
-/// - Virtual packages: shows `[-> provider1 | provider2 | ...]`
+/// - Virtual packages: shows `→ [provider1 | provider2 | ...]`
 /// - Substvars: shows `[= value]` for known substitution variables
 ///
 /// The `resolved_substvars` map provides values for substvar names
@@ -807,7 +807,7 @@ Description: A test
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
             InlayHintLabel::String(s) => {
-                assert_eq!(s, "[-> exim4-daemon-light | postfix | sendmail-bin]")
+                assert_eq!(s, "→ [exim4-daemon-light | postfix | sendmail-bin]")
             }
             _ => panic!("Expected string label"),
         }
@@ -903,7 +903,7 @@ Description: A test
             InlayHintLabel::String(s) => {
                 assert_eq!(
                     s,
-                    "[-> courier-mta | exim4-daemon-heavy | exim4-daemon-light | postfix | ...]"
+                    "→ [courier-mta | exim4-daemon-heavy | exim4-daemon-light | postfix | ...]"
                 )
             }
             _ => panic!("Expected string label"),
