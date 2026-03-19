@@ -61,54 +61,29 @@ struct StandardsVersionInfo {
     value_end: TextSize,
 }
 
-/// Find Standards-Version fields in a parsed control file within the given range.
-fn find_standards_versions(
-    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
-    range: &tower_lsp_server::ls_types::Range,
-) -> Vec<StandardsVersionInfo> {
-    let control = parsed.tree();
+/// Info about a relation in a dependency field.
+struct RelationInfo {
+    /// The package name.
+    name: String,
+    /// The end position of the relation in the source text.
+    relation_end: TextSize,
+    /// Whether this is a `debhelper-compat (= N)` relation.
+    is_debhelper_compat: bool,
+}
 
-    let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
-        return Vec::new();
-    };
+/// Info about a substvar in a dependency field.
+struct SubstvarInfo {
+    /// The substvar name (e.g. "binary:Version").
+    name: String,
+    /// The end position of the substvar in the source text.
+    substvar_end: TextSize,
+}
 
-    let mut results = Vec::new();
-
-    for paragraph in control.as_deb822().paragraphs() {
-        for entry in paragraph.entries() {
-            let entry_range = entry.text_range();
-
-            if entry_range.start() >= text_range.end() || entry_range.end() <= text_range.start() {
-                continue;
-            }
-
-            let Some(field_name) = entry.key() else {
-                continue;
-            };
-
-            if !field_name.eq_ignore_ascii_case("Standards-Version") {
-                continue;
-            }
-
-            let value = entry.value();
-            let value = value.trim().to_string();
-            if value.is_empty() {
-                continue;
-            }
-
-            let Some(value_range) = entry.value_range() else {
-                continue;
-            };
-
-            results.push(StandardsVersionInfo {
-                value,
-                value_end: value_range.end(),
-            });
-        }
-    }
-
-    results
+/// All hint-relevant data extracted from a parsed control file in a single pass.
+struct HintData {
+    standards_versions: Vec<StandardsVersionInfo>,
+    relations: Vec<RelationInfo>,
+    substvars: Vec<SubstvarInfo>,
 }
 
 /// Extract the major version (compat level) from a debhelper package version
@@ -150,38 +125,28 @@ fn joined_offset_to_source_offset(
     None
 }
 
-/// Info about a relation in a dependency field.
-struct RelationInfo {
-    /// The package name.
-    name: String,
-    /// The end position of the relation in the source text.
-    relation_end: TextSize,
-    /// Whether this is a `debhelper-compat (= N)` relation.
-    is_debhelper_compat: bool,
-}
-
-/// Info about a substvar in a dependency field.
-struct SubstvarInfo {
-    /// The substvar name (e.g. "binary:Version").
-    name: String,
-    /// The end position of the substvar in the source text.
-    substvar_end: TextSize,
-}
-
-/// Find all relations and substvars in relationship fields within the given range.
-fn find_relations(
+/// Extract all hint-relevant data from a parsed control file in a single CST walk.
+///
+/// Collects Standards-Version fields, relations (with debhelper-compat detection),
+/// and substvars from all paragraphs within the given range.
+fn extract_hint_data(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
-) -> (Vec<RelationInfo>, Vec<SubstvarInfo>) {
+) -> HintData {
     let control = parsed.tree();
 
     let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
-        return (Vec::new(), Vec::new());
+        return HintData {
+            standards_versions: Vec::new(),
+            relations: Vec::new(),
+            substvars: Vec::new(),
+        };
     };
 
-    let mut rel_results = Vec::new();
-    let mut sv_results = Vec::new();
+    let mut standards_versions = Vec::new();
+    let mut relations = Vec::new();
+    let mut substvars = Vec::new();
 
     for paragraph in control.as_deb822().paragraphs() {
         for entry in paragraph.entries() {
@@ -195,6 +160,22 @@ fn find_relations(
                 continue;
             };
 
+            // Standards-Version field
+            if field_name.eq_ignore_ascii_case("Standards-Version") {
+                let value = entry.value();
+                let value = value.trim().to_string();
+                if !value.is_empty() {
+                    if let Some(value_range) = entry.value_range() {
+                        standards_versions.push(StandardsVersionInfo {
+                            value,
+                            value_end: value_range.end(),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // Relationship fields
             if !super::relation_completion::is_relationship_field(&field_name) {
                 continue;
             }
@@ -218,7 +199,7 @@ fn find_relations(
                     let is_debhelper_compat = name == "debhelper-compat"
                         && matches!(relation.version(), Some((VersionConstraint::Equal, _)));
 
-                    rel_results.push(RelationInfo {
+                    relations.push(RelationInfo {
                         name,
                         relation_end: absolute_end,
                         is_debhelper_compat,
@@ -232,14 +213,13 @@ fn find_relations(
                 else {
                     continue;
                 };
-                // The substvar text is "${name}", strip the delimiters
                 let raw = sv.to_string();
                 let name = raw
                     .strip_prefix("${")
                     .and_then(|s| s.strip_suffix('}'))
                     .unwrap_or(&raw)
                     .to_string();
-                sv_results.push(SubstvarInfo {
+                substvars.push(SubstvarInfo {
                     name,
                     substvar_end: absolute_end,
                 });
@@ -247,7 +227,11 @@ fn find_relations(
         }
     }
 
-    (rel_results, sv_results)
+    HintData {
+        standards_versions,
+        relations,
+        substvars,
+    }
 }
 
 /// Format version info as a compact string without brackets.
@@ -266,17 +250,14 @@ fn format_version_info(versions: &[crate::package_cache::VersionInfo]) -> Option
         return Some(format!("available: {}", versions[0].version));
     }
 
-    let parts: Vec<String> = versions
-        .iter()
-        .filter(|v| !v.suites.is_empty())
-        .map(|v| format!("{}: {}", v.suites.join(","), v.version))
-        .collect();
-
-    if parts.is_empty() {
-        return Some(format!("available: {}", versions[0].version));
-    }
-
-    Some(parts.join(" | "))
+    Some(
+        versions
+            .iter()
+            .filter(|v| !v.suites.is_empty())
+            .map(|v| format!("{}: {}", v.suites.join(","), v.version))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    )
 }
 
 /// Format a compact version hint from cached version info, wrapped in brackets.
@@ -343,14 +324,11 @@ fn format_provider_hint(
             None => name.clone(),
         })
         .collect();
-    let candidate = format!("[-> {}]", short_parts.join(" | "));
-    if candidate.len() <= max_len {
-        return candidate;
-    }
 
-    // Try 3: truncate providers until it fits
-    for n in (1..short_parts.len()).rev() {
-        let candidate = format!("[-> {} | ...]", short_parts[..n].join(" | "));
+    // Try fitting all short parts, then progressively fewer
+    for n in (1..=short_parts.len()).rev() {
+        let suffix = if n < short_parts.len() { " | ..." } else { "" };
+        let candidate = format!("[-> {}{}]", short_parts[..n].join(" | "), suffix);
         if candidate.len() <= max_len {
             return candidate;
         }
@@ -383,54 +361,56 @@ pub async fn generate_inlay_hints(
     resolved_substvars: &HashMap<String, String>,
 ) -> (Vec<InlayHint>, Vec<String>) {
     // Extract info synchronously (CST types are not Send)
-    let sv_entries = find_standards_versions(parsed, source_text, range);
-    let (rel_entries, substvar_entries) = find_relations(parsed, source_text, range);
+    let data = extract_hint_data(parsed, source_text, range);
 
-    let has_debhelper_compat = rel_entries.iter().any(|r| r.is_debhelper_compat);
+    let has_debhelper_compat = data.relations.iter().any(|r| r.is_debhelper_compat);
 
-    if sv_entries.is_empty() && rel_entries.is_empty() && substvar_entries.is_empty() {
+    if data.standards_versions.is_empty() && data.relations.is_empty() && data.substvars.is_empty()
+    {
         return (Vec::new(), Vec::new());
     }
 
-    let mut hints = Vec::new();
-
-    // Standards-Version hints
-    if !sv_entries.is_empty() {
-        let latest_standards = {
-            let mut cache = package_cache.write().await;
+    // Load Standards-Version and debhelper-compat versions in a single
+    // write lock scope to reduce lock contention.
+    let (latest_standards, latest_compat) = {
+        let mut cache = package_cache.write().await;
+        let latest_standards = if !data.standards_versions.is_empty() {
             let versions = cache.load_versions("debian-policy").await;
             versions.and_then(|vs| {
                 vs.first()
                     .and_then(|v| policy_version_to_standards_version(&v.version))
                     .map(|s| s.to_string())
             })
+        } else {
+            None
         };
+        let latest_compat = if has_debhelper_compat {
+            let versions = cache.load_versions("debhelper").await;
+            versions.and_then(|vs| {
+                vs.first()
+                    .and_then(|v| debhelper_version_to_compat_level(&v.version))
+            })
+        } else {
+            None
+        };
+        (latest_standards, latest_compat)
+    };
 
-        if let Some(latest) = latest_standards {
-            for sv in &sv_entries {
-                if sv.value == latest || !is_outdated(&sv.value, &latest) {
-                    continue;
-                }
-                hints.push(make_hint(
-                    source_text,
-                    sv.value_end,
-                    format!("[latest: {}]", latest),
-                ));
+    let mut hints = Vec::new();
+
+    // Standards-Version hints
+    if let Some(latest) = &latest_standards {
+        for sv in &data.standards_versions {
+            if sv.value == *latest || !is_outdated(&sv.value, latest) {
+                continue;
             }
+            hints.push(make_hint(
+                source_text,
+                sv.value_end,
+                format!("[latest: {}]", latest),
+            ));
         }
     }
-
-    // debhelper-compat hints
-    let latest_compat = if has_debhelper_compat {
-        let mut cache = package_cache.write().await;
-        let versions = cache.load_versions("debhelper").await;
-        versions.and_then(|vs| {
-            vs.first()
-                .and_then(|v| debhelper_version_to_compat_level(&v.version))
-        })
-    } else {
-        None
-    };
 
     // Per-relation hints (archive versions, virtual package providers,
     // debhelper-compat). Use only cached data (read lock) for archive
@@ -440,7 +420,7 @@ pub async fn generate_inlay_hints(
     let mut uncached_packages = Vec::new();
     {
         let cache = package_cache.read().await;
-        for rel in &rel_entries {
+        for rel in &data.relations {
             if rel.is_debhelper_compat {
                 if let Some(latest) = latest_compat {
                     hints.push(make_hint(
@@ -484,7 +464,7 @@ pub async fn generate_inlay_hints(
     uncached_packages.dedup();
 
     // Substvar hints
-    for sv in &substvar_entries {
+    for sv in &data.substvars {
         if let Some(value) = resolved_substvars.get(&sv.name) {
             hints.push(make_hint(
                 source_text,
