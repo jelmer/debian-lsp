@@ -15,6 +15,24 @@ use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel};
 
 use crate::position::text_range_to_lsp_range;
 
+/// Create an inlay hint at the given source offset with the given label.
+///
+/// Converts the offset to an LSP position and constructs the hint with
+/// standard padding and kind settings.
+fn make_hint(source_text: &str, offset: TextSize, label: String) -> InlayHint {
+    let lsp_range = text_range_to_lsp_range(source_text, text_size::TextRange::new(offset, offset));
+    InlayHint {
+        position: lsp_range.start,
+        label: InlayHintLabel::String(label),
+        kind: Some(InlayHintKind::TYPE),
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: None,
+        data: None,
+    }
+}
+
 /// Extract the Standards-Version (first 3 components) from a debian-policy
 /// package version string like "4.7.3.0" → "4.7.3".
 fn policy_version_to_standards_version(policy_version: &str) -> Option<&str> {
@@ -93,16 +111,6 @@ fn find_standards_versions(
     results
 }
 
-/// Build-Depends field names that may contain debhelper-compat.
-const BUILD_DEPENDS_FIELDS: &[&str] =
-    &["Build-Depends", "Build-Depends-Indep", "Build-Depends-Arch"];
-
-/// Info about a debhelper-compat relation found in the control file.
-struct DebhelperCompatInfo {
-    /// The end position of the relation (after closing paren) in the source text.
-    relation_end: TextSize,
-}
-
 /// Extract the major version (compat level) from a debhelper package version
 /// string like "13.31" → 13.
 fn debhelper_version_to_compat_level(version: &str) -> Option<u32> {
@@ -142,81 +150,14 @@ fn joined_offset_to_source_offset(
     None
 }
 
-/// Find debhelper-compat relations in a parsed control file within the given range.
-fn find_debhelper_compat(
-    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
-    range: &tower_lsp_server::ls_types::Range,
-) -> Vec<DebhelperCompatInfo> {
-    let control = parsed.tree();
-
-    let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
-        return Vec::new();
-    };
-
-    let mut results = Vec::new();
-
-    for paragraph in control.as_deb822().paragraphs() {
-        for entry in paragraph.entries() {
-            let entry_range = entry.text_range();
-
-            if entry_range.start() >= text_range.end() || entry_range.end() <= text_range.start() {
-                continue;
-            }
-
-            let Some(field_name) = entry.key() else {
-                continue;
-            };
-
-            if !BUILD_DEPENDS_FIELDS
-                .iter()
-                .any(|f| f.eq_ignore_ascii_case(&field_name))
-            {
-                continue;
-            }
-
-            let value = entry.value();
-            let (relations, _errors) = Relations::parse_relaxed(&value, true);
-
-            // Build a mapping from offsets in the joined value string
-            // to absolute source positions. entry.value() joins VALUE
-            // tokens with '\n', stripping INDENT/NEWLINE tokens, so
-            // positions don't map 1:1 for multi-line values.
-            let line_ranges = entry.value_line_ranges();
-
-            for rel_entry in relations.entries() {
-                for relation in rel_entry.relations() {
-                    if relation.try_name().as_deref() != Some("debhelper-compat") {
-                        continue;
-                    }
-
-                    let Some((VersionConstraint::Equal, _)) = relation.version() else {
-                        continue;
-                    };
-
-                    let rel_end: usize = relation.syntax().text_range().end().into();
-                    let Some(absolute_end) = joined_offset_to_source_offset(&line_ranges, rel_end)
-                    else {
-                        continue;
-                    };
-
-                    results.push(DebhelperCompatInfo {
-                        relation_end: absolute_end,
-                    });
-                }
-            }
-        }
-    }
-
-    results
-}
-
 /// Info about a relation in a dependency field.
 struct RelationInfo {
     /// The package name.
     name: String,
     /// The end position of the relation in the source text.
     relation_end: TextSize,
+    /// Whether this is a `debhelper-compat (= N)` relation.
+    is_debhelper_compat: bool,
 }
 
 /// Info about a substvar in a dependency field.
@@ -274,9 +215,13 @@ fn find_relations(
                         continue;
                     };
 
+                    let is_debhelper_compat = name == "debhelper-compat"
+                        && matches!(relation.version(), Some((VersionConstraint::Equal, _)));
+
                     rel_results.push(RelationInfo {
                         name,
                         relation_end: absolute_end,
+                        is_debhelper_compat,
                     });
                 }
             }
@@ -338,6 +283,78 @@ fn format_version_hint(versions: &[crate::package_cache::VersionInfo]) -> Option
     Some(format!("[{}]", parts.join(" | ")))
 }
 
+/// Format a version string for a single package, showing just the candidate
+/// (first/newest) version without suite detail.
+fn format_short_version(versions: &[crate::package_cache::VersionInfo]) -> Option<String> {
+    versions.first().map(|v| v.version.clone())
+}
+
+/// Format a compact provider hint for a virtual package, including version
+/// info for each provider when cached.
+///
+/// Strategy for keeping the hint within `max_len` characters:
+/// 1. Try full per-suite version info for each provider
+/// 2. If too long, fall back to just the candidate version
+/// 3. If still too long, truncate the provider list with `...`
+fn format_provider_hint(
+    providers: &[String],
+    cache: &dyn crate::package_cache::PackageCache,
+    uncached: &mut Vec<String>,
+    max_len: usize,
+) -> String {
+    // Annotate each provider with its version info
+    let annotated: Vec<(String, Option<String>, Option<String>)> = providers
+        .iter()
+        .map(|p| {
+            if let Some(versions) = cache.get_cached_versions(p) {
+                let full = format_version_hint(versions);
+                let short = format_short_version(versions);
+                (p.clone(), full, short)
+            } else {
+                uncached.push(p.clone());
+                (p.clone(), None, None)
+            }
+        })
+        .collect();
+
+    // Try 1: full suite detail for all providers
+    let full_parts: Vec<String> = annotated
+        .iter()
+        .map(|(name, full, _)| match full {
+            Some(v) => format!("{} {}", name, v),
+            None => name.clone(),
+        })
+        .collect();
+    let candidate = format!("[-> {}]", full_parts.join(" | "));
+    if candidate.len() <= max_len {
+        return candidate;
+    }
+
+    // Try 2: just candidate version for all providers
+    let short_parts: Vec<String> = annotated
+        .iter()
+        .map(|(name, _, short)| match short {
+            Some(v) => format!("{} ({})", name, v),
+            None => name.clone(),
+        })
+        .collect();
+    let candidate = format!("[-> {}]", short_parts.join(" | "));
+    if candidate.len() <= max_len {
+        return candidate;
+    }
+
+    // Try 3: truncate providers until it fits
+    for n in (1..short_parts.len()).rev() {
+        let candidate = format!("[-> {} | ...]", short_parts[..n].join(" | "));
+        if candidate.len() <= max_len {
+            return candidate;
+        }
+    }
+
+    // Last resort: just the first provider
+    format!("[-> {} | ...]", short_parts[0])
+}
+
 /// Generate inlay hints for a control file.
 ///
 /// Currently provides hints for:
@@ -362,14 +379,11 @@ pub async fn generate_inlay_hints(
 ) -> (Vec<InlayHint>, Vec<String>) {
     // Extract info synchronously (CST types are not Send)
     let sv_entries = find_standards_versions(parsed, source_text, range);
-    let dh_entries = find_debhelper_compat(parsed, source_text, range);
     let (rel_entries, substvar_entries) = find_relations(parsed, source_text, range);
 
-    if sv_entries.is_empty()
-        && dh_entries.is_empty()
-        && rel_entries.is_empty()
-        && substvar_entries.is_empty()
-    {
+    let has_debhelper_compat = rel_entries.iter().any(|r| r.is_debhelper_compat);
+
+    if sv_entries.is_empty() && rel_entries.is_empty() && substvar_entries.is_empty() {
         return (Vec::new(), Vec::new());
     }
 
@@ -392,66 +406,47 @@ pub async fn generate_inlay_hints(
                 if sv.value == latest || !is_outdated(&sv.value, &latest) {
                     continue;
                 }
-
-                let lsp_range = text_range_to_lsp_range(
+                hints.push(make_hint(
                     source_text,
-                    text_size::TextRange::new(sv.value_end, sv.value_end),
-                );
-
-                hints.push(InlayHint {
-                    position: lsp_range.start,
-                    label: InlayHintLabel::String(format!("[latest: {}]", latest)),
-                    kind: Some(InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(true),
-                    padding_right: None,
-                    data: None,
-                });
+                    sv.value_end,
+                    format!("[latest: {}]", latest),
+                ));
             }
         }
     }
 
     // debhelper-compat hints
-    if !dh_entries.is_empty() {
-        let latest_compat = {
-            let mut cache = package_cache.write().await;
-            let versions = cache.load_versions("debhelper").await;
-            versions.and_then(|vs| {
-                vs.first()
-                    .and_then(|v| debhelper_version_to_compat_level(&v.version))
-            })
-        };
+    let latest_compat = if has_debhelper_compat {
+        let mut cache = package_cache.write().await;
+        let versions = cache.load_versions("debhelper").await;
+        versions.and_then(|vs| {
+            vs.first()
+                .and_then(|v| debhelper_version_to_compat_level(&v.version))
+        })
+    } else {
+        None
+    };
 
-        if let Some(latest) = latest_compat {
-            for dh in &dh_entries {
-                let lsp_range = text_range_to_lsp_range(
-                    source_text,
-                    text_size::TextRange::new(dh.relation_end, dh.relation_end),
-                );
-
-                hints.push(InlayHint {
-                    position: lsp_range.start,
-                    label: InlayHintLabel::String(format!("[current: {}]", latest)),
-                    kind: Some(InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(true),
-                    padding_right: None,
-                    data: None,
-                });
-            }
-        }
-    }
-
-    // Per-relation hints (archive versions, virtual package providers).
-    // Use only cached data (read lock) to avoid blocking the LSP response.
-    // Returns uncached package names so the caller can trigger background
-    // loading and an inlayHint/refresh.
+    // Per-relation hints (archive versions, virtual package providers,
+    // debhelper-compat). Use only cached data (read lock) for archive
+    // lookups to avoid blocking the LSP response. Returns uncached package
+    // names so the caller can trigger background loading and an
+    // inlayHint/refresh.
     let mut uncached_packages = Vec::new();
     {
         let cache = package_cache.read().await;
         for rel in &rel_entries {
+            if rel.is_debhelper_compat {
+                if let Some(latest) = latest_compat {
+                    hints.push(make_hint(
+                        source_text,
+                        rel.relation_end,
+                        format!("[current: {}]", latest),
+                    ));
+                }
+                continue;
+            }
+
             let cached_versions = cache.get_cached_versions(&rel.name);
             let cached_providers = cache.get_cached_providers(&rel.name);
 
@@ -459,45 +454,15 @@ pub async fn generate_inlay_hints(
                 if !versions.is_empty() {
                     // Real package with version info — show archive versions
                     if let Some(label) = format_version_hint(versions) {
-                        let lsp_range = text_range_to_lsp_range(
-                            source_text,
-                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                        );
-                        hints.push(InlayHint {
-                            position: lsp_range.start,
-                            label: InlayHintLabel::String(label),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: Some(true),
-                            padding_right: None,
-                            data: None,
-                        });
+                        hints.push(make_hint(source_text, rel.relation_end, label));
                     }
                 } else if let Some(providers) = cached_providers {
                     // Versions cached but empty = virtual package; show providers
+                    // with their available versions
                     if !providers.is_empty() {
-                        let lsp_range = text_range_to_lsp_range(
-                            source_text,
-                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                        );
-
-                        let label = if providers.len() <= 3 {
-                            format!("[-> {}]", providers.join(" | "))
-                        } else {
-                            format!("[-> {} | ...]", providers[..3].join(" | "))
-                        };
-
-                        hints.push(InlayHint {
-                            position: lsp_range.start,
-                            label: InlayHintLabel::String(label),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: Some(true),
-                            padding_right: None,
-                            data: None,
-                        });
+                        let label =
+                            format_provider_hint(providers, &*cache, &mut uncached_packages, 80);
+                        hints.push(make_hint(source_text, rel.relation_end, label));
                     }
                 }
                 // else: versions empty, no providers cached — will be loaded in background
@@ -508,24 +473,19 @@ pub async fn generate_inlay_hints(
         }
     }
 
+    // Deduplicate uncached packages since the same package can appear in
+    // multiple dependency fields.
+    uncached_packages.sort();
+    uncached_packages.dedup();
+
     // Substvar hints
     for sv in &substvar_entries {
         if let Some(value) = resolved_substvars.get(&sv.name) {
-            let lsp_range = text_range_to_lsp_range(
+            hints.push(make_hint(
                 source_text,
-                text_size::TextRange::new(sv.substvar_end, sv.substvar_end),
-            );
-
-            hints.push(InlayHint {
-                position: lsp_range.start,
-                label: InlayHintLabel::String(format!("[= {}]", value)),
-                kind: Some(InlayHintKind::TYPE),
-                text_edits: None,
-                tooltip: None,
-                padding_left: Some(true),
-                padding_right: None,
-                data: None,
-            });
+                sv.substvar_end,
+                format!("[= {}]", value),
+            ));
         }
     }
 
@@ -808,18 +768,20 @@ Maintainer: Test <test@example.com>
         let (hints, _uncached) =
             generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new()).await;
 
-        // Expect debhelper-compat hint + debhelper version hint
+        // Expect debhelper version hint + debhelper-compat hint
+        // (debhelper appears before debhelper-compat in the relations)
         assert_eq!(hints.len(), 2);
         match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[unstable: 14.2]"),
+            _ => panic!("Expected string label"),
+        }
+        assert_eq!(hints[0].position.line, 1);
+        match &hints[1].label {
             InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
             _ => panic!("Expected string label"),
         }
         // The compat hint should be on line 2 (the debhelper-compat line)
-        assert_eq!(hints[0].position.line, 2);
-        match &hints[1].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[unstable: 14.2]"),
-            _ => panic!("Expected string label"),
-        }
+        assert_eq!(hints[1].position.line, 2);
     }
 
     #[tokio::test]
@@ -956,7 +918,7 @@ Description: A test
             InlayHintLabel::String(s) => {
                 assert_eq!(
                     s,
-                    "[-> courier-mta | exim4-daemon-heavy | exim4-daemon-light | ...]"
+                    "[-> courier-mta | exim4-daemon-heavy | exim4-daemon-light | postfix | ...]"
                 )
             }
             _ => panic!("Expected string label"),
