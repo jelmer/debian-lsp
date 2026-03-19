@@ -1,10 +1,10 @@
 //! Inlay hints for debian/control files.
 //!
-//! Shows whether the Standards-Version is current or outdated:
-//!   Standards-Version: 4.6.2   [latest: 4.7.0]
-//!
-//! Shows whether the debhelper compat level is current:
-//!   debhelper-compat (= 13)   [current: 14]
+//! - Standards-Version: `[latest: 4.7.0]` when outdated
+//! - debhelper-compat: `[current: 14]` showing latest compat level
+//! - Archive versions: `[unstable: 13.31 | bullseye: 13.3.4]` per suite
+//! - Virtual packages: `[-> exim4 (4.99) | postfix (3.11)]` with providers
+//! - Substvars: `[= libc6 (>= 2.17), ...]` showing resolved values
 
 use std::collections::HashMap;
 
