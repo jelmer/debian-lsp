@@ -895,15 +895,13 @@ impl LanguageServer for Backend {
                 };
 
                 drop(workspace); // Release lock before async package cache access
-                let (hints, uncached_packages) = control::generate_inlay_hints(
-                    &parsed,
-                    &source_text,
-                    &params.range,
-                    &self.package_cache,
-                    &resolved_substvars,
-                    &self.vcswatch_cache,
-                )
-                .await;
+                let ctx = control::inlay_hints::HintContext {
+                    package_cache: &self.package_cache,
+                    resolved_substvars: &resolved_substvars,
+                    vcswatch_cache: &self.vcswatch_cache,
+                };
+                let (hints, uncached_packages) =
+                    control::generate_inlay_hints(&parsed, &source_text, &params.range, &ctx).await;
 
                 // Load uncached packages in the background (two batch
                 // subprocess calls), then ask the editor to re-request hints.
@@ -954,8 +952,9 @@ async fn main() {
         architecture::stream_into(&arch_for_loading).await;
     });
 
-    let bug_cache = bugs::new_shared_bug_cache();
-    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache();
+    let udd_pool = udd::shared_pool();
+    let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
+    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool);
 
     let (service, socket) = LspService::new(|client| Backend {
         client,

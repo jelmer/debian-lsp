@@ -347,47 +347,42 @@ struct VcsGitInfo {
     value_end: TextSize,
 }
 
-/// Find Vcs-Git fields in a parsed control file within the given range.
-fn find_vcs_git_fields(
+/// Find the Vcs-Git field in a parsed control file within the given range.
+fn find_vcs_git_field(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
-) -> Vec<VcsGitInfo> {
-    let Ok(control) = parsed.clone().to_result() else {
-        return Vec::new();
-    };
-
-    let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
-        return Vec::new();
-    };
-
-    let Some(source) = control.source_in_range(text_range) else {
-        return Vec::new();
-    };
-
-    let Some(vcs_git_value) = source.vcs_git() else {
-        return Vec::new();
-    };
-
-    let Ok(parsed_vcs) = vcs_git_value.parse::<debian_control::vcs::ParsedVcs>() else {
-        return Vec::new();
-    };
+) -> Option<VcsGitInfo> {
+    let control = parsed.clone().to_result().ok()?;
+    let text_range = crate::position::try_lsp_range_to_text_range(source_text, range)?;
+    let source = control.source_in_range(text_range)?;
+    let vcs_git_value = source.vcs_git()?;
+    let parsed_vcs = vcs_git_value
+        .parse::<debian_control::vcs::ParsedVcs>()
+        .ok()?;
 
     // Find the entry's value range for hint positioning.
-    let Some(value_end) = source
+    let value_end = source
         .as_deb822()
         .entries()
         .find(|e| e.key().is_some_and(|k| k.eq_ignore_ascii_case("Vcs-Git")))
         .and_then(|e| e.value_range())
-        .map(|r| r.end())
-    else {
-        return Vec::new();
-    };
+        .map(|r| r.end())?;
 
-    vec![VcsGitInfo {
+    Some(VcsGitInfo {
         url: parsed_vcs.repo_url,
         value_end,
-    }]
+    })
+}
+
+/// Context for generating inlay hints, bundling all external data sources.
+pub struct HintContext<'a> {
+    /// Cache for package version and provider lookups.
+    pub package_cache: &'a crate::package_cache::SharedPackageCache,
+    /// Resolved substvar values (e.g. `"binary:Version"` → `"1.2.3-1"`).
+    pub resolved_substvars: &'a HashMap<String, String>,
+    /// Cache for VCS watch lookups from UDD.
+    pub vcswatch_cache: &'a crate::vcswatch::SharedVcsWatchCache,
 }
 
 /// Generate inlay hints for a control file.
@@ -400,9 +395,6 @@ fn find_vcs_git_fields(
 /// - Substvars: shows `[= value]` for known substitution variables
 /// - Vcs-Git: shows `[git: VERSION]` from UDD vcswatch
 ///
-/// The `resolved_substvars` map provides values for substvar names
-/// (e.g. `"binary:Version"` → `"1.2.3-1"`).
-///
 /// Returns `(hints, uncached_packages)`. The caller should load versions and
 /// providers for uncached packages in the background and then send
 /// `workspace/inlayHint/refresh` to the client.
@@ -410,9 +402,7 @@ pub async fn generate_inlay_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
-    package_cache: &crate::package_cache::SharedPackageCache,
-    resolved_substvars: &HashMap<String, String>,
-    vcswatch_cache: &crate::vcswatch::SharedVcsWatchCache,
+    ctx: &HintContext<'_>,
 ) -> (Vec<InlayHint>, Vec<String>) {
     // Extract info synchronously (CST types are not Send)
     let data = extract_hint_data(parsed, source_text, range);
@@ -422,14 +412,18 @@ pub async fn generate_inlay_hints(
     if data.standards_versions.is_empty() && data.relations.is_empty() && data.substvars.is_empty()
     {
         // Even if no standard hint data, we may still have Vcs-Git hints
-        let vcs_hints = generate_vcs_git_hints(parsed, source_text, range, vcswatch_cache).await;
+        let vcs_hints: Vec<_> =
+            generate_vcs_git_hints(parsed, source_text, range, ctx.vcswatch_cache)
+                .await
+                .into_iter()
+                .collect();
         return (vcs_hints, Vec::new());
     }
 
     // Load Standards-Version and debhelper-compat versions in a single
     // write lock scope to reduce lock contention.
     let (latest_standards, latest_compat) = {
-        let mut cache = package_cache.write().await;
+        let mut cache = ctx.package_cache.write().await;
         let latest_standards = if !data.standards_versions.is_empty() {
             let versions = cache.load_versions("debian-policy").await;
             versions.and_then(|vs| {
@@ -475,7 +469,7 @@ pub async fn generate_inlay_hints(
     // inlayHint/refresh.
     let mut uncached_packages = Vec::new();
     {
-        let cache = package_cache.read().await;
+        let cache = ctx.package_cache.read().await;
         for rel in &data.relations {
             if rel.is_debhelper_compat {
                 if let Some(latest) = latest_compat {
@@ -521,7 +515,7 @@ pub async fn generate_inlay_hints(
 
     // Substvar hints
     for sv in &data.substvars {
-        if let Some(value) = resolved_substvars.get(&sv.name) {
+        if let Some(value) = ctx.resolved_substvars.get(&sv.name) {
             hints.push(make_hint(
                 source_text,
                 sv.substvar_end,
@@ -531,57 +525,34 @@ pub async fn generate_inlay_hints(
     }
 
     // Vcs-Git hints
-    hints.extend(generate_vcs_git_hints(parsed, source_text, range, vcswatch_cache).await);
+    hints.extend(generate_vcs_git_hints(parsed, source_text, range, ctx.vcswatch_cache).await);
 
     (hints, uncached_packages)
 }
 
-/// Generate inlay hints for Vcs-Git fields showing the packaged version
+/// Generate an inlay hint for a Vcs-Git field showing the packaged version
 /// from UDD vcswatch.
 async fn generate_vcs_git_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     range: &tower_lsp_server::ls_types::Range,
     vcswatch_cache: &crate::vcswatch::SharedVcsWatchCache,
-) -> Vec<InlayHint> {
-    let vcs_entries = find_vcs_git_fields(parsed, source_text, range);
-    if vcs_entries.is_empty() {
-        return Vec::new();
-    }
+) -> Option<InlayHint> {
+    let entry = find_vcs_git_field(parsed, source_text, range)?;
 
-    let mut hints = Vec::new();
+    let version = {
+        let mut cache = vcswatch_cache.write().await;
+        cache
+            .get_version_for_url(&entry.url)
+            .await
+            .map(|s| s.to_string())
+    }?;
 
-    for entry in &vcs_entries {
-        let version = {
-            let mut cache = vcswatch_cache.write().await;
-            cache
-                .get_version_for_url(&entry.url)
-                .await
-                .map(|s| s.to_string())
-        };
-
-        let Some(version) = version else {
-            continue;
-        };
-
-        let lsp_range = text_range_to_lsp_range(
-            source_text,
-            text_size::TextRange::new(entry.value_end, entry.value_end),
-        );
-
-        hints.push(InlayHint {
-            position: lsp_range.start,
-            label: InlayHintLabel::String(format!("[git: {}]", version)),
-            kind: Some(InlayHintKind::TYPE),
-            text_edits: None,
-            tooltip: None,
-            padding_left: Some(true),
-            padding_right: None,
-            data: None,
-        });
-    }
-
-    hints
+    Some(make_hint(
+        source_text,
+        entry.value_end,
+        format!("[git: {}]", version),
+    ))
 }
 
 /// Compare two dotted version strings and return true if `current` is older
@@ -647,7 +618,19 @@ mod tests {
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
-        Arc::new(RwLock::new(VcsWatchCache::new()))
+        Arc::new(RwLock::new(VcsWatchCache::new(crate::udd::shared_pool())))
+    }
+
+    fn default_ctx<'a>(
+        package_cache: &'a crate::package_cache::SharedPackageCache,
+        resolved_substvars: &'a HashMap<String, String>,
+        vcswatch_cache: &'a crate::vcswatch::SharedVcsWatchCache,
+    ) -> HintContext<'a> {
+        HintContext {
+            package_cache,
+            resolved_substvars,
+            vcswatch_cache,
+        }
     }
 
     #[tokio::test]
@@ -675,8 +658,13 @@ mod tests {
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -710,8 +698,13 @@ mod tests {
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 0);
     }
@@ -752,8 +745,13 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -790,8 +788,13 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -836,8 +839,13 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(4, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 2);
         match &hints[0].label {
@@ -880,8 +888,13 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         // Expect debhelper version hint + debhelper-compat hint
         // (debhelper appears before debhelper-compat in the relations)
@@ -932,8 +945,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -981,8 +999,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         // Should show version hint, NOT provider hint
         assert_eq!(hints.len(), 1);
@@ -1028,8 +1051,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -1076,8 +1104,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -1113,8 +1146,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         // No hint yet — versions will be loaded in background
         assert_eq!(hints.len(), 0);
@@ -1159,8 +1197,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -1200,8 +1243,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &shared_cache, &resolved, &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&shared_cache, &resolved, &vcswatch_cache),
+        )
+        .await;
 
         // Should have hint for ${shlibs:Depends} only (not ${misc:Depends})
         let sv_hints: Vec<_> = hints
@@ -1224,7 +1272,7 @@ Description: A test
 
         let package_cache = make_shared_package_cache();
 
-        let mut vcs_cache = crate::vcswatch::VcsWatchCache::new();
+        let mut vcs_cache = crate::vcswatch::VcsWatchCache::new(crate::udd::shared_pool());
         vcs_cache.insert_cached(
             "https://salsa.debian.org/python-team/packages/dulwich.git",
             "1.1.0-1",
@@ -1238,8 +1286,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(3, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &package_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&package_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -1255,7 +1308,7 @@ Description: A test
 
         let package_cache = make_shared_package_cache();
 
-        let mut vcs_cache = crate::vcswatch::VcsWatchCache::new();
+        let mut vcs_cache = crate::vcswatch::VcsWatchCache::new(crate::udd::shared_pool());
         vcs_cache.insert_cached("https://salsa.debian.org/team/pkg.git", "2.0-1");
         let vcswatch_cache: crate::vcswatch::SharedVcsWatchCache = Arc::new(RwLock::new(vcs_cache));
 
@@ -1267,8 +1320,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(2, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &package_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&package_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
@@ -1289,8 +1347,13 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(2, 0),
         };
 
-        let (hints, _uncached) =
-            generate_inlay_hints(&parsed, content, &range, &package_cache, &HashMap::new(), &vcswatch_cache).await;
+        let (hints, _uncached) = generate_inlay_hints(
+            &parsed,
+            content,
+            &range,
+            &default_ctx(&package_cache, &HashMap::new(), &vcswatch_cache),
+        )
+        .await;
 
         // No hints because UDD query will fail (no network) and nothing is cached
         assert_eq!(hints.len(), 0);

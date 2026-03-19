@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 /// Thread-safe shared cache for VCS watch lookups.
@@ -14,9 +13,9 @@ pub type SharedVcsWatchCache = Arc<RwLock<VcsWatchCache>>;
 
 /// Cached VCS watch data from UDD.
 pub struct VcsWatchCache {
-    pool: PgPool,
-    /// Map from VCS URL to packaged version.
-    version_by_url: HashMap<String, String>,
+    pool: crate::udd::SharedPool,
+    /// Map from VCS URL to packaged version. `None` means "looked up, not found".
+    version_by_url: HashMap<String, Option<String>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -26,10 +25,10 @@ struct VcsWatchRow {
 }
 
 impl VcsWatchCache {
-    /// Create a new VCS watch cache with a lazy connection to UDD.
-    pub fn new() -> Self {
+    /// Create a new VCS watch cache using the given UDD connection pool.
+    pub fn new(pool: crate::udd::SharedPool) -> Self {
         Self {
-            pool: crate::udd::connect_lazy(),
+            pool,
             version_by_url: HashMap::new(),
         }
     }
@@ -41,14 +40,14 @@ impl VcsWatchCache {
         if !self.version_by_url.contains_key(url) {
             self.fetch_version_for_url(url).await;
         }
-        self.version_by_url.get(url).map(|s| s.as_str())
+        self.version_by_url.get(url).and_then(|v| v.as_deref())
     }
 
     async fn fetch_version_for_url(&mut self, url: &str) {
         let row: Option<VcsWatchRow> =
             match sqlx::query_as("SELECT url, version::text FROM vcswatch WHERE url = $1 LIMIT 1")
                 .bind(url)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&*self.pool)
                 .await
             {
                 Ok(row) => row,
@@ -58,9 +57,16 @@ impl VcsWatchCache {
                 }
             };
 
-        if let Some(row) = row {
-            if let (Some(row_url), Some(version)) = (row.url, row.version) {
+        match row {
+            Some(VcsWatchRow {
+                url: Some(row_url),
+                version,
+            }) => {
                 self.version_by_url.insert(row_url, version);
+            }
+            _ => {
+                // Not found — cache as None to avoid re-querying
+                self.version_by_url.insert(url.to_string(), None);
             }
         }
     }
@@ -69,13 +75,13 @@ impl VcsWatchCache {
     #[cfg(test)]
     pub(crate) fn insert_cached(&mut self, url: &str, version: &str) {
         self.version_by_url
-            .insert(url.to_string(), version.to_string());
+            .insert(url.to_string(), Some(version.to_string()));
     }
 }
 
 /// Create a new shared VCS watch cache.
-pub fn new_shared_vcswatch_cache() -> SharedVcsWatchCache {
-    Arc::new(RwLock::new(VcsWatchCache::new()))
+pub fn new_shared_vcswatch_cache(pool: crate::udd::SharedPool) -> SharedVcsWatchCache {
+    Arc::new(RwLock::new(VcsWatchCache::new(pool)))
 }
 
 #[cfg(test)]
@@ -84,7 +90,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_version_from_cache() {
-        let mut cache = VcsWatchCache::new();
+        let mut cache = VcsWatchCache::new(crate::udd::shared_pool());
         cache.insert_cached(
             "https://salsa.debian.org/python-team/packages/dulwich.git",
             "1.1.0-1",
@@ -98,24 +104,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_version_unknown_url() {
-        let mut cache = VcsWatchCache::new();
+        let mut cache = VcsWatchCache::new(crate::udd::shared_pool());
         cache.insert_cached(
             "https://salsa.debian.org/python-team/packages/dulwich.git",
             "1.1.0-1",
         );
 
+        // This URL is not in the cache so it will try UDD and fail (no network),
+        // but fetch_version_for_url returns early on error without caching.
+        // On second call it would retry, which is acceptable for network errors.
         let version = cache
             .get_version_for_url("https://example.com/nonexistent.git")
             .await;
-        // Will try to fetch from UDD and fail (no network in test), so None
-        // But we can't assert that without network; just test the cached path
-        assert!(version.is_none() || version.is_some());
+        assert_eq!(version, None);
     }
 
     #[tokio::test]
     #[ignore] // requires network access to UDD
     async fn test_fetch_from_udd() {
-        let mut cache = VcsWatchCache::new();
+        let mut cache = VcsWatchCache::new(crate::udd::shared_pool());
         let version = cache
             .get_version_for_url("https://salsa.debian.org/python-team/packages/dulwich.git")
             .await;

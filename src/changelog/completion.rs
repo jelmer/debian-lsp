@@ -798,7 +798,7 @@ foo (1.0-1) unstable; urgency=medium
  -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = parse_for(text);
-        let bug_cache = crate::bugs::new_shared_bug_cache();
+        let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
 
         {
             let mut cache = bug_cache.write().await;
@@ -854,7 +854,7 @@ foo (1.0-1) unstable; urgency=medium
  -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = parse_for(text);
-        let bug_cache = crate::bugs::new_shared_bug_cache();
+        let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
         let offset = text.find("Closes: #\n").unwrap() + "Closes: #".len();
         let completions =
             get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
@@ -872,7 +872,7 @@ foo (1.0-1) unstable; urgency=medium
     async fn test_get_async_bug_completions_returns_none_outside_bug_context() {
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
-        let bug_cache = crate::bugs::new_shared_bug_cache();
+        let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
         let offset = text.find("Initial").unwrap() + 2;
 
         let completions =
