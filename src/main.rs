@@ -21,7 +21,9 @@ mod position;
 mod rules;
 mod source_format;
 mod tests;
+mod udd;
 mod upstream_metadata;
+mod vcswatch;
 mod watch;
 mod workspace;
 
@@ -91,6 +93,7 @@ struct Backend {
     package_cache: package_cache::SharedPackageCache,
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
+    vcswatch_cache: vcswatch::SharedVcsWatchCache,
 }
 
 impl Backend {
@@ -892,14 +895,13 @@ impl LanguageServer for Backend {
                 };
 
                 drop(workspace); // Release lock before async package cache access
-                let (hints, uncached_packages) = control::generate_inlay_hints(
-                    &parsed,
-                    &source_text,
-                    &params.range,
-                    &self.package_cache,
-                    &resolved_substvars,
-                )
-                .await;
+                let ctx = control::inlay_hints::HintContext {
+                    package_cache: &self.package_cache,
+                    resolved_substvars: &resolved_substvars,
+                    vcswatch_cache: &self.vcswatch_cache,
+                };
+                let (hints, uncached_packages) =
+                    control::generate_inlay_hints(&parsed, &source_text, &params.range, &ctx).await;
 
                 // Load uncached packages in the background (two batch
                 // subprocess calls), then ask the editor to re-request hints.
@@ -950,7 +952,9 @@ async fn main() {
         architecture::stream_into(&arch_for_loading).await;
     });
 
-    let bug_cache = bugs::new_shared_bug_cache();
+    let udd_pool = udd::shared_pool();
+    let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
+    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool);
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -959,6 +963,7 @@ async fn main() {
         package_cache: package_cache.clone(),
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
+        vcswatch_cache: vcswatch_cache.clone(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

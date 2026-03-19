@@ -1,18 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 /// Thread-safe shared cache for Debian bug tracker lookups.
 pub type SharedBugCache = Arc<RwLock<BugCache>>;
 
-const UDD_URL: &str = "postgres://udd-mirror:udd-mirror@udd-mirror.debian.net/udd";
-
 /// Cached bug data used by changelog completions.
 pub struct BugCache {
-    pool: PgPool,
+    pool: crate::udd::SharedPool,
     bug_ids_by_package: HashMap<String, Vec<u32>>,
     bug_details_by_id: HashMap<u32, CachedBugDetails>,
 }
@@ -59,12 +55,8 @@ struct BugRow {
 }
 
 impl BugCache {
-    /// Create a new bug cache with a lazy connection to UDD.
-    pub fn new() -> Self {
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_lazy(UDD_URL)
-            .expect("invalid UDD connection URL");
+    /// Create a new bug cache using the given UDD connection pool.
+    pub fn new(pool: crate::udd::SharedPool) -> Self {
         Self {
             pool,
             bug_ids_by_package: HashMap::new(),
@@ -86,7 +78,7 @@ impl BugCache {
              ORDER BY b.id",
         )
         .bind(package)
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool)
         .await
         {
             Ok(rows) => rows,
@@ -197,8 +189,8 @@ impl BugCache {
 }
 
 /// Create a new shared cache for bug data from UDD.
-pub fn new_shared_bug_cache() -> SharedBugCache {
-    Arc::new(RwLock::new(BugCache::new()))
+pub fn new_shared_bug_cache(pool: crate::udd::SharedPool) -> SharedBugCache {
+    Arc::new(RwLock::new(BugCache::new(pool)))
 }
 
 #[cfg(test)]
@@ -207,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_bug_summaries_with_prefix_from_cache() {
-        let mut cache = BugCache::new();
+        let mut cache = BugCache::new(crate::udd::shared_pool());
         cache.insert_cached_open_bugs_for_package(
             "foo",
             vec![
@@ -228,7 +220,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires network access to UDD
     async fn test_fetch_bugs_from_udd() {
-        let mut cache = BugCache::new();
+        let mut cache = BugCache::new(crate::udd::shared_pool());
         let summaries = cache.get_bug_summaries_with_prefix("lintian", "").await;
         assert!(!summaries.is_empty(), "lintian should have bugs in UDD");
         // Every summary should have a title
