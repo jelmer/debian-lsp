@@ -341,31 +341,10 @@ fn format_provider_hint(
 
 /// Info about a Vcs-Git field found in the control file.
 struct VcsGitInfo {
-    /// The raw value of the Vcs-Git field (trimmed, without branch/path suffixes).
+    /// The repository URL (without branch/path suffixes).
     url: String,
     /// The end position of the value in the source text.
     value_end: TextSize,
-}
-
-/// Extract the base URL from a Vcs-Git value.
-///
-/// Vcs-Git values may contain optional `-b branch` or `[path]` suffixes:
-///   `https://salsa.debian.org/team/pkg.git -b debian/latest`
-///   `https://salsa.debian.org/team/pkg.git [debian]`
-///
-/// This function returns just the URL part.
-fn extract_vcs_git_url(value: &str) -> &str {
-    let value = value.trim();
-    // Strip `-b branch` suffix
-    if let Some(pos) = value.find(" -b ") {
-        return value[..pos].trim();
-    }
-    // Strip `[path]` suffix
-    if let Some(pos) = value.find(" [") {
-        return value[..pos].trim();
-    }
-    // Strip trailing whitespace/options after space
-    value.split_whitespace().next().unwrap_or(value)
 }
 
 /// Find Vcs-Git fields in a parsed control file within the given range.
@@ -382,44 +361,33 @@ fn find_vcs_git_fields(
         return Vec::new();
     };
 
-    let mut results = Vec::new();
+    let Some(source) = control.source_in_range(text_range) else {
+        return Vec::new();
+    };
 
-    for paragraph in control.as_deb822().paragraphs() {
-        for entry in paragraph.entries() {
-            let entry_range = entry.text_range();
+    let Some(vcs_git_value) = source.vcs_git() else {
+        return Vec::new();
+    };
 
-            if entry_range.start() >= text_range.end() || entry_range.end() <= text_range.start() {
-                continue;
-            }
+    let Ok(parsed_vcs) = vcs_git_value.parse::<debian_control::vcs::ParsedVcs>() else {
+        return Vec::new();
+    };
 
-            let Some(field_name) = entry.key() else {
-                continue;
-            };
+    // Find the entry's value range for hint positioning.
+    let Some(value_end) = source
+        .as_deb822()
+        .entries()
+        .find(|e| e.key().is_some_and(|k| k.eq_ignore_ascii_case("Vcs-Git")))
+        .and_then(|e| e.value_range())
+        .map(|r| r.end())
+    else {
+        return Vec::new();
+    };
 
-            if !field_name.eq_ignore_ascii_case("Vcs-Git") {
-                continue;
-            }
-
-            let value = entry.value();
-            let value_trimmed = value.trim();
-            if value_trimmed.is_empty() {
-                continue;
-            }
-
-            let url = extract_vcs_git_url(value_trimmed).to_string();
-
-            let Some(value_range) = entry.value_range() else {
-                continue;
-            };
-
-            results.push(VcsGitInfo {
-                url,
-                value_end: value_range.end(),
-            });
-        }
-    }
-
-    results
+    vec![VcsGitInfo {
+        url: parsed_vcs.repo_url,
+        value_end,
+    }]
 }
 
 /// Generate inlay hints for a control file.
@@ -663,26 +631,6 @@ mod tests {
         assert!(!is_outdated("4.7.0", "4.7.0"));
         assert!(!is_outdated("4.7.1", "4.7.0"));
         assert!(!is_outdated("5.0.0", "4.7.0"));
-    }
-
-    #[test]
-    fn test_extract_vcs_git_url() {
-        assert_eq!(
-            extract_vcs_git_url("https://salsa.debian.org/team/pkg.git"),
-            "https://salsa.debian.org/team/pkg.git"
-        );
-        assert_eq!(
-            extract_vcs_git_url("https://salsa.debian.org/team/pkg.git -b debian/latest"),
-            "https://salsa.debian.org/team/pkg.git"
-        );
-        assert_eq!(
-            extract_vcs_git_url("https://salsa.debian.org/team/pkg.git [debian]"),
-            "https://salsa.debian.org/team/pkg.git"
-        );
-        assert_eq!(
-            extract_vcs_git_url("  https://salsa.debian.org/team/pkg.git  "),
-            "https://salsa.debian.org/team/pkg.git"
-        );
     }
 
     fn make_shared_package_cache() -> crate::package_cache::SharedPackageCache {
