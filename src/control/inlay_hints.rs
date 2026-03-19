@@ -409,13 +409,12 @@ pub async fn generate_inlay_hints(
     {
         let cache = package_cache.read().await;
         for rel in &rel_entries {
-            let is_real = cache
-                .get_packages_with_prefix(&rel.name)
-                .iter()
-                .any(|p| p == &rel.name);
+            let cached_versions = cache.get_cached_versions(&rel.name);
+            let cached_providers = cache.get_cached_providers(&rel.name);
 
-            if is_real {
-                if let Some(versions) = cache.get_cached_versions(&rel.name) {
+            if let Some(versions) = cached_versions {
+                if !versions.is_empty() {
+                    // Real package with version info — show archive versions
                     if let Some(label) = format_version_hint(versions) {
                         let lsp_range = text_range_to_lsp_range(
                             source_text,
@@ -432,34 +431,35 @@ pub async fn generate_inlay_hints(
                             data: None,
                         });
                     }
-                } else {
-                    uncached_packages.push(rel.name.clone());
-                }
-            } else if let Some(providers) = cache.get_cached_providers(&rel.name) {
-                if !providers.is_empty() {
-                    let lsp_range = text_range_to_lsp_range(
-                        source_text,
-                        text_size::TextRange::new(rel.relation_end, rel.relation_end),
-                    );
+                } else if let Some(providers) = cached_providers {
+                    // Versions cached but empty = virtual package; show providers
+                    if !providers.is_empty() {
+                        let lsp_range = text_range_to_lsp_range(
+                            source_text,
+                            text_size::TextRange::new(rel.relation_end, rel.relation_end),
+                        );
 
-                    let label = if providers.len() <= 3 {
-                        format!("[-> {}]", providers.join(" | "))
-                    } else {
-                        format!("[-> {} | ...]", providers[..3].join(" | "))
-                    };
+                        let label = if providers.len() <= 3 {
+                            format!("[-> {}]", providers.join(" | "))
+                        } else {
+                            format!("[-> {} | ...]", providers[..3].join(" | "))
+                        };
 
-                    hints.push(InlayHint {
-                        position: lsp_range.start,
-                        label: InlayHintLabel::String(label),
-                        kind: Some(InlayHintKind::TYPE),
-                        text_edits: None,
-                        tooltip: None,
-                        padding_left: Some(true),
-                        padding_right: None,
-                        data: None,
-                    });
+                        hints.push(InlayHint {
+                            position: lsp_range.start,
+                            label: InlayHintLabel::String(label),
+                            kind: Some(InlayHintKind::TYPE),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: Some(true),
+                            padding_right: None,
+                            data: None,
+                        });
+                    }
                 }
+                // else: versions empty, no providers cached — will be loaded in background
             } else {
+                // Versions not cached yet
                 uncached_packages.push(rel.name.clone());
             }
         }
@@ -744,13 +744,18 @@ Maintainer: Test <test@example.com>
         let (hints, _uncached) =
             generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
-        assert_eq!(hints.len(), 1);
+        // Expect debhelper-compat hint + debhelper version hint
+        assert_eq!(hints.len(), 2);
         match &hints[0].label {
             InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
             _ => panic!("Expected string label"),
         }
-        // The hint should be on line 2 (the debhelper-compat line)
+        // The compat hint should be on line 2 (the debhelper-compat line)
         assert_eq!(hints[0].position.line, 2);
+        match &hints[1].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[unstable: 14.2]"),
+            _ => panic!("Expected string label"),
+        }
     }
 
     #[tokio::test]
@@ -760,6 +765,8 @@ Maintainer: Test <test@example.com>
         use tokio::sync::RwLock;
 
         let mut cache = TestPackageCache::default();
+        // default-mta is virtual: empty versions, has providers
+        cache.versions.insert("default-mta".to_string(), Vec::new());
         cache.providers.insert(
             "default-mta".to_string(),
             vec![
@@ -768,7 +775,6 @@ Maintainer: Test <test@example.com>
                 "sendmail-bin".to_string(),
             ],
         );
-        // default-mta is NOT in the packages list (it's virtual)
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
 
         let content = "\
@@ -797,16 +803,23 @@ Description: A test
     }
 
     #[tokio::test]
-    async fn test_no_inlay_hint_for_real_package() {
-        use crate::package_cache::TestPackageCache;
+    async fn test_no_provider_hint_for_real_package() {
+        use crate::package_cache::{TestPackageCache, VersionInfo};
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
         let mut cache = TestPackageCache::default();
-        // libc6 is a real package AND has providers
+        // libc6 is a real package with versions AND providers
         cache
             .packages
             .push(("libc6".to_string(), Some("C library".to_string())));
+        cache.versions.insert(
+            "libc6".to_string(),
+            vec![VersionInfo {
+                version: "2.40-4".to_string(),
+                suites: vec!["unstable".to_string()],
+            }],
+        );
         cache
             .providers
             .insert("libc6".to_string(), vec!["libc6-udeb".to_string()]);
@@ -828,7 +841,12 @@ Description: A test
         let (hints, _uncached) =
             generate_inlay_hints(&parsed, content, &range, &shared_cache).await;
 
-        assert_eq!(hints.len(), 0);
+        // Should show version hint, NOT provider hint
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "[unstable: 2.40-4]"),
+            _ => panic!("Expected string label"),
+        }
     }
 
     #[tokio::test]
@@ -838,6 +856,9 @@ Description: A test
         use tokio::sync::RwLock;
 
         let mut cache = TestPackageCache::default();
+        cache
+            .versions
+            .insert("mail-transport-agent".to_string(), Vec::new());
         cache.providers.insert(
             "mail-transport-agent".to_string(),
             vec![
