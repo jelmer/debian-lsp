@@ -28,6 +28,12 @@ pub trait PackageCache: Send + Sync {
     /// Load and cache the list of packages that provide a given virtual package.
     async fn load_providers(&mut self, package: &str) -> Option<&[String]>;
 
+    /// Load and cache versions for multiple packages in a single batch call.
+    async fn load_versions_batch(&mut self, packages: &[String]);
+
+    /// Load and cache providers for multiple packages in a single batch call.
+    async fn load_providers_batch(&mut self, packages: &[String]);
+
     /// Get already-cached versions for a package, without triggering a lookup.
     fn get_cached_versions(&self, package: &str) -> Option<&[VersionInfo]>;
 
@@ -154,6 +160,122 @@ impl PackageCache for AptPackageCache {
         }
     }
 
+    async fn load_versions_batch(&mut self, packages: &[String]) {
+        let uncached: Vec<&String> = packages
+            .iter()
+            .filter(|p| !self.versions.contains_key(p.as_str()))
+            .collect();
+        if uncached.is_empty() {
+            return;
+        }
+
+        let Ok(output) = Command::new("apt-cache")
+            .arg("madison")
+            .args(&uncached)
+            .output()
+            .await
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+
+        // Initialize empty entries for all requested packages so we don't
+        // re-query them on the next call.
+        for pkg in &uncached {
+            self.versions.entry(pkg.to_string()).or_default();
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        // Each madison line: " package | version | suite"
+        // Group by package name.
+        let mut pkg_version_suites: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() >= 3 {
+                let pkg = parts[0].trim().to_string();
+                let version = parts[1].trim().to_string();
+                let suite = parts[2].trim().to_string();
+                pkg_version_suites
+                    .entry(pkg)
+                    .or_default()
+                    .entry(version)
+                    .or_default()
+                    .push(suite);
+            }
+        }
+
+        for (pkg, version_suites) in pkg_version_suites {
+            let mut versions: Vec<VersionInfo> = version_suites
+                .into_iter()
+                .map(|(version, suites)| VersionInfo { version, suites })
+                .collect();
+            versions.sort_by(|a, b| b.version.cmp(&a.version));
+            self.versions.insert(pkg, versions);
+        }
+    }
+
+    async fn load_providers_batch(&mut self, packages: &[String]) {
+        let uncached: Vec<&String> = packages
+            .iter()
+            .filter(|p| !self.providers.contains_key(p.as_str()))
+            .collect();
+        if uncached.is_empty() {
+            return;
+        }
+
+        let Ok(output) = Command::new("apt-cache")
+            .arg("showpkg")
+            .args(&uncached)
+            .output()
+            .await
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+
+        // Initialize empty entries so we don't re-query.
+        for pkg in &uncached {
+            self.providers.entry(pkg.to_string()).or_default();
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut current_package: Option<String> = None;
+        let mut in_reverse_provides = false;
+
+        for line in text.lines() {
+            if let Some(name) = line.strip_prefix("Package: ") {
+                current_package = Some(name.to_string());
+                in_reverse_provides = false;
+            } else if line.starts_with("Reverse Provides:") {
+                in_reverse_provides = true;
+            } else if line.starts_with("Versions:")
+                || line.starts_with("Reverse Depends:")
+                || line.starts_with("Dependencies:")
+                || line.starts_with("Provides:")
+            {
+                in_reverse_provides = false;
+            } else if in_reverse_provides {
+                if let (Some(pkg), Some(name)) = (&current_package, line.split_whitespace().next())
+                {
+                    let providers = self.providers.entry(pkg.clone()).or_default();
+                    let name = name.to_string();
+                    if !providers.contains(&name) {
+                        providers.push(name);
+                    }
+                }
+            }
+        }
+
+        // Sort providers for consistent display
+        for providers in self.providers.values_mut() {
+            providers.sort();
+        }
+    }
+
     fn get_cached_versions(&self, package: &str) -> Option<&[VersionInfo]> {
         self.versions.get(package).map(|v| v.as_slice())
     }
@@ -243,6 +365,14 @@ impl PackageCache for TestPackageCache {
 
     async fn load_providers(&mut self, package: &str) -> Option<&[String]> {
         self.providers.get(package).map(|v| v.as_slice())
+    }
+
+    async fn load_versions_batch(&mut self, _packages: &[String]) {
+        // Test cache is pre-populated; nothing to load.
+    }
+
+    async fn load_providers_batch(&mut self, _packages: &[String]) {
+        // Test cache is pre-populated; nothing to load.
     }
 
     fn get_cached_versions(&self, package: &str) -> Option<&[VersionInfo]> {

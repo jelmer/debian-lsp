@@ -834,17 +834,16 @@ impl LanguageServer for Backend {
                 )
                 .await;
 
-                // Load uncached packages in the background, then ask the
-                // editor to re-request inlay hints.
+                // Load uncached packages in the background (two batch
+                // subprocess calls), then ask the editor to re-request hints.
                 if !uncached_packages.is_empty() {
                     let cache = self.package_cache.clone();
                     let client = self.client.clone();
                     tokio::spawn(async move {
-                        for name in uncached_packages {
-                            let mut c = cache.write().await;
-                            c.load_versions(&name).await;
-                            c.load_providers(&name).await;
-                        }
+                        let mut c = cache.write().await;
+                        c.load_versions_batch(&uncached_packages).await;
+                        c.load_providers_batch(&uncached_packages).await;
+                        drop(c);
                         let _ = client.inlay_hint_refresh().await;
                     });
                 }
