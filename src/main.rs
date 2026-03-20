@@ -324,6 +324,9 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
                     first_trigger_character: ":".to_string(),
@@ -1123,6 +1126,38 @@ impl LanguageServer for Backend {
         }
     }
 
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Control => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                drop(workspace);
+
+                let ctx = control::code_lens::LensContext {
+                    package_cache: &self.package_cache,
+                    vcswatch_cache: &self.vcswatch_cache,
+                };
+                let lenses = control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+                if lenses.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(lenses))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
 
@@ -1166,7 +1201,6 @@ impl LanguageServer for Backend {
                 let ctx = control::inlay_hints::HintContext {
                     package_cache: &self.package_cache,
                     resolved_substvars: &resolved_substvars,
-                    vcswatch_cache: &self.vcswatch_cache,
                 };
                 let (hints, uncached_packages) =
                     control::generate_inlay_hints(&parsed, &source_text, &params.range, &ctx).await;

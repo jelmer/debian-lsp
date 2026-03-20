@@ -76,6 +76,28 @@ enable this, add the following to your coc-settings.json (`:CocConfig`):
 }
 ```
 
+### Code Lenses
+
+The server provides code lenses for `debian/control` files, showing information
+like the latest Standards-Version, current debhelper compat levels, and the
+packaged version from vcswatch. To enable code lenses, add the following to your
+coc-settings.json (`:CocConfig`):
+
+```json
+{
+  "codeLens.enable": true
+}
+```
+
+By default, code lenses are shown above the relevant line. To show them at the
+end of the line instead, set:
+
+```json
+{
+  "codeLens.position": "eol"
+}
+```
+
 ## Development
 
 To work on the extension:

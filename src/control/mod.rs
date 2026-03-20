@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod code_lens;
 pub mod completion;
 pub mod detection;
 pub mod diagnostics;
@@ -9,6 +10,7 @@ pub mod semantic;
 pub mod symbols;
 
 pub use actions::*;
+pub use code_lens::generate_code_lenses;
 pub use completion::*;
 pub use detection::is_control_file;
 pub use fields::get_standard_field_name;

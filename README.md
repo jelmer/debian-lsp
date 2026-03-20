@@ -74,6 +74,39 @@ This requires the editor to have format-on-type enabled:
 - **Native Neovim LSP**: Pass `on_type_formatting = true` in your client capabilities, or call `vim.lsp.buf.format()` manually
 - **ALE**: Not supported (ALE does not handle `textDocument/onTypeFormatting`)
 
+### Inlay Hints
+
+**debian/control:**
+- Archive versions per suite for packages in dependency fields
+- Providers for virtual packages
+- Resolved values for substitution variables (`${shlibs:Depends}`, etc.)
+
+**debian/changelog:**
+- Distribution-to-suite mappings (e.g. `unstable = sid`, `UNRELEASED -> unstable`)
+
+### Code Lenses
+
+**debian/control:**
+- Standards-Version: shows the latest version when outdated
+- debhelper-compat: shows stable and maximum compat levels (via `dh_assistant`)
+- Vcs-Git: shows the packaged version from UDD vcswatch
+
+### Document Symbols
+
+- **debian/control** - source and binary package paragraphs
+- **debian/copyright** - header, files, and license paragraphs
+- **debian/changelog** - changelog entries
+
+### Folding Ranges
+
+Paragraph-level folding for deb822-based files (control, copyright, watch,
+tests/control) and entry-level folding for changelog files.
+
+### Document Formatting
+
+Wrap-and-sort formatting for debian/control, debian/copyright, and debian/watch
+(deb822 format) files.
+
 ### Semantic Highlighting
 
 Custom token types for syntax highlighting of Debian-specific constructs:
