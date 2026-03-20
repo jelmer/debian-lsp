@@ -3,6 +3,34 @@ use crate::workspace::FieldCasingIssue;
 use text_size::TextRange;
 use tower_lsp_server::ls_types::*;
 
+/// Format an entire control file using wrap-and-sort
+///
+/// # Arguments
+/// * `source_text` - The source text of the file
+/// * `parsed` - The parsed control file
+///
+/// # Returns
+/// A list of text edits to apply, or None if the file is already formatted
+pub fn format_control(
+    source_text: &str,
+    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
+) -> Option<Vec<TextEdit>> {
+    let mut control = parsed.clone().to_result().ok()?;
+    control.wrap_and_sort(deb822_lossless::Indentation::Spaces(1), false, Some(79));
+    let formatted = control.to_string();
+    if formatted == source_text {
+        return None;
+    }
+    let full_range = crate::position::text_range_to_lsp_range(
+        source_text,
+        text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
+    );
+    Some(vec![TextEdit {
+        range: full_range,
+        new_text: formatted,
+    }])
+}
+
 /// Generate a wrap-and-sort code action for a control file
 ///
 /// This function creates a code action that wraps and sorts fields in paragraphs
@@ -224,5 +252,44 @@ maintainer: Test User <test@example.com>
             panic!("Expected CodeAction");
         };
         assert_eq!(action.title, "Fix field casing: maintainer -> Maintainer");
+    }
+
+    #[test]
+    fn test_format_control() {
+        let input = "Source: test-package\nMaintainer: Test User <test@example.com>\nBuild-Depends: debhelper-compat (= 13), foo, bar, baz\n\nPackage: test-package\nArchitecture: any\nDepends: libc6, libfoo, libbar\nDescription: A test package\n This is a test package.\n";
+
+        let parsed = debian_control::lossless::Control::parse(input);
+        let edits = format_control(input, &parsed);
+
+        assert!(edits.is_some());
+        let edits = edits.unwrap();
+        assert_eq!(edits.len(), 1);
+
+        // The single edit should cover the entire document
+        assert_eq!(edits[0].range.start.line, 0);
+        assert_eq!(edits[0].range.start.character, 0);
+
+        // Verify the formatted output is different from input
+        assert_ne!(edits[0].new_text, input);
+    }
+
+    #[test]
+    fn test_format_control_already_formatted() {
+        // Create a file, format it, then verify formatting again returns None
+        let input = "Source: test-package\nMaintainer: Test User <test@example.com>\n";
+
+        let parsed = debian_control::lossless::Control::parse(input);
+        let first_format = format_control(input, &parsed);
+
+        // Apply the first format (or use original if already formatted)
+        let formatted = match first_format {
+            Some(edits) => edits[0].new_text.clone(),
+            None => input.to_string(),
+        };
+
+        // Format again - should return None since already formatted
+        let parsed2 = debian_control::lossless::Control::parse(&formatted);
+        let second_format = format_control(&formatted, &parsed2);
+        assert!(second_format.is_none());
     }
 }

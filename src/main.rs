@@ -252,6 +252,7 @@ impl LanguageServer for Backend {
                     first_trigger_character: ":".to_string(),
                     more_trigger_character: Some(vec!["\n".to_string(), "-".to_string()]),
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -878,6 +879,93 @@ impl LanguageServer for Backend {
                     position,
                     &params.ch,
                 ))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                Ok(control::format_control(&source_text, &parsed))
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                Ok(copyright::format_copyright(&source_text, &parsed))
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                let wf = parsed.to_watch_file();
+                match &wf {
+                    debian_watch::parse::ParsedWatchFile::Deb822(_) => {
+                        let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                        let wrap_paragraph =
+                            |p: &deb822_lossless::Paragraph| -> deb822_lossless::Paragraph {
+                                p.wrap_and_sort(
+                                    deb822_lossless::Indentation::Spaces(1),
+                                    false,
+                                    Some(79),
+                                    None,
+                                    None,
+                                )
+                            };
+                        let formatted = deb822
+                            .wrap_and_sort(None, Some(&wrap_paragraph))
+                            .to_string();
+                        if formatted == source_text {
+                            return Ok(None);
+                        }
+                        let full_range = text_range_to_lsp_range(
+                            &source_text,
+                            text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
+                        );
+                        Ok(Some(vec![TextEdit {
+                            range: full_range,
+                            new_text: formatted,
+                        }]))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            FileType::TestsControl => {
+                let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                let wrap_paragraph =
+                    |p: &deb822_lossless::Paragraph| -> deb822_lossless::Paragraph {
+                        p.wrap_and_sort(
+                            deb822_lossless::Indentation::Spaces(1),
+                            false,
+                            Some(79),
+                            None,
+                            None,
+                        )
+                    };
+                let formatted = deb822
+                    .wrap_and_sort(None, Some(&wrap_paragraph))
+                    .to_string();
+                if formatted == source_text {
+                    return Ok(None);
+                }
+                let full_range = text_range_to_lsp_range(
+                    &source_text,
+                    text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
+                );
+                Ok(Some(vec![TextEdit {
+                    range: full_range,
+                    new_text: formatted,
+                }]))
             }
             _ => Ok(None),
         }
