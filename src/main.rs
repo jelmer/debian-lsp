@@ -29,7 +29,25 @@ mod workspace;
 
 use position::{text_range_to_lsp_range, try_lsp_range_to_text_range};
 use std::collections::HashMap;
+use tower_lsp_server::ls_types::notification::Notification;
 use workspace::Workspace;
+
+/// Custom notification for package status, displayed in the editor status bar.
+enum PackageStatusNotification {}
+
+/// Parameters for the package status notification.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PackageStatusParams {
+    /// Source package name (from debian/changelog)
+    name: String,
+    /// Package version (from debian/changelog)
+    version: String,
+}
+
+impl Notification for PackageStatusNotification {
+    type Params = PackageStatusParams;
+    const METHOD: &'static str = "debian/packageStatus";
+}
 
 /// Debian file type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,8 +136,39 @@ impl Backend {
         }
     }
 
+    /// Find the `debian/` directory by walking up from the given URI.
+    fn find_debian_dir(uri: &Uri) -> Option<std::path::PathBuf> {
+        let path = uri.to_file_path()?;
+        path.ancestors()
+            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("debian"))
+            .map(|p| p.to_path_buf())
+    }
+
+    /// Get or load the changelog source file for the debian directory
+    /// containing the given URI. If the changelog is already open, reuses the
+    /// existing workspace entry; otherwise reads it from disk and inserts it
+    /// into the workspace so the Salsa cache is populated.
+    fn get_changelog_source_file(
+        uri: &Uri,
+        files: &HashMap<Uri, FileInfo>,
+        workspace: &mut Workspace,
+    ) -> Option<workspace::SourceFile> {
+        let debian_dir = Self::find_debian_dir(uri)?;
+        let changelog_path = debian_dir.join("changelog");
+        let changelog_uri = Uri::from_file_path(&changelog_path)?;
+
+        if let Some(info) = files.get(&changelog_uri) {
+            return Some(info.source_file);
+        }
+
+        // Not open — read from disk and insert into the workspace
+        let text = std::fs::read_to_string(&changelog_path).ok()?;
+        Some(workspace.update_file(changelog_uri, text))
+    }
+
     /// Look up the version from `debian/changelog` for the same project as the
-    /// given control file URI. Checks open files first.
+    /// given control file URI. Checks open files first, falls back to reading
+    /// from disk.
     fn get_changelog_version(
         control_uri: &Uri,
         files: &Arc<Mutex<HashMap<Uri, FileInfo>>>,
@@ -186,6 +235,34 @@ impl Backend {
                     .prefetch_launchpad_bugs_for_package(&package_name)
                     .await;
             });
+        }
+    }
+
+    /// Send a `debian/packageStatus` notification with the source package name
+    /// and version extracted from `debian/changelog`.
+    async fn send_package_status(&self, uri: &Uri) {
+        let params = {
+            let files = self.files.lock().await;
+            let mut workspace = self.workspace.lock().await;
+
+            let source_file = Self::get_changelog_source_file(uri, &files, &mut workspace);
+            source_file.and_then(|sf| {
+                let parsed = workspace.get_parsed_changelog(sf);
+                let changelog = parsed.tree();
+                let entry = changelog.iter().next()?;
+                let name = entry.package()?;
+                let version = entry.version()?;
+                Some(PackageStatusParams {
+                    name,
+                    version: version.to_string(),
+                })
+            })
+        };
+
+        if let Some(params) = params {
+            self.client
+                .send_notification::<PackageStatusNotification>(params)
+                .await;
         }
     }
 }
@@ -302,12 +379,17 @@ impl LanguageServer for Backend {
             self.prefetch_changelog_bugs(source_file, &workspace);
         }
 
-        if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
-            drop(workspace);
+        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        drop(files);
+        drop(workspace);
+
+        if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
         }
+
+        self.send_package_status(&params.text_document.uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -362,11 +444,18 @@ impl LanguageServer for Backend {
             },
         );
 
-        if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
-            drop(workspace);
+        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        drop(files);
+        drop(workspace);
+
+        if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
+        }
+
+        if file_type == FileType::Changelog {
+            self.send_package_status(&params.text_document.uri).await;
         }
     }
 
