@@ -1,5 +1,53 @@
 use chrono::Local;
+use rowan::ast::AstNode;
 use std::env;
+use tower_lsp_server::ls_types::TextEdit;
+
+use crate::position::text_range_to_lsp_range;
+
+/// Generate a TextEdit that updates the timestamp of the first UNRELEASED entry
+/// to the current time. Returns `None` if the first entry is not UNRELEASED or
+/// has no timestamp.
+pub fn generate_timestamp_update_edit(
+    changelog: &debian_changelog::ChangeLog,
+    source_text: &str,
+) -> Option<TextEdit> {
+    let entry = changelog.iter().next()?;
+
+    // Only update UNRELEASED entries
+    let dists = entry.distributions()?;
+    if dists.is_empty() || dists[0] != "UNRELEASED" {
+        return None;
+    }
+
+    // Find the Timestamp node in the entry footer
+    let footer = entry.syntax().children().find_map(|n| {
+        if n.kind() == debian_changelog::SyntaxKind::ENTRY_FOOTER {
+            Some(n)
+        } else {
+            None
+        }
+    })?;
+
+    let timestamp_node = footer
+        .children()
+        .find(|n| n.kind() == debian_changelog::SyntaxKind::TIMESTAMP)?;
+
+    let old_timestamp = timestamp_node.text().to_string();
+    let new_timestamp = Local::now().format("%a, %d %b %Y %H:%M:%S %z").to_string();
+
+    // Don't generate an edit if the timestamp hasn't changed (same second)
+    if old_timestamp.trim() == new_timestamp.trim() {
+        return None;
+    }
+
+    let range = text_range_to_lsp_range(source_text, timestamp_node.text_range());
+
+    Some(TextEdit {
+        range,
+        new_text: new_timestamp,
+    })
+}
 
 /// Determine the appropriate distribution to use when marking an entry for upload
 pub fn get_target_distribution(changelog: &debian_changelog::ChangeLog) -> String {
@@ -80,6 +128,53 @@ fn get_maintainer_info(current_entry: &debian_changelog::Entry) -> (String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_generate_timestamp_update_edit_unreleased() {
+        let changelog_text = r#"foo (1.0-2) UNRELEASED; urgency=medium
+
+  * New changes.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let changelog = parsed.tree();
+
+        let edit = generate_timestamp_update_edit(&changelog, changelog_text);
+        assert!(
+            edit.is_some(),
+            "should generate an edit for UNRELEASED entry"
+        );
+
+        let edit = edit.unwrap();
+        assert!(
+            edit.new_text.contains(", "),
+            "new timestamp should be a valid date: {}",
+            edit.new_text
+        );
+        // Verify the range points to the timestamp on line 4
+        assert_eq!(edit.range.start.line, 4);
+    }
+
+    #[test]
+    fn test_generate_timestamp_update_edit_released() {
+        let changelog_text = r#"foo (1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+"#;
+
+        let parsed = debian_changelog::ChangeLog::parse(changelog_text);
+        let changelog = parsed.tree();
+
+        let edit = generate_timestamp_update_edit(&changelog, changelog_text);
+        assert!(
+            edit.is_none(),
+            "should not generate an edit for released entry"
+        );
+    }
 
     #[test]
     fn test_generate_new_changelog_entry() {
