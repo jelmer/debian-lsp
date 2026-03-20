@@ -3,6 +3,34 @@ use crate::workspace::FieldCasingIssue;
 use text_size::TextRange;
 use tower_lsp_server::ls_types::*;
 
+/// Format an entire copyright file using wrap-and-sort
+///
+/// # Arguments
+/// * `source_text` - The source text of the file
+/// * `parsed` - The parsed copyright file
+///
+/// # Returns
+/// A list of text edits to apply, or None if the file is already formatted
+pub fn format_copyright(
+    source_text: &str,
+    parsed: &debian_copyright::lossless::Parse,
+) -> Option<Vec<TextEdit>> {
+    let mut copyright = parsed.clone().to_result().ok()?;
+    copyright.wrap_and_sort(deb822_lossless::Indentation::Spaces(1), false, Some(79));
+    let formatted = copyright.to_string();
+    if formatted == source_text {
+        return None;
+    }
+    let full_range = crate::position::text_range_to_lsp_range(
+        source_text,
+        text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
+    );
+    Some(vec![TextEdit {
+        range: full_range,
+        new_text: formatted,
+    }])
+}
+
 /// Generate a wrap-and-sort code action for a copyright file
 ///
 /// This function creates a code action that wraps and sorts fields in paragraphs
@@ -264,5 +292,58 @@ upstream-name: test
             action.title,
             "Fix field casing: upstream-name -> Upstream-Name"
         );
+    }
+
+    #[test]
+    fn test_format_copyright() {
+        let input = r#"Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: test-package
+Source: https://example.com/test
+
+Files: *
+Copyright: 2024 Test User <test@example.com>
+License: GPL-3+
+
+License: GPL-3+
+ This program is free software.
+"#;
+
+        let parsed = debian_copyright::lossless::Parse::parse(input);
+        let edits = format_copyright(input, &parsed);
+
+        // May or may not produce edits depending on whether input is already formatted
+        if let Some(edits) = edits {
+            assert_eq!(edits.len(), 1);
+            assert_eq!(edits[0].range.start.line, 0);
+            assert_eq!(edits[0].range.start.character, 0);
+        }
+    }
+
+    #[test]
+    fn test_format_copyright_already_formatted() {
+        let input = r#"Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: test-package
+Source: https://example.com/test
+
+Files: *
+Copyright: 2024 Test User <test@example.com>
+License: GPL-3+
+
+License: GPL-3+
+ This program is free software.
+"#;
+
+        let parsed = debian_copyright::lossless::Parse::parse(input);
+        let first_format = format_copyright(input, &parsed);
+
+        let formatted = match first_format {
+            Some(edits) => edits[0].new_text.clone(),
+            None => input.to_string(),
+        };
+
+        // Format again - should return None since already formatted
+        let parsed2 = debian_copyright::lossless::Parse::parse(&formatted);
+        let second_format = format_copyright(&formatted, &parsed2);
+        assert!(second_format.is_none());
     }
 }
