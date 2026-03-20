@@ -1167,7 +1167,17 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 drop(workspace);
 
-                let lenses = copyright::generate_code_lenses(&parsed, &source_text);
+                // Derive the source root from the copyright file URI
+                // (debian/copyright -> parent is debian/ -> parent is source root)
+                let source_root = uri.to_file_path().and_then(|p| {
+                    p.parent()
+                        .and_then(|debian| debian.parent())
+                        .map(|root| root.to_path_buf())
+                });
+
+                let lenses =
+                    copyright::generate_code_lenses(&parsed, &source_text, source_root.as_deref())
+                        .await;
                 if lenses.is_empty() {
                     Ok(None)
                 } else {
