@@ -194,8 +194,13 @@ impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::INCREMENTAL),
+                        will_save_wait_until: Some(true),
+                        ..Default::default()
+                    },
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: None,
@@ -361,6 +366,29 @@ impl LanguageServer for Backend {
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
         }
+    }
+
+    async fn will_save_wait_until(
+        &self,
+        params: WillSaveTextDocumentParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let files = self.files.lock().await;
+        let file_info = match files.get(&params.text_document.uri) {
+            Some(info) => *info,
+            None => return Ok(None),
+        };
+
+        if file_info.file_type != FileType::Changelog {
+            return Ok(None);
+        }
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file_info.source_file);
+        let parsed = workspace.get_parsed_changelog(file_info.source_file);
+        let changelog = parsed.tree();
+
+        let edit = changelog::generate_timestamp_update_edit(&changelog, &source_text);
+        Ok(edit.map(|e| vec![e]))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
