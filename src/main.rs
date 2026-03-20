@@ -848,6 +848,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_selection_ranges(&parsed, &source_text, &params.positions)
             }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                watch::generate_selection_ranges(&parsed, &source_text, &params.positions)
+            }
             FileType::TestsControl => {
                 let deb822_parse = workspace.get_parsed_deb822(file.source_file);
                 match deb822_parse.to_result() {
