@@ -146,6 +146,7 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/control setfiletype debcontrol
   autocmd BufNewFile,BufRead */debian/copyright setfiletype debcopyright
   autocmd BufNewFile,BufRead */debian/changelog setfiletype debchangelog
+  autocmd BufNewFile,BufRead */debian/changelog.dch setfiletype debchangelog
   autocmd BufNewFile,BufRead */debian/source/format setfiletype debsources
   autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
   autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
@@ -195,6 +196,7 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
     '*/debian/control',
     '*/debian/copyright',
     '*/debian/changelog',
+    '*/debian/changelog.dch',
     '*/debian/source/format',
     '*/debian/watch',
     '*/debian/tests/control',

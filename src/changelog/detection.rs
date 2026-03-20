@@ -3,7 +3,10 @@ use tower_lsp_server::ls_types::Uri;
 /// Check if a given URL represents a Debian changelog file
 pub fn is_changelog_file(uri: &Uri) -> bool {
     let path = uri.as_str();
-    path.ends_with("/changelog") || path.ends_with("/debian/changelog")
+    path.ends_with("/changelog")
+        || path.ends_with("/debian/changelog")
+        || path.ends_with("/changelog.dch")
+        || path.ends_with("/debian/changelog.dch")
 }
 
 #[cfg(test)]
@@ -17,6 +20,10 @@ mod tests {
             "file:///project/debian/changelog",
             "file:///changelog",
             "file:///some/path/changelog",
+            "file:///path/to/debian/changelog.dch",
+            "file:///project/debian/changelog.dch",
+            "file:///changelog.dch",
+            "file:///some/path/changelog.dch",
         ];
 
         let non_changelog_paths = vec![
