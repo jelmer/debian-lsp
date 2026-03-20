@@ -620,13 +620,14 @@ impl LanguageServer for Backend {
 
         let mut actions = Vec::new();
 
-        // Check for field casing issues - only process fields in the requested range
-        let Some(text_range) = try_lsp_range_to_text_range(&source_text, &params.range) else {
-            return Ok(None);
-        };
+        let text_range = try_lsp_range_to_text_range(&source_text, &params.range);
 
         match file_info.file_type {
             FileType::Control => {
+                let Some(text_range) = text_range else {
+                    return Ok(None);
+                };
+
                 // Add wrap-and-sort action
                 let parsed = workspace.get_parsed_control(file_info.source_file);
                 if let Some(action) = control::get_wrap_and_sort_action(
@@ -649,6 +650,10 @@ impl LanguageServer for Backend {
                 ));
             }
             FileType::Copyright => {
+                let Some(text_range) = text_range else {
+                    return Ok(None);
+                };
+
                 // Add wrap-and-sort action
                 let parsed = workspace.get_parsed_copyright(file_info.source_file);
                 if let Some(action) = copyright::get_wrap_and_sort_action(
@@ -671,7 +676,7 @@ impl LanguageServer for Backend {
                 ));
             }
             FileType::Changelog => {
-                // Add action to create a new changelog entry
+                // Add action to create a new changelog entry (file-wide action)
                 let parsed = workspace.get_parsed_changelog(file_info.source_file);
                 let changelog = parsed.tree();
                 match changelog::generate_new_changelog_entry(&changelog) {
@@ -702,7 +707,7 @@ impl LanguageServer for Backend {
 
                         let action = CodeAction {
                             title: "Add new changelog entry".to_string(),
-                            kind: Some(CodeActionKind::REFACTOR),
+                            kind: Some(CodeActionKind::SOURCE),
                             edit: Some(workspace_edit),
                             ..Default::default()
                         };
@@ -715,34 +720,37 @@ impl LanguageServer for Backend {
                 }
 
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
-                let unreleased_entries =
-                    workspace.find_unreleased_entries_in_range(file_info.source_file, text_range);
+                if let Some(text_range) = text_range {
+                    let unreleased_entries = workspace
+                        .find_unreleased_entries_in_range(file_info.source_file, text_range);
 
-                for info in unreleased_entries {
-                    let lsp_range = text_range_to_lsp_range(&source_text, info.unreleased_range);
+                    for info in unreleased_entries {
+                        let lsp_range =
+                            text_range_to_lsp_range(&source_text, info.unreleased_range);
 
-                    let edit = TextEdit {
-                        range: lsp_range,
-                        new_text: info.target_distribution.clone(),
-                    };
+                        let edit = TextEdit {
+                            range: lsp_range,
+                            new_text: info.target_distribution.clone(),
+                        };
 
-                    let workspace_edit = WorkspaceEdit {
-                        changes: Some(
-                            vec![(params.text_document.uri.clone(), vec![edit])]
-                                .into_iter()
-                                .collect(),
-                        ),
-                        ..Default::default()
-                    };
+                        let workspace_edit = WorkspaceEdit {
+                            changes: Some(
+                                vec![(params.text_document.uri.clone(), vec![edit])]
+                                    .into_iter()
+                                    .collect(),
+                            ),
+                            ..Default::default()
+                        };
 
-                    let action = CodeAction {
-                        title: format!("Mark for upload to {}", info.target_distribution),
-                        kind: Some(CodeActionKind::REFACTOR),
-                        edit: Some(workspace_edit),
-                        ..Default::default()
-                    };
+                        let action = CodeAction {
+                            title: format!("Mark for upload to {}", info.target_distribution),
+                            kind: Some(CodeActionKind::REFACTOR),
+                            edit: Some(workspace_edit),
+                            ..Default::default()
+                        };
 
-                    actions.push(CodeActionOrCommand::CodeAction(action));
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
                 }
             }
             _ => unreachable!(),
