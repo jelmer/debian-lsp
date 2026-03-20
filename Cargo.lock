@@ -501,9 +501,9 @@ dependencies = [
 
 [[package]]
 name = "deb822-lossless"
-version = "0.5.13"
+version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fc37a1c8cc17cee8c56adb3f865bdb459f30fb743d28227ffb349f7a91d2346"
+checksum = "faaa7a773199a9a6d6bcacd9a838bf55de295bc2f918870d5245712efca46d74"
 dependencies = [
  "regex",
  "rowan",
@@ -542,9 +542,9 @@ dependencies = [
 
 [[package]]
 name = "debian-copyright"
-version = "0.1.43"
+version = "0.1.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54bf50d7620f0de2fc7bd418b6f362a8fc573481c1b29916170d70c8e87f5d6c"
+checksum = "e291036e42c095cc31bf404f258855951c8a4b1d31057dbb2a9bced47aa0ea48"
 dependencies = [
  "deb822-fast",
  "deb822-lossless",
@@ -3489,7 +3489,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

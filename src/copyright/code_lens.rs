@@ -22,13 +22,16 @@ pub fn generate_code_lenses(
     let copyright = parsed.to_copyright();
     let mut lenses = Vec::new();
 
-    // Count how many Files paragraphs use each license name
+    // Count how many Files paragraphs reference each individual license name.
+    // A Files paragraph with "License: GPL-2+ or MIT" counts as a reference
+    // to both "GPL-2+" and "MIT".
     let mut license_usage: HashMap<String, usize> = HashMap::new();
     for files_para in copyright.iter_files() {
         if let Some(license) = files_para.license() {
-            if let Some(name) = license.name() {
-                let key = name.to_lowercase();
-                *license_usage.entry(key).or_insert(0) += 1;
+            if let Some(expr) = license.expr() {
+                for name in expr.license_names() {
+                    *license_usage.entry(name.to_lowercase()).or_insert(0) += 1;
+                }
             }
         }
     }
@@ -192,5 +195,34 @@ License: MIT
         let lenses = generate_code_lenses(&parsed, text);
 
         assert_eq!(lenses.len(), 0);
+    }
+
+    #[test]
+    fn test_or_expression_counts_individual_licenses() {
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: src/*
+Copyright: 2024 Alice
+License: GPL-2+ or MIT
+
+License: GPL-2+
+ This program is free software...
+
+License: MIT
+ Permission is hereby granted...
+";
+        let parsed = parse(text);
+        let lenses = generate_code_lenses(&parsed, text);
+
+        assert_eq!(lenses.len(), 2);
+        assert_eq!(
+            lenses[0].command.as_ref().unwrap().title,
+            "used by 1 Files paragraph"
+        );
+        assert_eq!(
+            lenses[1].command.as_ref().unwrap().title,
+            "used by 1 Files paragraph"
+        );
     }
 }
