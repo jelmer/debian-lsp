@@ -76,24 +76,67 @@ pub async fn get_async_field_value_completions(
     }
 }
 
+/// Special architecture values that are always available.
+const ARCHITECTURE_SPECIAL_VALUES: &[(&str, &str)] = &[
+    ("all", "Architecture-independent package"),
+    ("any", "Build for any supported architecture"),
+];
+
 /// Get completion items for "Architecture" control fields.
+///
+/// Handles space-separated multiple architectures and the `!` negation prefix.
 pub async fn get_architecture_value_completions(
     prefix: &str,
     architecture_list: &SharedArchitectureList,
 ) -> Vec<CompletionItem> {
-    let normalized_prefix = prefix.trim().to_ascii_lowercase();
+    // The prefix is the entire field value up to the cursor.
+    // For multiple architectures (space-separated), we only complete the last token.
+    let current_token = prefix.rsplit(' ').next().unwrap_or("").trim();
+
+    // Handle negation prefix
+    let (negated, arch_prefix) = if let Some(rest) = current_token.strip_prefix('!') {
+        (true, rest)
+    } else {
+        (false, current_token)
+    };
+
+    let normalized_prefix = arch_prefix.to_ascii_lowercase();
 
     let arches = architecture_list.read().await;
 
-    arches
-        .iter()
-        .filter(|arch| arch.starts_with(&normalized_prefix))
-        .map(|arch| CompletionItem {
-            label: arch.clone(),
-            kind: Some(CompletionItemKind::VALUE),
-            ..Default::default()
-        })
-        .collect()
+    let mut completions = Vec::new();
+
+    // Add special values ("all", "any") — only when not negated
+    if !negated {
+        for &(value, description) in ARCHITECTURE_SPECIAL_VALUES {
+            if value.starts_with(&normalized_prefix) {
+                completions.push(CompletionItem {
+                    label: value.to_string(),
+                    kind: Some(CompletionItemKind::VALUE),
+                    detail: Some(description.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    // Add matching architectures, with or without negation prefix
+    for arch in arches.iter() {
+        if arch.starts_with(&normalized_prefix) {
+            let label = if negated {
+                format!("!{}", arch)
+            } else {
+                arch.clone()
+            };
+            completions.push(CompletionItem {
+                label,
+                kind: Some(CompletionItemKind::VALUE),
+                ..Default::default()
+            });
+        }
+    }
+
+    completions
 }
 
 /// Get completion items for "Priority" control field.
@@ -584,6 +627,8 @@ mod tests {
         let completions = get_architecture_value_completions("", &test_arch_list()).await;
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
+        assert!(labels.contains(&"all"));
+        assert!(labels.contains(&"any"));
         assert!(labels.contains(&"amd64"));
         assert!(labels.contains(&"arm64"));
         assert!(labels.contains(&"armhf"));
@@ -608,5 +653,66 @@ mod tests {
         assert_eq!(labels.len(), 2);
         assert!(labels.contains(&"arm64"));
         assert!(labels.contains(&"armhf"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_special_values() {
+        let completions = get_architecture_value_completions("a", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"all"));
+        assert!(labels.contains(&"any"));
+        assert!(labels.contains(&"amd64"));
+        assert!(labels.contains(&"arm64"));
+        assert!(labels.contains(&"armhf"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_special_all() {
+        let completions = get_architecture_value_completions("al", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["all"]);
+        assert!(completions[0].detail.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_negated() {
+        let completions = get_architecture_value_completions("!arm", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels.len(), 2);
+        assert!(labels.contains(&"!arm64"));
+        assert!(labels.contains(&"!armhf"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_negated_no_special() {
+        let completions = get_architecture_value_completions("!", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        // Negation should not include "all" or "any"
+        assert!(!labels.contains(&"!all"));
+        assert!(!labels.contains(&"!any"));
+        assert!(labels.contains(&"!amd64"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_multiple_arches() {
+        // When user has typed "amd64 arm", we should complete the last token "arm"
+        let completions = get_architecture_value_completions("amd64 arm", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels.len(), 2);
+        assert!(labels.contains(&"arm64"));
+        assert!(labels.contains(&"armhf"));
+    }
+
+    #[tokio::test]
+    async fn test_architecture_value_completions_multiple_with_negation() {
+        let completions = get_architecture_value_completions("any !i", &test_arch_list()).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["!i386"]);
     }
 }
