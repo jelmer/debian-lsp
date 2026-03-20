@@ -253,6 +253,7 @@ impl LanguageServer for Backend {
                     more_trigger_character: Some(vec!["\n".to_string(), "-".to_string()]),
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -797,6 +798,60 @@ impl LanguageServer for Backend {
                 let deb822_parse = workspace.get_parsed_deb822(file.source_file);
                 match deb822_parse.to_result() {
                     Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, &source_text),
+                    Err(_) => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+
+        if ranges.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ranges))
+        }
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        let ranges = match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                deb822::selection_range::generate_selection_ranges(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    &params.positions,
+                )
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                deb822::selection_range::generate_selection_ranges(
+                    parsed.to_copyright().as_deb822(),
+                    &source_text,
+                    &params.positions,
+                )
+            }
+            FileType::TestsControl => {
+                let deb822_parse = workspace.get_parsed_deb822(file.source_file);
+                match deb822_parse.to_result() {
+                    Ok(deb822) => deb822::selection_range::generate_selection_ranges(
+                        &deb822,
+                        &source_text,
+                        &params.positions,
+                    ),
                     Err(_) => return Ok(None),
                 }
             }
