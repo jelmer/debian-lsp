@@ -112,6 +112,7 @@ struct Backend {
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
     vcswatch_cache: vcswatch::SharedVcsWatchCache,
+    git_file_cache: copyright::code_lens::SharedGitFileCache,
 }
 
 impl Backend {
@@ -1175,9 +1176,13 @@ impl LanguageServer for Backend {
                         .map(|root| root.to_path_buf())
                 });
 
-                let lenses =
-                    copyright::generate_code_lenses(&parsed, &source_text, source_root.as_deref())
-                        .await;
+                let lenses = copyright::generate_code_lenses(
+                    &parsed,
+                    &source_text,
+                    source_root.as_deref(),
+                    &self.git_file_cache,
+                )
+                .await;
                 if lenses.is_empty() {
                     Ok(None)
                 } else {
@@ -1296,6 +1301,7 @@ async fn main() {
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
         vcswatch_cache: vcswatch_cache.clone(),
+        git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

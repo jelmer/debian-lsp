@@ -10,13 +10,67 @@
 //! - `Files: docs/legacy/*` ->"0 files"
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use debian_copyright::GlobPattern;
 use rowan::ast::AstNode;
+use tokio::sync::Mutex;
 use tower_lsp_server::ls_types::{CodeLens, Command};
 
 use crate::position::text_range_to_lsp_range;
+
+/// How long cached file lists remain valid.
+const FILE_LIST_TTL: Duration = Duration::from_secs(300);
+
+/// Cached result of `git ls-files` for a single source root.
+pub(crate) struct CachedFileList {
+    files: Vec<String>,
+    fetched_at: Instant,
+}
+
+/// Shared, per-root cache of git-tracked file lists.
+pub type SharedGitFileCache = Arc<Mutex<HashMap<PathBuf, CachedFileList>>>;
+
+/// Create a new shared git file cache.
+pub fn new_shared_git_file_cache() -> SharedGitFileCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Get the file list for `root`, using the cache when fresh.
+async fn get_git_files(cache: &SharedGitFileCache, root: &Path) -> Option<Vec<String>> {
+    // Return cached value if still fresh.
+    {
+        let map = cache.lock().await;
+        if let Some(entry) = map.get(root) {
+            if entry.fetched_at.elapsed() < FILE_LIST_TTL {
+                return Some(entry.files.clone());
+            }
+        }
+    }
+
+    // Fetch in a blocking task.
+    let root_buf = root.to_path_buf();
+    let files = tokio::task::spawn_blocking(move || git_ls_files(&root_buf))
+        .await
+        .ok()
+        .flatten()?;
+
+    // Store in cache.
+    {
+        let mut map = cache.lock().await;
+        map.insert(
+            root.to_path_buf(),
+            CachedFileList {
+                files: files.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    Some(files)
+}
 
 /// List git-tracked files relative to the given working directory.
 fn git_ls_files(root: &Path) -> Option<Vec<String>> {
@@ -63,6 +117,7 @@ pub async fn generate_code_lenses(
     parsed: &debian_copyright::lossless::Parse,
     source_text: &str,
     source_root: Option<&Path>,
+    git_file_cache: &SharedGitFileCache,
 ) -> Vec<CodeLens> {
     // Extract everything we need from the non-Send parsed tree up front,
     // before any .await points.
@@ -73,12 +128,8 @@ pub async fn generate_code_lenses(
         return lenses;
     }
 
-    // Obtain git-tracked files in a blocking task.
-    let root = source_root.unwrap().to_path_buf();
-    let source_files = tokio::task::spawn_blocking(move || git_ls_files(&root))
-        .await
-        .ok()
-        .flatten();
+    // Obtain git-tracked files (cached).
+    let source_files = get_git_files(git_file_cache, source_root.unwrap()).await;
 
     let Some(source_files) = source_files else {
         return lenses;
@@ -433,7 +484,8 @@ Copyright: 2024 Carol
 License: MIT
 ";
         let parsed = parse(text);
-        let lenses = generate_code_lenses(&parsed, text, Some(root)).await;
+        let lenses =
+            generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
 
         // 3 file-count lenses + 0 license lenses (no standalone License paragraphs)
         assert_eq!(lenses.len(), 3);
@@ -469,7 +521,8 @@ Copyright: 2024 Test
 License: MIT
 ";
         let parsed = parse(text);
-        let lenses = generate_code_lenses(&parsed, text, Some(root)).await;
+        let lenses =
+            generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "1 file");
@@ -488,7 +541,7 @@ License: MIT
  text
 ";
         let parsed = parse(text);
-        let lenses = generate_code_lenses(&parsed, text, None).await;
+        let lenses = generate_code_lenses(&parsed, text, None, &new_shared_git_file_cache()).await;
 
         // Only license lenses, no file-count lenses
         assert_eq!(lenses.len(), 1);
