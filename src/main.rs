@@ -538,8 +538,7 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_copyright(source_file);
-                let copyright = parsed.to_copyright();
-                copyright::get_completions(copyright.as_deb822(), &source_text, position)
+                copyright::get_completions(&parsed, &source_text, position)
             }
             Some((FileType::Watch, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -1162,6 +1161,19 @@ impl LanguageServer for Backend {
                     Ok(Some(lenses))
                 }
             }
+            FileType::Copyright => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                drop(workspace);
+
+                let lenses = copyright::generate_code_lenses(&parsed, &source_text);
+                if lenses.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(lenses))
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -1227,17 +1239,6 @@ impl LanguageServer for Backend {
                     });
                 }
 
-                if hints.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(hints))
-                }
-            }
-            FileType::Copyright => {
-                let workspace = self.workspace.lock().await;
-                let source_text = workspace.source_text(file.source_file);
-                let parsed = workspace.get_parsed_copyright(file.source_file);
-                let hints = copyright::generate_inlay_hints(&parsed, &source_text, &params.range);
                 if hints.is_empty() {
                     Ok(None)
                 } else {
