@@ -37,7 +37,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 salsa = ">=0.23, <0.27"
 text-size = "1.1"
-launchpadlib = { version = "0.5.6", optional = true, default-features = false, features = ["async", "blocking", "api-v1_0", "bugs", "packages"] }
+# change to the lastest version once the patch to blocking api gating is released.
+launchpadlib = { git = "https://github.com/jelmer/launchpadlib-rs", rev = "b96ebb7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
