@@ -147,14 +147,24 @@ pub async fn generate_code_lenses(
         })
         .collect();
 
+    // For each file, find the last matching Files paragraph (DEP-5
+    // specifies that the last matching stanza wins). Count files per
+    // paragraph so that e.g. `*` only counts files not already claimed
+    // by a more specific later stanza.
+    let paragraphs = &file_lens_data.paragraphs;
+    let mut counts = vec![0usize; paragraphs.len()];
+    for f in &included_files {
+        let winning_idx = paragraphs
+            .iter()
+            .rposition(|para| para.patterns.iter().any(|p| p.is_match(f)));
+        if let Some(idx) = winning_idx {
+            counts[idx] += 1;
+        }
+    }
+
     // Insert file-count lenses before the license lenses
     let mut file_lenses = Vec::new();
-    for para_data in &file_lens_data.paragraphs {
-        let count = included_files
-            .iter()
-            .filter(|f| para_data.patterns.iter().any(|p| p.is_match(f)))
-            .count();
-
+    for (para_data, &count) in paragraphs.iter().zip(&counts) {
         let title = match count {
             1 => "1 file".to_string(),
             n => format!("{n} files"),
@@ -471,6 +481,10 @@ License: MIT
         let text = "\
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 
+Files: *
+Copyright: 2024 Carol
+License: MIT
+
 Files: src/*
 Copyright: 2024 Alice
 License: MIT
@@ -478,20 +492,18 @@ License: MIT
 Files: debian/*
 Copyright: 2024 Bob
 License: GPL-2+
-
-Files: *
-Copyright: 2024 Carol
-License: MIT
 ";
         let parsed = parse(text);
         let lenses =
             generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
 
         // 3 file-count lenses + 0 license lenses (no standalone License paragraphs)
+        // Last matching stanza wins: src/* claims src/{main,lib}.rs,
+        // debian/* claims debian/rules, * only counts README.
         assert_eq!(lenses.len(), 3);
-        assert_eq!(lenses[0].command.as_ref().unwrap().title, "2 files");
-        assert_eq!(lenses[1].command.as_ref().unwrap().title, "1 file");
-        assert_eq!(lenses[2].command.as_ref().unwrap().title, "4 files");
+        assert_eq!(lenses[0].command.as_ref().unwrap().title, "1 file");
+        assert_eq!(lenses[1].command.as_ref().unwrap().title, "2 files");
+        assert_eq!(lenses[2].command.as_ref().unwrap().title, "1 file");
     }
 
     #[tokio::test]
