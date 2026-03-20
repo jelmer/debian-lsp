@@ -21,55 +21,145 @@ use tower_lsp_server::ls_types::{CodeLens, Command};
 
 use crate::position::text_range_to_lsp_range;
 
-/// How long cached file lists remain valid.
-const FILE_LIST_TTL: Duration = Duration::from_secs(300);
+/// How long cached git file lists remain valid.
+const GIT_FILE_LIST_TTL: Duration = Duration::from_secs(300);
 
-/// Cached result of `git ls-files` for a single source root.
-pub(crate) struct CachedFileList {
-    files: Vec<String>,
-    fetched_at: Instant,
+/// Cached state for file-count code lenses.
+pub(crate) struct CachedFileCounts {
+    /// The git-tracked files at the time of caching.
+    git_files: Vec<String>,
+    /// When the git file list was fetched.
+    git_fetched_at: Instant,
+    /// The patterns (Files: + Files-Excluded:) that produced the cached counts.
+    /// Used to detect when the copyright file changes and we need to recompute.
+    pattern_key: Vec<String>,
+    /// The computed file-count lenses.
+    lenses: Vec<CodeLens>,
 }
 
-/// Shared, per-root cache of git-tracked file lists.
-pub type SharedGitFileCache = Arc<Mutex<HashMap<PathBuf, CachedFileList>>>;
+/// Shared, per-root cache of file-count code lenses.
+pub type SharedGitFileCache = Arc<Mutex<HashMap<PathBuf, CachedFileCounts>>>;
 
 /// Create a new shared git file cache.
 pub fn new_shared_git_file_cache() -> SharedGitFileCache {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-/// Get the file list for `root`, using the cache when fresh.
-async fn get_git_files(cache: &SharedGitFileCache, root: &Path) -> Option<Vec<String>> {
-    // Return cached value if still fresh.
+/// Build a cache key from the file patterns and excluded patterns.
+fn build_pattern_key(file_lens_data: &FileLensData) -> Vec<String> {
+    let mut key: Vec<String> = file_lens_data
+        .excluded_patterns_raw
+        .iter()
+        .map(|p| format!("X:{p}"))
+        .collect();
+    for para in &file_lens_data.paragraphs {
+        for p in &para.patterns_raw {
+            key.push(format!("F:{p}"));
+        }
+        // Separator between paragraphs
+        key.push("|".to_string());
+    }
+    key
+}
+
+/// Get file-count lenses, using cached results when the patterns and
+/// git file list haven't changed.
+async fn get_file_count_lenses(
+    cache: &SharedGitFileCache,
+    root: &Path,
+    file_lens_data: &FileLensData,
+) -> Option<Vec<CodeLens>> {
+    let pattern_key = build_pattern_key(file_lens_data);
+
+    // Check cache: reuse if patterns match and git file list is fresh.
     {
         let map = cache.lock().await;
         if let Some(entry) = map.get(root) {
-            if entry.fetched_at.elapsed() < FILE_LIST_TTL {
-                return Some(entry.files.clone());
+            if entry.pattern_key == pattern_key
+                && entry.git_fetched_at.elapsed() < GIT_FILE_LIST_TTL
+            {
+                return Some(entry.lenses.clone());
             }
         }
     }
 
-    // Fetch in a blocking task.
-    let root_buf = root.to_path_buf();
-    let files = tokio::task::spawn_blocking(move || git_ls_files(&root_buf))
-        .await
-        .ok()
-        .flatten()?;
+    // Fetch git file list (possibly reusing a still-fresh cached list).
+    let git_files = {
+        let map = cache.lock().await;
+        map.get(root)
+            .filter(|e| e.git_fetched_at.elapsed() < GIT_FILE_LIST_TTL)
+            .map(|e| e.git_files.clone())
+    };
+
+    let git_files = match git_files {
+        Some(files) => files,
+        None => {
+            let root_buf = root.to_path_buf();
+            tokio::task::spawn_blocking(move || git_ls_files(&root_buf))
+                .await
+                .ok()
+                .flatten()?
+        }
+    };
+
+    // Compute file counts.
+    let included_files: Vec<&str> = git_files
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|f| {
+            !file_lens_data
+                .excluded_patterns
+                .iter()
+                .any(|p| p.is_match(f))
+        })
+        .collect();
+
+    let paragraphs = &file_lens_data.paragraphs;
+    let mut counts = vec![0usize; paragraphs.len()];
+    for f in &included_files {
+        let winning_idx = paragraphs
+            .iter()
+            .rposition(|para| para.patterns.iter().any(|p| p.is_match(f)));
+        if let Some(idx) = winning_idx {
+            counts[idx] += 1;
+        }
+    }
+
+    let lenses: Vec<CodeLens> = paragraphs
+        .iter()
+        .zip(&counts)
+        .map(|(para_data, &count)| {
+            let title = match count {
+                1 => "1 file".to_string(),
+                n => format!("{n} files"),
+            };
+            CodeLens {
+                range: para_data.range,
+                command: Some(Command {
+                    title,
+                    command: "debian-lsp.noop".to_string(),
+                    arguments: None,
+                }),
+                data: None,
+            }
+        })
+        .collect();
 
     // Store in cache.
     {
         let mut map = cache.lock().await;
         map.insert(
             root.to_path_buf(),
-            CachedFileList {
-                files: files.clone(),
-                fetched_at: Instant::now(),
+            CachedFileCounts {
+                git_files,
+                git_fetched_at: Instant::now(),
+                pattern_key,
+                lenses: lenses.clone(),
             },
         );
     }
 
-    Some(files)
+    Some(lenses)
 }
 
 /// List git-tracked files relative to the given working directory.
@@ -128,71 +218,27 @@ pub async fn generate_code_lenses(
         return lenses;
     }
 
-    // Obtain git-tracked files (cached).
-    let source_files = get_git_files(git_file_cache, source_root.unwrap()).await;
-
-    let Some(source_files) = source_files else {
-        return lenses;
-    };
-
-    // Filter out excluded files
-    let included_files: Vec<&str> = source_files
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|f| {
-            !file_lens_data
-                .excluded_patterns
-                .iter()
-                .any(|p| p.is_match(f))
-        })
-        .collect();
-
-    // For each file, find the last matching Files paragraph (DEP-5
-    // specifies that the last matching stanza wins). Count files per
-    // paragraph so that e.g. `*` only counts files not already claimed
-    // by a more specific later stanza.
-    let paragraphs = &file_lens_data.paragraphs;
-    let mut counts = vec![0usize; paragraphs.len()];
-    for f in &included_files {
-        let winning_idx = paragraphs
-            .iter()
-            .rposition(|para| para.patterns.iter().any(|p| p.is_match(f)));
-        if let Some(idx) = winning_idx {
-            counts[idx] += 1;
-        }
+    // Get file-count lenses (cached when patterns and git file list unchanged).
+    if let Some(mut file_lenses) =
+        get_file_count_lenses(git_file_cache, source_root.unwrap(), &file_lens_data).await
+    {
+        file_lenses.append(&mut lenses);
+        file_lenses
+    } else {
+        lenses
     }
-
-    // Insert file-count lenses before the license lenses
-    let mut file_lenses = Vec::new();
-    for (para_data, &count) in paragraphs.iter().zip(&counts) {
-        let title = match count {
-            1 => "1 file".to_string(),
-            n => format!("{n} files"),
-        };
-
-        file_lenses.push(CodeLens {
-            range: para_data.range,
-            command: Some(Command {
-                title,
-                command: "debian-lsp.noop".to_string(),
-                arguments: None,
-            }),
-            data: None,
-        });
-    }
-
-    file_lenses.append(&mut lenses);
-    file_lenses
 }
 
 /// Pre-extracted data for a single Files paragraph.
 struct FilesParagraphData {
+    patterns_raw: Vec<String>,
     patterns: Vec<GlobPattern>,
     range: tower_lsp_server::ls_types::Range,
 }
 
 /// Pre-extracted data needed for file-count lenses.
 struct FileLensData {
+    excluded_patterns_raw: Vec<String>,
     excluded_patterns: Vec<GlobPattern>,
     paragraphs: Vec<FilesParagraphData>,
 }
@@ -211,10 +257,11 @@ fn extract_file_lens_data(
 ) -> FileLensData {
     let copyright = parsed.to_copyright();
 
-    let excluded_patterns: Vec<GlobPattern> = copyright
+    let excluded_patterns_raw: Vec<String> = copyright
         .header()
         .and_then(|h| h.files_excluded())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let excluded_patterns: Vec<GlobPattern> = excluded_patterns_raw
         .iter()
         .map(|p| GlobPattern::new(p))
         .collect();
@@ -224,11 +271,8 @@ fn extract_file_lens_data(
         let para = files_para.as_deb822();
         let para_range = para.syntax().text_range();
 
-        let patterns: Vec<GlobPattern> = files_para
-            .files()
-            .iter()
-            .map(|p| GlobPattern::new(p))
-            .collect();
+        let patterns_raw = files_para.files();
+        let patterns: Vec<GlobPattern> = patterns_raw.iter().map(|p| GlobPattern::new(p)).collect();
 
         let range = if let Some(entry) = para
             .entries()
@@ -239,10 +283,15 @@ fn extract_file_lens_data(
             text_range_to_lsp_range(source_text, para_range)
         };
 
-        paragraphs.push(FilesParagraphData { patterns, range });
+        paragraphs.push(FilesParagraphData {
+            patterns_raw,
+            patterns,
+            range,
+        });
     }
 
     FileLensData {
+        excluded_patterns_raw,
         excluded_patterns,
         paragraphs,
     }
