@@ -250,83 +250,107 @@ fn format_count(count: u32) -> String {
     }
 }
 
-/// Generate code lenses for a control file.
+/// Items that need background fetching before lenses can be generated.
+#[derive(Default)]
+pub struct UncachedLensData {
+    /// Source package name needing bug count lookup.
+    pub source_package: Option<String>,
+    /// Binary package names needing popcon/rdeps lookups.
+    pub binary_packages: Vec<String>,
+    /// Whether the Standards-Version policy package needs fetching.
+    pub needs_policy_version: bool,
+    /// Vcs-Git URL needing vcswatch lookup.
+    pub vcs_git_url: Option<String>,
+}
+
+impl UncachedLensData {
+    /// Returns `true` if there is nothing to fetch.
+    pub fn is_empty(&self) -> bool {
+        self.source_package.is_none()
+            && self.binary_packages.is_empty()
+            && !self.needs_policy_version
+            && self.vcs_git_url.is_none()
+    }
+}
+
+/// Generate code lenses for a control file, using only cached data.
 ///
-/// Provides lenses for:
-/// - Standards-Version: shows latest version when outdated
-/// - debhelper-compat (= N): shows current compat level
-/// - Vcs-Git: shows packaged version from UDD vcswatch
-/// - Source package: shows open bug count
-/// - Binary packages: shows popcon install count and reverse dependency count
+/// Returns the lenses that can be produced immediately plus a description of
+/// what data is still missing. The caller should fetch the missing data in
+/// the background and request a code lens refresh when done.
+///
+/// The debhelper-compat lens requires running `dh_assistant`, which is fast
+/// and local, so it is always awaited inline.
 pub async fn generate_code_lenses(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     ctx: &LensContext<'_>,
-) -> Vec<CodeLens> {
+) -> (Vec<CodeLens>, UncachedLensData) {
     let data = extract_lens_data(parsed, source_text);
+    let mut lenses = Vec::new();
+    let mut uncached = UncachedLensData::default();
 
-    let latest_standards = if !data.standards_versions.is_empty() {
-        let mut cache = ctx.package_cache.write().await;
-        let versions = cache.load_versions("debian-policy").await;
-        versions.and_then(|vs| {
+    // Standards-Version lens (cache-only read for policy version)
+    if !data.standards_versions.is_empty() {
+        let cache = ctx.package_cache.read().await;
+        let latest_standards = cache.get_cached_versions("debian-policy").and_then(|vs| {
             vs.first()
                 .and_then(|v| policy_version_to_standards_version(&v.version))
                 .map(|s| s.to_string())
-        })
-    } else {
-        None
-    };
+        });
+        drop(cache);
 
-    let compat_levels = if !data.debhelper_compats.is_empty() {
-        get_compat_levels().await
-    } else {
-        None
-    };
-
-    let mut lenses = Vec::new();
-
-    if let Some(latest) = &latest_standards {
-        for sv in &data.standards_versions {
-            if sv.value == *latest || !is_outdated(&sv.value, latest) {
-                continue;
+        if let Some(latest) = latest_standards {
+            for sv in &data.standards_versions {
+                if sv.value == latest || !is_outdated(&sv.value, &latest) {
+                    continue;
+                }
+                lenses.push(CodeLens {
+                    range: sv.range,
+                    command: Some(Command {
+                        title: format!("latest: {}", latest),
+                        command: "debian-lsp.noop".to_string(),
+                        arguments: None,
+                    }),
+                    data: None,
+                });
             }
-            lenses.push(CodeLens {
-                range: sv.range,
-                command: Some(Command {
-                    title: format!("latest: {}", latest),
-                    command: "debian-lsp.noop".to_string(),
-                    arguments: None,
-                }),
-                data: None,
-            });
+        } else {
+            uncached.needs_policy_version = true;
         }
     }
 
-    if let Some(levels) = &compat_levels {
-        for dh in &data.debhelper_compats {
-            let title = if levels.max == levels.highest_stable {
-                format!("stable: {}", levels.highest_stable)
-            } else {
-                format!("stable: {}, max: {}", levels.highest_stable, levels.max)
-            };
-            lenses.push(CodeLens {
-                range: dh.range,
-                command: Some(Command {
-                    title,
-                    command: "debian-lsp.noop".to_string(),
-                    arguments: None,
-                }),
-                data: None,
-            });
+    // debhelper-compat lens (local dh_assistant call, always awaited)
+    if !data.debhelper_compats.is_empty() {
+        if let Some(levels) = get_compat_levels().await {
+            for dh in &data.debhelper_compats {
+                let title = if levels.max == levels.highest_stable {
+                    format!("stable: {}", levels.highest_stable)
+                } else {
+                    format!("stable: {}, max: {}", levels.highest_stable, levels.max)
+                };
+                lenses.push(CodeLens {
+                    range: dh.range,
+                    command: Some(Command {
+                        title,
+                        command: "debian-lsp.noop".to_string(),
+                        arguments: None,
+                    }),
+                    data: None,
+                });
+            }
         }
     }
 
-    // Vcs-Git lens
+    // Vcs-Git lens (cache-only)
     if let Some((url, range)) = find_vcs_git_field(parsed, source_text) {
-        let version = {
-            let mut cache = ctx.vcswatch_cache.write().await;
-            cache.get_version_for_url(&url).await.map(|s| s.to_string())
-        };
+        let cache = ctx.vcswatch_cache.read().await;
+        let version = cache
+            .get_cached_version_for_url(&url)
+            .map(|s| s.to_string());
+        let is_cached = cache.is_cached(&url);
+        drop(cache);
+
         if let Some(version) = version {
             lenses.push(CodeLens {
                 range,
@@ -337,51 +361,62 @@ pub async fn generate_code_lenses(
                 }),
                 data: None,
             });
+        } else if !is_cached {
+            uncached.vcs_git_url = Some(url);
         }
     }
 
-    // Source package bug count lens
+    // Source package bug count lens (cache-only)
     if let Some(source) = &data.source_package {
-        let bug_count = {
-            let mut cache = ctx.bug_cache.write().await;
-            cache.get_open_bug_count(&source.name).await
-        };
-        if bug_count > 0 {
-            lenses.push(CodeLens {
-                range: source.range,
-                command: Some(Command {
-                    title: format!(
-                        "{} open {}",
-                        bug_count,
-                        if bug_count == 1 { "bug" } else { "bugs" }
-                    ),
-                    command: "debian-lsp.noop".to_string(),
-                    arguments: None,
-                }),
-                data: None,
-            });
+        let cache = ctx.bug_cache.read().await;
+        let bug_count = cache.get_cached_open_bug_count(&source.name);
+        drop(cache);
+
+        match bug_count {
+            Some(count) if count > 0 => {
+                lenses.push(CodeLens {
+                    range: source.range,
+                    command: Some(Command {
+                        title: format!(
+                            "{} open {}",
+                            count,
+                            if count == 1 { "bug" } else { "bugs" }
+                        ),
+                        command: "debian-lsp.noop".to_string(),
+                        arguments: None,
+                    }),
+                    data: None,
+                });
+            }
+            None => {
+                uncached.source_package = Some(source.name.clone());
+            }
+            _ => {}
         }
     }
 
-    // Binary package lenses: popcon + rdeps
+    // Binary package lenses: popcon + rdeps (cache-only)
     for pkg in &data.binary_packages {
         let mut parts = Vec::new();
+        let mut needs_fetch = false;
 
-        let popcon = {
-            let mut cache = ctx.popcon_cache.write().await;
-            cache.get_inst_count(&pkg.name).await
-        };
-        if let Some(count) = popcon {
-            parts.push(format!("popcon: {} installs", format_count(count)));
+        {
+            let cache = ctx.popcon_cache.read().await;
+            if let Some(count) = cache.get_cached_inst_count(&pkg.name) {
+                parts.push(format!("popcon: {} installs", format_count(count)));
+            } else if !cache.is_cached(&pkg.name) {
+                needs_fetch = true;
+            }
         }
 
-        let rdeps = {
-            let mut cache = ctx.rdeps_cache.write().await;
-            cache.get_rdeps_count(&pkg.name).await
-        };
-        if let Some(count) = rdeps {
-            if count > 0 {
-                parts.push(format!("{} reverse deps", format_count(count)));
+        {
+            let cache = ctx.rdeps_cache.read().await;
+            if let Some(count) = cache.get_cached_rdeps_count(&pkg.name) {
+                if count > 0 {
+                    parts.push(format!("{} reverse deps", format_count(count)));
+                }
+            } else if !cache.is_cached(&pkg.name) {
+                needs_fetch = true;
             }
         }
 
@@ -396,9 +431,13 @@ pub async fn generate_code_lenses(
                 data: None,
             });
         }
+
+        if needs_fetch {
+            uncached.binary_packages.push(pkg.name.clone());
+        }
     }
 
-    lenses
+    (lenses, uncached)
 }
 
 #[cfg(test)]
@@ -456,7 +495,7 @@ mod tests {
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "latest: 4.7.3");
@@ -493,7 +532,7 @@ mod tests {
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 0);
     }
@@ -535,7 +574,7 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         let title = &lenses[0].command.as_ref().unwrap().title;
@@ -591,7 +630,7 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 2);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "latest: 4.7.3");
@@ -632,7 +671,7 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "git: 1.1.0-1");
@@ -665,7 +704,7 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "git: 2.0-1");
@@ -694,7 +733,7 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 0);
     }
@@ -734,7 +773,7 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "3 open bugs");
@@ -779,7 +818,7 @@ Description: Foo library
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(

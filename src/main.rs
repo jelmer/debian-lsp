@@ -1179,7 +1179,43 @@ impl LanguageServer for Backend {
                     popcon_cache: &self.popcon_cache,
                     rdeps_cache: &self.rdeps_cache,
                 };
-                let lenses = control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+                let (lenses, uncached) =
+                    control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+
+                if !uncached.is_empty() {
+                    let client = self.client.clone();
+                    let package_cache = self.package_cache.clone();
+                    let vcswatch_cache = self.vcswatch_cache.clone();
+                    let bug_cache = self.bug_cache.clone();
+                    let popcon_cache = self.popcon_cache.clone();
+                    let rdeps_cache = self.rdeps_cache.clone();
+                    tokio::spawn(async move {
+                        if uncached.needs_policy_version {
+                            let mut cache = package_cache.write().await;
+                            cache.load_versions("debian-policy").await;
+                        }
+                        if let Some(url) = &uncached.vcs_git_url {
+                            let mut cache = vcswatch_cache.write().await;
+                            cache.get_version_for_url(url).await;
+                        }
+                        if let Some(source) = &uncached.source_package {
+                            let mut cache = bug_cache.write().await;
+                            cache.prefetch_bugs_for_package(source).await;
+                        }
+                        for pkg in &uncached.binary_packages {
+                            {
+                                let mut cache = popcon_cache.write().await;
+                                cache.get_inst_count(pkg).await;
+                            }
+                            {
+                                let mut cache = rdeps_cache.write().await;
+                                cache.get_rdeps_count(pkg).await;
+                            }
+                        }
+                        let _ = client.code_lens_refresh().await;
+                    });
+                }
+
                 if lenses.is_empty() {
                     Ok(None)
                 } else {

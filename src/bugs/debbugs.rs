@@ -108,17 +108,16 @@ impl BugCache {
         }
     }
 
-    /// Count open (not done) bugs for a source package.
-    pub async fn get_open_bug_count(&mut self, package: &str) -> usize {
-        self.fetch_bugs_for_package(package).await;
-
-        let Some(ids) = self.bug_ids_by_package.get(package) else {
-            return 0;
-        };
-
-        ids.iter()
-            .filter(|id| self.bug_details_by_id.get(id).is_some_and(|d| !d.done))
-            .count()
+    /// Count open bugs from cache only, without fetching.
+    ///
+    /// Returns `None` if the package has not been fetched yet.
+    pub fn get_cached_open_bug_count(&self, package: &str) -> Option<usize> {
+        let ids = self.bug_ids_by_package.get(package)?;
+        Some(
+            ids.iter()
+                .filter(|id| self.bug_details_by_id.get(id).is_some_and(|d| !d.done))
+                .count(),
+        )
     }
 
     /// Pre-fetch open bug IDs and their details for a package.

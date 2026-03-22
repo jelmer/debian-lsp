@@ -31,17 +31,26 @@ impl PopconCache {
         }
     }
 
-    /// Look up the install count for a package.
+    /// Look up the install count for a package, fetching if needed.
     ///
     /// Returns `None` if the package is not found in popcon or the query fails.
     pub async fn get_inst_count(&mut self, package: &str) -> Option<u32> {
         if !self.inst_by_package.contains_key(package) {
             self.fetch_inst_count(package).await;
         }
-        self.inst_by_package
-            .get(package)
-            .and_then(|v| v.as_ref())
-            .copied()
+        self.get_cached_inst_count(package)
+    }
+
+    /// Look up the install count from cache only, without fetching.
+    ///
+    /// Returns `None` if the package has not been fetched yet or was not found.
+    pub fn get_cached_inst_count(&self, package: &str) -> Option<u32> {
+        self.inst_by_package.get(package)?.as_ref().copied()
+    }
+
+    /// Returns `true` if this package has been looked up (hit or miss).
+    pub fn is_cached(&self, package: &str) -> bool {
+        self.inst_by_package.contains_key(package)
     }
 
     async fn fetch_inst_count(&mut self, package: &str) {
