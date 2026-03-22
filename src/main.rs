@@ -660,6 +660,15 @@ impl LanguageServer for Backend {
                     actions.push(action);
                 }
 
+                // Add binary package action
+                if let Some(action) = control::get_add_binary_package_action(
+                    &params.text_document.uri,
+                    &source_text,
+                    &parsed,
+                ) {
+                    actions.push(action);
+                }
+
                 // Add field casing fixes
                 let issues =
                     control::diagnostics::find_field_casing_issues(&parsed, Some(text_range));

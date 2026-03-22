@@ -96,6 +96,70 @@ pub fn get_wrap_and_sort_action(
     Some(CodeActionOrCommand::CodeAction(action))
 }
 
+/// Generate a code action to add a new binary package stanza
+///
+/// Populates the new binary package with defaults from the source paragraph.
+///
+/// # Arguments
+/// * `uri` - The URI of the control file
+/// * `source_text` - The source text of the file
+/// * `parsed` - The parsed control file
+///
+/// # Returns
+/// A code action to append a new binary package stanza, or None if parsing fails
+pub fn get_add_binary_package_action(
+    uri: &Uri,
+    source_text: &str,
+    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
+) -> Option<CodeActionOrCommand> {
+    let control = parsed.clone().to_result().ok()?;
+    let source = control.source()?;
+
+    let source_name = source.name()?;
+
+    // Build the new binary paragraph text
+    let mut new_control = debian_control::lossless::Control::new();
+    let mut binary = new_control.add_binary(&source_name);
+
+    binary
+        .as_mut_deb822()
+        .set("Depends", "${shlibs:Depends}, ${misc:Depends}");
+    binary.set_description(Some(&format!("<insert description for {}>", source_name)));
+
+    let binary_text = new_control
+        .binaries()
+        .next()
+        .unwrap()
+        .as_deb822()
+        .to_string();
+
+    // Insert at end of file, preceded by a blank line separator
+    let end_offset = source_text.len() as u32;
+    let end_position = crate::position::offset_to_position(source_text, end_offset.into());
+
+    let edit = TextEdit {
+        range: Range {
+            start: end_position,
+            end: end_position,
+        },
+        new_text: format!("\n{}", binary_text),
+    };
+
+    let workspace_edit = WorkspaceEdit {
+        changes: Some(vec![(uri.clone(), vec![edit])].into_iter().collect()),
+        ..Default::default()
+    };
+
+    let action = CodeAction {
+        title: "Add binary package".to_string(),
+        kind: Some(CodeActionKind::REFACTOR),
+        edit: Some(workspace_edit),
+        ..Default::default()
+    };
+
+    Some(CodeActionOrCommand::CodeAction(action))
+}
+
 /// Generate field casing fix actions for a control file
 ///
 /// # Arguments
@@ -252,6 +316,38 @@ maintainer: Test User <test@example.com>
             panic!("Expected CodeAction");
         };
         assert_eq!(action.title, "Fix field casing: maintainer -> Maintainer");
+    }
+
+    #[test]
+    fn test_add_binary_package_action() {
+        let input = "Source: my-package\nSection: utils\nPriority: optional\nMaintainer: Test User <test@example.com>\n";
+
+        let parsed = debian_control::lossless::Control::parse(input);
+        let uri: Uri = "file:///debian/control".parse().unwrap();
+
+        let action = get_add_binary_package_action(&uri, input, &parsed);
+        assert!(action.is_some());
+
+        let CodeActionOrCommand::CodeAction(action) = action.unwrap() else {
+            panic!("Expected CodeAction");
+        };
+
+        assert_eq!(action.title, "Add binary package");
+        assert_eq!(action.kind, Some(CodeActionKind::REFACTOR));
+
+        let workspace_edit = action.edit.expect("Should have an edit");
+        let changes = workspace_edit.changes.expect("Should have changes");
+        let edits = changes.get(&uri).expect("Should have edits for the URI");
+        assert_eq!(edits.len(), 1);
+
+        // Should be inserted at the end of the file
+        let end_line = input.lines().count() as u32;
+        assert_eq!(edits[0].range.start.line, end_line);
+
+        assert_eq!(
+            edits[0].new_text,
+            "\nPackage: my-package\nDepends: ${shlibs:Depends}, ${misc:Depends}\nDescription: <insert description for my-package>\n"
+        );
     }
 
     #[test]
