@@ -1,8 +1,11 @@
 pub mod actions;
+pub mod code_lens;
 pub mod completion;
+pub mod definition;
 pub mod detection;
 pub mod diagnostics;
 pub mod fields;
+pub mod hover;
 pub mod inlay_hints;
 mod relation_completion;
 pub mod rename;
@@ -10,9 +13,12 @@ pub mod semantic;
 pub mod symbols;
 
 pub use actions::*;
+pub use code_lens::generate_code_lenses;
 pub use completion::*;
+pub use definition::goto_definition;
 pub use detection::is_control_file;
 pub use fields::get_standard_field_name;
+pub use hover::get_hover;
 pub use inlay_hints::generate_inlay_hints;
 pub use rename::{
     collect_package_file_renames, collect_tests_control_edits, find_package_name_at_position,

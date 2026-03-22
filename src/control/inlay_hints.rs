@@ -1,16 +1,12 @@
 //! Inlay hints for debian/control files.
 //!
-//! - Standards-Version: `[latest: 4.7.0]` when outdated
-//! - debhelper-compat: `[current: 14]` showing latest compat level
 //! - Archive versions: `[unstable: 13.31 | bullseye: 13.3.4]` per suite
 //! - Virtual packages: `→ [exim4 (4.99) | postfix (3.11)]` with providers
 //! - Substvars: `[= libc6 (>= 2.17), ...]` showing resolved values
-//! - Vcs-Git: `[git: 1.0-1]` showing packaged version from UDD vcswatch
 
 use std::collections::HashMap;
 
 use debian_control::lossless::relations::Relations;
-use debian_control::relations::VersionConstraint;
 use text_size::TextSize;
 use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel};
 
@@ -34,42 +30,12 @@ fn make_hint(source_text: &str, offset: TextSize, label: String) -> InlayHint {
     }
 }
 
-/// Extract the Standards-Version (first 3 components) from a debian-policy
-/// package version string like "4.7.3.0" → "4.7.3".
-fn policy_version_to_standards_version(policy_version: &str) -> Option<&str> {
-    let mut dots = 0;
-    for (i, c) in policy_version.char_indices() {
-        if c == '.' {
-            dots += 1;
-            if dots == 3 {
-                return Some(&policy_version[..i]);
-            }
-        }
-    }
-    // If there are fewer than 3 dots, return the whole version
-    if dots >= 2 {
-        Some(policy_version)
-    } else {
-        None
-    }
-}
-
-/// Info about a Standards-Version field found in the control file.
-struct StandardsVersionInfo {
-    /// The value of the Standards-Version field (trimmed).
-    value: String,
-    /// The end position of the value in the source text.
-    value_end: TextSize,
-}
-
 /// Info about a relation in a dependency field.
 struct RelationInfo {
     /// The package name.
     name: String,
     /// The end position of the relation in the source text.
     relation_end: TextSize,
-    /// Whether this is a `debhelper-compat (= N)` relation.
-    is_debhelper_compat: bool,
 }
 
 /// Info about a substvar in a dependency field.
@@ -82,18 +48,8 @@ struct SubstvarInfo {
 
 /// All hint-relevant data extracted from a parsed control file in a single pass.
 struct HintData {
-    standards_versions: Vec<StandardsVersionInfo>,
     relations: Vec<RelationInfo>,
     substvars: Vec<SubstvarInfo>,
-}
-
-/// Extract the major version (compat level) from a debhelper package version
-/// string like "13.31" → 13.
-fn debhelper_version_to_compat_level(version: &str) -> Option<u32> {
-    let major = version.split('.').next()?;
-    // Strip any epoch prefix (e.g. "1:13" → "13")
-    let major = major.rsplit(':').next()?;
-    major.parse().ok()
 }
 
 /// Map an offset in the joined value string (as produced by `entry.value()`)
@@ -101,7 +57,7 @@ fn debhelper_version_to_compat_level(version: &str) -> Option<u32> {
 ///
 /// `entry.value()` joins VALUE tokens with `\n`, so for multi-line values the
 /// offsets in the joined string don't correspond 1:1 to source positions.
-fn joined_offset_to_source_offset(
+pub(super) fn joined_offset_to_source_offset(
     line_ranges: &[text_size::TextRange],
     joined_offset: usize,
 ) -> Option<TextSize> {
@@ -128,8 +84,7 @@ fn joined_offset_to_source_offset(
 
 /// Extract all hint-relevant data from a parsed control file in a single CST walk.
 ///
-/// Collects Standards-Version fields, relations (with debhelper-compat detection),
-/// and substvars from all paragraphs within the given range.
+/// Collects relations and substvars from all paragraphs within the given range.
 fn extract_hint_data(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
@@ -139,13 +94,11 @@ fn extract_hint_data(
 
     let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
         return HintData {
-            standards_versions: Vec::new(),
             relations: Vec::new(),
             substvars: Vec::new(),
         };
     };
 
-    let mut standards_versions = Vec::new();
     let mut relations = Vec::new();
     let mut substvars = Vec::new();
 
@@ -161,22 +114,6 @@ fn extract_hint_data(
                 continue;
             };
 
-            // Standards-Version field
-            if field_name.eq_ignore_ascii_case("Standards-Version") {
-                let value = entry.value();
-                let value = value.trim().to_string();
-                if !value.is_empty() {
-                    if let Some(value_range) = entry.value_range() {
-                        standards_versions.push(StandardsVersionInfo {
-                            value,
-                            value_end: value_range.end(),
-                        });
-                    }
-                }
-                continue;
-            }
-
-            // Relationship fields
             if !super::relation_completion::is_relationship_field(&field_name) {
                 continue;
             }
@@ -197,13 +134,9 @@ fn extract_hint_data(
                         continue;
                     };
 
-                    let is_debhelper_compat = name == "debhelper-compat"
-                        && matches!(relation.version(), Some((VersionConstraint::Equal, _)));
-
                     relations.push(RelationInfo {
                         name,
                         relation_end: absolute_end,
-                        is_debhelper_compat,
                     });
                 }
             }
@@ -229,7 +162,6 @@ fn extract_hint_data(
     }
 
     HintData {
-        standards_versions,
         relations,
         substvars,
     }
@@ -339,61 +271,20 @@ fn format_provider_hint(
     format!("→ [{} | ...]", short_parts[0])
 }
 
-/// Info about a Vcs-Git field found in the control file.
-struct VcsGitInfo {
-    /// The repository URL (without branch/path suffixes).
-    url: String,
-    /// The end position of the value in the source text.
-    value_end: TextSize,
-}
-
-/// Find the Vcs-Git field in a parsed control file within the given range.
-fn find_vcs_git_field(
-    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
-    range: &tower_lsp_server::ls_types::Range,
-) -> Option<VcsGitInfo> {
-    let control = parsed.clone().to_result().ok()?;
-    let text_range = crate::position::try_lsp_range_to_text_range(source_text, range)?;
-    let source = control.source_in_range(text_range)?;
-    let vcs_git_value = source.vcs_git()?;
-    let parsed_vcs = vcs_git_value
-        .parse::<debian_control::vcs::ParsedVcs>()
-        .ok()?;
-
-    // Find the entry's value range for hint positioning.
-    let value_end = source
-        .as_deb822()
-        .entries()
-        .find(|e| e.key().is_some_and(|k| k.eq_ignore_ascii_case("Vcs-Git")))
-        .and_then(|e| e.value_range())
-        .map(|r| r.end())?;
-
-    Some(VcsGitInfo {
-        url: parsed_vcs.repo_url,
-        value_end,
-    })
-}
-
 /// Context for generating inlay hints, bundling all external data sources.
 pub struct HintContext<'a> {
     /// Cache for package version and provider lookups.
     pub package_cache: &'a crate::package_cache::SharedPackageCache,
     /// Resolved substvar values (e.g. `"binary:Version"` → `"1.2.3-1"`).
     pub resolved_substvars: &'a HashMap<String, String>,
-    /// Cache for VCS watch lookups from UDD.
-    pub vcswatch_cache: &'a crate::vcswatch::SharedVcsWatchCache,
 }
 
 /// Generate inlay hints for a control file.
 ///
 /// Currently provides hints for:
-/// - Standards-Version: shows `[latest: X.Y.Z]` if outdated
-/// - debhelper-compat (= N): shows `[current: M]`
 /// - Archive versions: shows `[available: X.Y.Z]` for real packages
 /// - Virtual packages: shows `→ [provider1 | provider2 | ...]`
 /// - Substvars: shows `[= value]` for known substitution variables
-/// - Vcs-Git: shows `[git: VERSION]` from UDD vcswatch
 ///
 /// Returns `(hints, uncached_packages)`. The caller should load versions and
 /// providers for uncached packages in the background and then send
@@ -407,81 +298,20 @@ pub async fn generate_inlay_hints(
     // Extract info synchronously (CST types are not Send)
     let data = extract_hint_data(parsed, source_text, range);
 
-    let has_debhelper_compat = data.relations.iter().any(|r| r.is_debhelper_compat);
-
-    if data.standards_versions.is_empty() && data.relations.is_empty() && data.substvars.is_empty()
-    {
-        // Even if no standard hint data, we may still have Vcs-Git hints
-        let vcs_hints: Vec<_> =
-            generate_vcs_git_hints(parsed, source_text, range, ctx.vcswatch_cache)
-                .await
-                .into_iter()
-                .collect();
-        return (vcs_hints, Vec::new());
+    if data.relations.is_empty() && data.substvars.is_empty() {
+        return (Vec::new(), Vec::new());
     }
-
-    // Load Standards-Version and debhelper-compat versions in a single
-    // write lock scope to reduce lock contention.
-    let (latest_standards, latest_compat) = {
-        let mut cache = ctx.package_cache.write().await;
-        let latest_standards = if !data.standards_versions.is_empty() {
-            let versions = cache.load_versions("debian-policy").await;
-            versions.and_then(|vs| {
-                vs.first()
-                    .and_then(|v| policy_version_to_standards_version(&v.version))
-                    .map(|s| s.to_string())
-            })
-        } else {
-            None
-        };
-        let latest_compat = if has_debhelper_compat {
-            let versions = cache.load_versions("debhelper").await;
-            versions.and_then(|vs| {
-                vs.first()
-                    .and_then(|v| debhelper_version_to_compat_level(&v.version))
-            })
-        } else {
-            None
-        };
-        (latest_standards, latest_compat)
-    };
 
     let mut hints = Vec::new();
 
-    // Standards-Version hints
-    if let Some(latest) = &latest_standards {
-        for sv in &data.standards_versions {
-            if sv.value == *latest || !is_outdated(&sv.value, latest) {
-                continue;
-            }
-            hints.push(make_hint(
-                source_text,
-                sv.value_end,
-                format!("[latest: {}]", latest),
-            ));
-        }
-    }
-
-    // Per-relation hints (archive versions, virtual package providers,
-    // debhelper-compat). Use only cached data (read lock) for archive
-    // lookups to avoid blocking the LSP response. Returns uncached package
-    // names so the caller can trigger background loading and an
-    // inlayHint/refresh.
+    // Per-relation hints (archive versions, virtual package providers).
+    // Use only cached data (read lock) for archive lookups to avoid
+    // blocking the LSP response. Returns uncached package names so the
+    // caller can trigger background loading and an inlayHint/refresh.
     let mut uncached_packages = Vec::new();
     {
         let cache = ctx.package_cache.read().await;
         for rel in &data.relations {
-            if rel.is_debhelper_compat {
-                if let Some(latest) = latest_compat {
-                    hints.push(make_hint(
-                        source_text,
-                        rel.relation_end,
-                        format!("[current: {}]", latest),
-                    ));
-                }
-                continue;
-            }
-
             let cached_versions = cache.get_cached_versions(&rel.name);
             let cached_providers = cache.get_cached_providers(&rel.name);
 
@@ -524,337 +354,20 @@ pub async fn generate_inlay_hints(
         }
     }
 
-    // Vcs-Git hints
-    hints.extend(generate_vcs_git_hints(parsed, source_text, range, ctx.vcswatch_cache).await);
-
     (hints, uncached_packages)
-}
-
-/// Generate an inlay hint for a Vcs-Git field showing the packaged version
-/// from UDD vcswatch.
-async fn generate_vcs_git_hints(
-    parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
-    range: &tower_lsp_server::ls_types::Range,
-    vcswatch_cache: &crate::vcswatch::SharedVcsWatchCache,
-) -> Option<InlayHint> {
-    let entry = find_vcs_git_field(parsed, source_text, range)?;
-
-    let version = {
-        let mut cache = vcswatch_cache.write().await;
-        cache
-            .get_version_for_url(&entry.url)
-            .await
-            .map(|s| s.to_string())
-    }?;
-
-    Some(make_hint(
-        source_text,
-        entry.value_end,
-        format!("[git: {}]", version),
-    ))
-}
-
-/// Compare two dotted version strings and return true if `current` is older
-/// than `latest`.
-fn is_outdated(current: &str, latest: &str) -> bool {
-    let current_parts: Vec<u32> = current.split('.').filter_map(|s| s.parse().ok()).collect();
-    let latest_parts: Vec<u32> = latest.split('.').filter_map(|s| s.parse().ok()).collect();
-
-    for (c, l) in current_parts.iter().zip(latest_parts.iter()) {
-        match c.cmp(l) {
-            std::cmp::Ordering::Less => return true,
-            std::cmp::Ordering::Greater => return false,
-            std::cmp::Ordering::Equal => continue,
-        }
-    }
-
-    // If all compared parts are equal, the one with fewer parts is "older"
-    // e.g. 4.7 < 4.7.3
-    current_parts.len() < latest_parts.len()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_policy_version_to_standards_version() {
-        assert_eq!(
-            policy_version_to_standards_version("4.7.3.0"),
-            Some("4.7.3")
-        );
-        assert_eq!(policy_version_to_standards_version("4.7.3"), Some("4.7.3"));
-        assert_eq!(
-            policy_version_to_standards_version("4.7.3.0.1"),
-            Some("4.7.3")
-        );
-        assert_eq!(policy_version_to_standards_version("4.7"), None);
-        assert_eq!(policy_version_to_standards_version("4"), None);
-    }
-
-    #[test]
-    fn test_is_outdated() {
-        assert!(is_outdated("4.6.2", "4.7.0"));
-        assert!(is_outdated("4.6.2", "4.6.3"));
-        assert!(is_outdated("4.6.2", "5.0.0"));
-        assert!(is_outdated("4.6", "4.6.3"));
-        assert!(!is_outdated("4.7.0", "4.7.0"));
-        assert!(!is_outdated("4.7.1", "4.7.0"));
-        assert!(!is_outdated("5.0.0", "4.7.0"));
-    }
-
-    fn make_shared_package_cache() -> crate::package_cache::SharedPackageCache {
-        use crate::package_cache::TestPackageCache;
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let cache = TestPackageCache::default();
-        Arc::new(RwLock::new(cache))
-    }
-
-    fn make_shared_vcswatch_cache() -> crate::vcswatch::SharedVcsWatchCache {
-        use crate::vcswatch::VcsWatchCache;
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        Arc::new(RwLock::new(VcsWatchCache::new(crate::udd::shared_pool())))
-    }
-
     fn default_ctx<'a>(
         package_cache: &'a crate::package_cache::SharedPackageCache,
         resolved_substvars: &'a HashMap<String, String>,
-        vcswatch_cache: &'a crate::vcswatch::SharedVcsWatchCache,
     ) -> HintContext<'a> {
         HintContext {
             package_cache,
             resolved_substvars,
-            vcswatch_cache,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_inlay_hint_outdated_standards_version() {
-        use crate::package_cache::{TestPackageCache, VersionInfo};
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let mut cache = TestPackageCache::default();
-        cache.versions.insert(
-            "debian-policy".to_string(),
-            vec![VersionInfo {
-                version: "4.7.3.0".to_string(),
-                suites: vec!["unstable".to_string()],
-            }],
-        );
-        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
-
-        let content =
-            "Source: test-package\nStandards-Version: 4.6.2\nMaintainer: Test <test@example.com>\n";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(3, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 1);
-        match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[latest: 4.7.3]"),
-            _ => panic!("Expected string label"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_no_inlay_hint_when_current() {
-        use crate::package_cache::{TestPackageCache, VersionInfo};
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let mut cache = TestPackageCache::default();
-        cache.versions.insert(
-            "debian-policy".to_string(),
-            vec![VersionInfo {
-                version: "4.7.3.0".to_string(),
-                suites: vec!["unstable".to_string()],
-            }],
-        );
-        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
-
-        let content =
-            "Source: test-package\nStandards-Version: 4.7.3\nMaintainer: Test <test@example.com>\n";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(3, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 0);
-    }
-
-    #[test]
-    fn test_debhelper_version_to_compat_level() {
-        assert_eq!(debhelper_version_to_compat_level("13.31"), Some(13));
-        assert_eq!(debhelper_version_to_compat_level("14.0"), Some(14));
-        assert_eq!(debhelper_version_to_compat_level("13"), Some(13));
-        assert_eq!(debhelper_version_to_compat_level("13.3.4"), Some(13));
-    }
-
-    #[tokio::test]
-    async fn test_inlay_hint_outdated_debhelper_compat() {
-        use crate::package_cache::{TestPackageCache, VersionInfo};
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let mut cache = TestPackageCache::default();
-        cache.versions.insert(
-            "debhelper".to_string(),
-            vec![VersionInfo {
-                version: "14.2".to_string(),
-                suites: vec!["unstable".to_string()],
-            }],
-        );
-        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
-
-        let content = "\
-Source: test-package
-Build-Depends: debhelper-compat (= 13), pkg-config
-Maintainer: Test <test@example.com>
-";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(3, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 1);
-        match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
-            _ => panic!("Expected string label"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_inlay_hint_when_compat_current() {
-        use crate::package_cache::{TestPackageCache, VersionInfo};
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let mut cache = TestPackageCache::default();
-        cache.versions.insert(
-            "debhelper".to_string(),
-            vec![VersionInfo {
-                version: "13.31".to_string(),
-                suites: vec!["unstable".to_string()],
-            }],
-        );
-        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
-
-        let content = "\
-Source: test-package
-Build-Depends: debhelper-compat (= 13), pkg-config
-Maintainer: Test <test@example.com>
-";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(3, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 1);
-        match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[current: 13]"),
-            _ => panic!("Expected string label"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_both_standards_version_and_debhelper_compat_hints() {
-        use crate::package_cache::{TestPackageCache, VersionInfo};
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let mut cache = TestPackageCache::default();
-        cache.versions.insert(
-            "debian-policy".to_string(),
-            vec![VersionInfo {
-                version: "4.7.3.0".to_string(),
-                suites: vec!["unstable".to_string()],
-            }],
-        );
-        cache.versions.insert(
-            "debhelper".to_string(),
-            vec![VersionInfo {
-                version: "14.2".to_string(),
-                suites: vec!["unstable".to_string()],
-            }],
-        );
-        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
-
-        let content = "\
-Source: test-package
-Standards-Version: 4.6.2
-Build-Depends: debhelper-compat (= 13), pkg-config
-Maintainer: Test <test@example.com>
-";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(4, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 2);
-        match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[latest: 4.7.3]"),
-            _ => panic!("Expected string label"),
-        }
-        match &hints[1].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
-            _ => panic!("Expected string label"),
         }
     }
 
@@ -873,7 +386,6 @@ Maintainer: Test <test@example.com>
             }],
         );
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -892,24 +404,18 @@ Maintainer: Test <test@example.com>
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
-        // Expect debhelper version hint + debhelper-compat hint
-        // (debhelper appears before debhelper-compat in the relations)
-        assert_eq!(hints.len(), 2);
+        // debhelper-compat is skipped (handled by code lenses),
+        // only debhelper version hint expected
+        assert_eq!(hints.len(), 1);
         match &hints[0].label {
             InlayHintLabel::String(s) => assert_eq!(s, "[unstable: 14.2]"),
             _ => panic!("Expected string label"),
         }
         assert_eq!(hints[0].position.line, 1);
-        match &hints[1].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[current: 14]"),
-            _ => panic!("Expected string label"),
-        }
-        // The compat hint should be on line 2 (the debhelper-compat line)
-        assert_eq!(hints[1].position.line, 2);
     }
 
     #[tokio::test]
@@ -930,7 +436,6 @@ Maintainer: Test <test@example.com>
             ],
         );
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -949,7 +454,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
@@ -984,7 +489,6 @@ Description: A test
             .providers
             .insert("libc6".to_string(), vec!["libc6-udeb".to_string()]);
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -1003,7 +507,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
@@ -1036,7 +540,6 @@ Description: A test
             ],
         );
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -1055,7 +558,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
@@ -1089,7 +592,6 @@ Description: A test
             }],
         );
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -1108,7 +610,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
@@ -1131,7 +633,6 @@ Description: A test
             .packages
             .push(("python3-all".to_string(), Some("Python 3".to_string())));
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -1150,7 +651,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
@@ -1182,7 +683,6 @@ Description: A test
             ],
         );
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let content = "\
 Source: test-package
@@ -1201,7 +701,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &HashMap::new(), &vcswatch_cache),
+            &default_ctx(&shared_cache, &HashMap::new()),
         )
         .await;
 
@@ -1222,7 +722,6 @@ Description: A test
 
         let cache = TestPackageCache::default();
         let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
-        let vcswatch_cache = make_shared_vcswatch_cache();
 
         let mut resolved = HashMap::new();
         resolved.insert(
@@ -1247,7 +746,7 @@ Description: A test
             &parsed,
             content,
             &range,
-            &default_ctx(&shared_cache, &resolved, &vcswatch_cache),
+            &default_ctx(&shared_cache, &resolved),
         )
         .await;
 
@@ -1263,99 +762,5 @@ Description: A test
             }
             _ => panic!("Expected string label"),
         }
-    }
-
-    #[tokio::test]
-    async fn test_vcs_git_inlay_hint() {
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let package_cache = make_shared_package_cache();
-
-        let mut vcs_cache = crate::vcswatch::VcsWatchCache::new(crate::udd::shared_pool());
-        vcs_cache.insert_cached(
-            "https://salsa.debian.org/python-team/packages/dulwich.git",
-            "1.1.0-1",
-        );
-        let vcswatch_cache: crate::vcswatch::SharedVcsWatchCache = Arc::new(RwLock::new(vcs_cache));
-
-        let content = "Source: dulwich\nVcs-Git: https://salsa.debian.org/python-team/packages/dulwich.git\nVcs-Browser: https://salsa.debian.org/python-team/packages/dulwich\n";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(3, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&package_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 1);
-        match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[git: 1.1.0-1]"),
-            _ => panic!("Expected string label"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_vcs_git_with_branch_suffix() {
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let package_cache = make_shared_package_cache();
-
-        let mut vcs_cache = crate::vcswatch::VcsWatchCache::new(crate::udd::shared_pool());
-        vcs_cache.insert_cached("https://salsa.debian.org/team/pkg.git", "2.0-1");
-        let vcswatch_cache: crate::vcswatch::SharedVcsWatchCache = Arc::new(RwLock::new(vcs_cache));
-
-        let content =
-            "Source: pkg\nVcs-Git: https://salsa.debian.org/team/pkg.git -b debian/latest\n";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(2, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&package_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        assert_eq!(hints.len(), 1);
-        match &hints[0].label {
-            InlayHintLabel::String(s) => assert_eq!(s, "[git: 2.0-1]"),
-            _ => panic!("Expected string label"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_no_vcs_git_hint_when_not_in_vcswatch() {
-        let package_cache = make_shared_package_cache();
-        let vcswatch_cache = make_shared_vcswatch_cache();
-
-        let content = "Source: unknown\nVcs-Git: https://example.com/unknown.git\n";
-        let parsed = debian_control::lossless::Control::parse(content);
-        let range = tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position::new(0, 0),
-            end: tower_lsp_server::ls_types::Position::new(2, 0),
-        };
-
-        let (hints, _uncached) = generate_inlay_hints(
-            &parsed,
-            content,
-            &range,
-            &default_ctx(&package_cache, &HashMap::new(), &vcswatch_cache),
-        )
-        .await;
-
-        // No hints because UDD query will fail (no network) and nothing is cached
-        assert_eq!(hints.len(), 0);
     }
 }

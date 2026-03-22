@@ -5,7 +5,8 @@
 --- Language Server Protocol implementation for Debian packaging files.
 ---
 --- Supports debian/control, debian/copyright, debian/changelog, debian/watch,
---- debian/source/format, debian/tests/control, and debian/upstream/metadata.
+--- debian/source/format, debian/source/options, debian/source/local-options,
+--- debian/tests/control, and debian/upstream/metadata.
 ---
 --- Features include completions, diagnostics, code actions (wrap and sort,
 --- fix field casing, add changelog entry), on-type formatting, folding ranges,
@@ -36,6 +37,6 @@
 ---@type vim.lsp.Config
 return {
   cmd = { 'debian-lsp' },
-  filetypes = { 'debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debwatch', 'debupstream', 'autopkgtest' },
+  filetypes = { 'debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest' },
   root_markers = { 'debian/control', 'debian' },
 }

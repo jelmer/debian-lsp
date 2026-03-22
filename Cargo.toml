@@ -10,13 +10,17 @@ repository = "https://github.com/jelmer/debian-lsp"
 keywords = ["lsp", "debian", "control", "language-server"]
 categories = ["development-tools", "text-editors"]
 
+[features]
+default = ["launchpad"]
+launchpad = ["dep:launchpadlib"]
+
 [dependencies]
 # debian-analyzer = "0.159.0"
 async-trait = "0.1"
 chrono = "0.4"
 debian-changelog = "0.2.15"
 debian-control = { version = "0.3.7" }
-debian-copyright = { version = "0.1.43", features = ["lossless"] }
+debian-copyright = { version = "0.1.47", features = ["lossless"] }
 debian-watch = { version = "0.4.6", features = ["linebased", "deb822"] }
 distro-info = "0.4"
 rowan = "0.16.1"
@@ -33,8 +37,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 salsa = ">=0.23, <0.27"
 text-size = "1.1"
+# change to the lastest version once the patch to blocking api gating is released.
+launchpadlib = { git = "https://github.com/jelmer/launchpadlib-rs", rev = "b96ebb7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 
 [dev-dependencies]
+tempfile = "3"
 tokio-test = "0.4"
 tower = "0.5"
 tower-service = "0.3"

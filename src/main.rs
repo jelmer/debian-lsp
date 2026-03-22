@@ -17,9 +17,12 @@ mod copyright;
 mod deb822;
 mod distros;
 mod package_cache;
+mod popcon;
 mod position;
+mod rdeps;
 mod rules;
 mod source_format;
+mod source_options;
 mod tests;
 mod udd;
 mod upstream_metadata;
@@ -29,7 +32,25 @@ mod workspace;
 
 use position::{text_range_to_lsp_range, try_lsp_range_to_text_range};
 use std::collections::HashMap;
+use tower_lsp_server::ls_types::notification::Notification;
 use workspace::Workspace;
+
+/// Custom notification for package status, displayed in the editor status bar.
+enum PackageStatusNotification {}
+
+/// Parameters for the package status notification.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PackageStatusParams {
+    /// Source package name (from debian/changelog)
+    name: String,
+    /// Package version (from debian/changelog)
+    version: String,
+}
+
+impl Notification for PackageStatusNotification {
+    type Params = PackageStatusParams;
+    const METHOD: &'static str = "debian/packageStatus";
+}
 
 /// Debian file type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +67,8 @@ enum FileType {
     Changelog,
     /// debian/source/format file
     SourceFormat,
+    /// debian/source/options or debian/source/local-options file
+    SourceOptions,
     /// debian/upstream/metadata file
     UpstreamMetadata,
     /// debian/rules file
@@ -67,6 +90,8 @@ impl FileType {
             Some(Self::Changelog)
         } else if source_format::is_source_format_file(uri) {
             Some(Self::SourceFormat)
+        } else if source_options::is_source_options_or_local_options_file(uri) {
+            Some(Self::SourceOptions)
         } else if upstream_metadata::is_upstream_metadata_file(uri) {
             Some(Self::UpstreamMetadata)
         } else if rules::is_rules_file(uri) {
@@ -94,6 +119,9 @@ struct Backend {
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
     vcswatch_cache: vcswatch::SharedVcsWatchCache,
+    popcon_cache: popcon::SharedPopconCache,
+    rdeps_cache: rdeps::SharedRdepsCache,
+    git_file_cache: copyright::code_lens::SharedGitFileCache,
 }
 
 impl Backend {
@@ -113,13 +141,45 @@ impl Backend {
             | FileType::TestsControl
             | FileType::Changelog
             | FileType::SourceFormat
+            | FileType::SourceOptions
             | FileType::UpstreamMetadata
             | FileType::Rules => None,
         }
     }
 
+    /// Find the `debian/` directory by walking up from the given URI.
+    fn find_debian_dir(uri: &Uri) -> Option<std::path::PathBuf> {
+        let path = uri.to_file_path()?;
+        path.ancestors()
+            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("debian"))
+            .map(|p| p.to_path_buf())
+    }
+
+    /// Get or load the changelog source file for the debian directory
+    /// containing the given URI. If the changelog is already open, reuses the
+    /// existing workspace entry; otherwise reads it from disk and inserts it
+    /// into the workspace so the Salsa cache is populated.
+    fn get_changelog_source_file(
+        uri: &Uri,
+        files: &HashMap<Uri, FileInfo>,
+        workspace: &mut Workspace,
+    ) -> Option<workspace::SourceFile> {
+        let debian_dir = Self::find_debian_dir(uri)?;
+        let changelog_path = debian_dir.join("changelog");
+        let changelog_uri = Uri::from_file_path(&changelog_path)?;
+
+        if let Some(info) = files.get(&changelog_uri) {
+            return Some(info.source_file);
+        }
+
+        // Not open — read from disk and insert into the workspace
+        let text = std::fs::read_to_string(&changelog_path).ok()?;
+        Some(workspace.update_file(changelog_uri, text))
+    }
+
     /// Look up the version from `debian/changelog` for the same project as the
-    /// given control file URI. Checks open files first.
+    /// given control file URI. Checks open files first, falls back to reading
+    /// from disk.
     fn get_changelog_version(
         control_uri: &Uri,
         files: &Arc<Mutex<HashMap<Uri, FileInfo>>>,
@@ -180,12 +240,40 @@ impl Backend {
         if let Some(package_name) = package_name {
             let bug_cache = self.bug_cache.clone();
             tokio::spawn(async move {
-                bug_cache
-                    .write()
-                    .await
-                    .prefetch_bugs_for_package(&package_name)
+                let mut cache = bug_cache.write().await;
+                cache.prefetch_bugs_for_package(&package_name).await;
+                cache
+                    .prefetch_launchpad_bugs_for_package(&package_name)
                     .await;
             });
+        }
+    }
+
+    /// Send a `debian/packageStatus` notification with the source package name
+    /// and version extracted from `debian/changelog`.
+    async fn send_package_status(&self, uri: &Uri) {
+        let params = {
+            let files = self.files.lock().await;
+            let mut workspace = self.workspace.lock().await;
+
+            let source_file = Self::get_changelog_source_file(uri, &files, &mut workspace);
+            source_file.and_then(|sf| {
+                let parsed = workspace.get_parsed_changelog(sf);
+                let changelog = parsed.tree();
+                let entry = changelog.iter().next()?;
+                let name = entry.package()?;
+                let version = entry.version()?;
+                Some(PackageStatusParams {
+                    name,
+                    version: version.to_string(),
+                })
+            })
+        };
+
+        if let Some(params) = params {
+            self.client
+                .send_notification::<PackageStatusNotification>(params)
+                .await;
         }
     }
 }
@@ -247,6 +335,13 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![control::code_lens::OPEN_URL_COMMAND.to_string()],
+                    ..Default::default()
+                }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
                     first_trigger_character: ":".to_string(),
@@ -257,6 +352,9 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -305,12 +403,17 @@ impl LanguageServer for Backend {
             self.prefetch_changelog_bugs(source_file, &workspace);
         }
 
-        if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
-            drop(workspace);
+        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        drop(files);
+        drop(workspace);
+
+        if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
         }
+
+        self.send_package_status(&params.text_document.uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -365,11 +468,18 @@ impl LanguageServer for Backend {
             },
         );
 
-        if let Some(diagnostics) = Self::collect_diagnostics(source_file, file_type, &workspace) {
-            drop(workspace);
+        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        drop(files);
+        drop(workspace);
+
+        if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
                 .await;
+        }
+
+        if file_type == FileType::Changelog {
+            self.send_package_status(&params.text_document.uri).await;
         }
     }
 
@@ -449,8 +559,7 @@ impl LanguageServer for Backend {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_copyright(source_file);
-                let copyright = parsed.to_copyright();
-                copyright::get_completions(copyright.as_deb822(), &source_text, position)
+                copyright::get_completions(&parsed, &source_text, position)
             }
             Some((FileType::Watch, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -486,6 +595,11 @@ impl LanguageServer for Backend {
                 }
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
+            Some((FileType::SourceOptions, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                source_options::get_completions(&uri, position, &source_text)
+            }
             Some((FileType::UpstreamMetadata, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
@@ -531,13 +645,14 @@ impl LanguageServer for Backend {
 
         let mut actions = Vec::new();
 
-        // Check for field casing issues - only process fields in the requested range
-        let Some(text_range) = try_lsp_range_to_text_range(&source_text, &params.range) else {
-            return Ok(None);
-        };
+        let text_range = try_lsp_range_to_text_range(&source_text, &params.range);
 
         match file_info.file_type {
             FileType::Control => {
+                let Some(text_range) = text_range else {
+                    return Ok(None);
+                };
+
                 // Add wrap-and-sort action
                 let parsed = workspace.get_parsed_control(file_info.source_file);
                 if let Some(action) = control::get_wrap_and_sort_action(
@@ -545,6 +660,15 @@ impl LanguageServer for Backend {
                     &source_text,
                     &parsed,
                     text_range,
+                ) {
+                    actions.push(action);
+                }
+
+                // Add binary package action
+                if let Some(action) = control::get_add_binary_package_action(
+                    &params.text_document.uri,
+                    &source_text,
+                    &parsed,
                 ) {
                     actions.push(action);
                 }
@@ -560,6 +684,10 @@ impl LanguageServer for Backend {
                 ));
             }
             FileType::Copyright => {
+                let Some(text_range) = text_range else {
+                    return Ok(None);
+                };
+
                 // Add wrap-and-sort action
                 let parsed = workspace.get_parsed_copyright(file_info.source_file);
                 if let Some(action) = copyright::get_wrap_and_sort_action(
@@ -582,7 +710,7 @@ impl LanguageServer for Backend {
                 ));
             }
             FileType::Changelog => {
-                // Add action to create a new changelog entry
+                // Add action to create a new changelog entry (file-wide action)
                 let parsed = workspace.get_parsed_changelog(file_info.source_file);
                 let changelog = parsed.tree();
                 match changelog::generate_new_changelog_entry(&changelog) {
@@ -613,7 +741,7 @@ impl LanguageServer for Backend {
 
                         let action = CodeAction {
                             title: "Add new changelog entry".to_string(),
-                            kind: Some(CodeActionKind::REFACTOR),
+                            kind: Some(CodeActionKind::SOURCE),
                             edit: Some(workspace_edit),
                             ..Default::default()
                         };
@@ -626,34 +754,37 @@ impl LanguageServer for Backend {
                 }
 
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
-                let unreleased_entries =
-                    workspace.find_unreleased_entries_in_range(file_info.source_file, text_range);
+                if let Some(text_range) = text_range {
+                    let unreleased_entries = workspace
+                        .find_unreleased_entries_in_range(file_info.source_file, text_range);
 
-                for info in unreleased_entries {
-                    let lsp_range = text_range_to_lsp_range(&source_text, info.unreleased_range);
+                    for info in unreleased_entries {
+                        let lsp_range =
+                            text_range_to_lsp_range(&source_text, info.unreleased_range);
 
-                    let edit = TextEdit {
-                        range: lsp_range,
-                        new_text: info.target_distribution.clone(),
-                    };
+                        let edit = TextEdit {
+                            range: lsp_range,
+                            new_text: info.target_distribution.clone(),
+                        };
 
-                    let workspace_edit = WorkspaceEdit {
-                        changes: Some(
-                            vec![(params.text_document.uri.clone(), vec![edit])]
-                                .into_iter()
-                                .collect(),
-                        ),
-                        ..Default::default()
-                    };
+                        let workspace_edit = WorkspaceEdit {
+                            changes: Some(
+                                vec![(params.text_document.uri.clone(), vec![edit])]
+                                    .into_iter()
+                                    .collect(),
+                            ),
+                            ..Default::default()
+                        };
 
-                    let action = CodeAction {
-                        title: format!("Mark for upload to {}", info.target_distribution),
-                        kind: Some(CodeActionKind::REFACTOR),
-                        edit: Some(workspace_edit),
-                        ..Default::default()
-                    };
+                        let action = CodeAction {
+                            title: format!("Mark for upload to {}", info.target_distribution),
+                            kind: Some(CodeActionKind::REFACTOR),
+                            edit: Some(workspace_edit),
+                            ..Default::default()
+                        };
 
-                    actions.push(CodeActionOrCommand::CodeAction(action));
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
                 }
             }
             _ => unreachable!(),
@@ -843,6 +974,7 @@ impl LanguageServer for Backend {
                 rules::generate_semantic_tokens(&makefile, &source_text)
             }
             FileType::SourceFormat => vec![],
+            FileType::SourceOptions => source_options::generate_semantic_tokens(&source_text),
         };
 
         if tokens.is_empty() {
@@ -933,6 +1065,71 @@ impl LanguageServer for Backend {
                     Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, &source_text),
                     Err(_) => return Ok(None),
                 }
+            }
+            _ => return Ok(None),
+        };
+
+        if ranges.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ranges))
+        }
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        let ranges = match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                deb822::selection_range::generate_selection_ranges(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    &params.positions,
+                )
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                deb822::selection_range::generate_selection_ranges(
+                    parsed.to_copyright().as_deb822(),
+                    &source_text,
+                    &params.positions,
+                )
+            }
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                changelog::generate_selection_ranges(&parsed, &source_text, &params.positions)
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                watch::generate_selection_ranges(&parsed, &source_text, &params.positions)
+            }
+            FileType::TestsControl => {
+                let deb822_parse = workspace.get_parsed_deb822(file.source_file);
+                match deb822_parse.to_result() {
+                    Ok(deb822) => deb822::selection_range::generate_selection_ranges(
+                        &deb822,
+                        &source_text,
+                        &params.positions,
+                    ),
+                    Err(_) => return Ok(None),
+                }
+            }
+            FileType::SourceOptions => {
+                source_options::generate_selection_ranges(&source_text, &params.positions)
             }
             _ => return Ok(None),
         };
@@ -1105,6 +1302,104 @@ impl LanguageServer for Backend {
         }
     }
 
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Control => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                drop(workspace);
+
+                let ctx = control::code_lens::LensContext {
+                    package_cache: &self.package_cache,
+                    vcswatch_cache: &self.vcswatch_cache,
+                    bug_cache: &self.bug_cache,
+                    popcon_cache: &self.popcon_cache,
+                    rdeps_cache: &self.rdeps_cache,
+                };
+                let (lenses, uncached) =
+                    control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+
+                if !uncached.is_empty() {
+                    let client = self.client.clone();
+                    let package_cache = self.package_cache.clone();
+                    let vcswatch_cache = self.vcswatch_cache.clone();
+                    let bug_cache = self.bug_cache.clone();
+                    let popcon_cache = self.popcon_cache.clone();
+                    let rdeps_cache = self.rdeps_cache.clone();
+                    tokio::spawn(async move {
+                        if uncached.needs_policy_version {
+                            let mut cache = package_cache.write().await;
+                            cache.load_versions("debian-policy").await;
+                        }
+                        if let Some(url) = &uncached.vcs_git_url {
+                            let mut cache = vcswatch_cache.write().await;
+                            cache.get_version_for_url(url).await;
+                        }
+                        if let Some(source) = &uncached.source_package {
+                            let mut cache = bug_cache.write().await;
+                            cache.prefetch_bugs_for_package(source).await;
+                        }
+                        for pkg in &uncached.binary_packages {
+                            {
+                                let mut cache = popcon_cache.write().await;
+                                cache.get_inst_count(pkg).await;
+                            }
+                            {
+                                let mut cache = rdeps_cache.write().await;
+                                cache.get_rdeps_count(pkg).await;
+                            }
+                        }
+                        let _ = client.code_lens_refresh().await;
+                    });
+                }
+
+                if lenses.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(lenses))
+                }
+            }
+            FileType::Copyright => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                drop(workspace);
+
+                // Derive the source root from the copyright file URI
+                // (debian/copyright -> parent is debian/ -> parent is source root)
+                let source_root = uri.to_file_path().and_then(|p| {
+                    p.parent()
+                        .and_then(|debian| debian.parent())
+                        .map(|root| root.to_path_buf())
+                });
+
+                let lenses = copyright::generate_code_lenses(
+                    &parsed,
+                    &source_text,
+                    source_root.as_deref(),
+                    &self.git_file_cache,
+                )
+                .await;
+                if lenses.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(lenses))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
 
@@ -1148,7 +1443,6 @@ impl LanguageServer for Backend {
                 let ctx = control::inlay_hints::HintContext {
                     package_cache: &self.package_cache,
                     resolved_substvars: &resolved_substvars,
-                    vcswatch_cache: &self.vcswatch_cache,
                 };
                 let (hints, uncached_packages) =
                     control::generate_inlay_hints(&parsed, &source_text, &params.range, &ctx).await;
@@ -1175,6 +1469,100 @@ impl LanguageServer for Backend {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                Ok(control::get_hover(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    position,
+                ))
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                let copyright = parsed.to_copyright();
+                Ok(copyright::get_hover(
+                    copyright.as_deb822(),
+                    &source_text,
+                    position,
+                ))
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                let wf = parsed.to_watch_file();
+                match &wf {
+                    debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
+                        Ok(watch::get_hover(wf.as_deb822(), &source_text, position))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Control => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                let location = control::goto_definition(&parsed, &source_text, position, uri);
+                Ok(location.map(GotoDefinitionResponse::Scalar))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        if params.command == control::code_lens::OPEN_URL_COMMAND {
+            if let Some(url) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = url.parse::<Uri>() {
+                    let _ = self
+                        .client
+                        .show_document(ShowDocumentParams {
+                            uri,
+                            external: Some(true),
+                            take_focus: Some(true),
+                            selection: None,
+                        })
+                        .await;
+                }
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -1204,7 +1592,9 @@ async fn main() {
 
     let udd_pool = udd::shared_pool();
     let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
-    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool);
+    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
+    let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
+    let rdeps_cache = rdeps::new_shared_rdeps_cache(udd_pool);
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -1214,6 +1604,9 @@ async fn main() {
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
         vcswatch_cache: vcswatch_cache.clone(),
+        popcon_cache: popcon_cache.clone(),
+        rdeps_cache: rdeps_cache.clone(),
+        git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -1433,5 +1826,23 @@ mod main_tests {
             Some(FileType::UpstreamMetadata)
         );
         assert_eq!(FileType::detect(&non_metadata_uri), None);
+    }
+
+    #[test]
+    fn test_source_options_file_type_detection() {
+        let options_uri: Uri = str::parse("file:///path/to/debian/source/options").unwrap();
+        let local_options_uri: Uri =
+            str::parse("file:///path/to/debian/source/local-options").unwrap();
+        let non_options_uri: Uri = str::parse("file:///path/to/debian/options").unwrap();
+
+        assert_eq!(
+            FileType::detect(&options_uri),
+            Some(FileType::SourceOptions)
+        );
+        assert_eq!(
+            FileType::detect(&local_options_uri),
+            Some(FileType::SourceOptions)
+        );
+        assert_eq!(FileType::detect(&non_options_uri), None);
     }
 }

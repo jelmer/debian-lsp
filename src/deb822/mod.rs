@@ -2,5 +2,7 @@
 
 pub mod completion;
 pub mod folding;
+pub mod hover;
 pub mod on_type_formatting;
+pub mod selection_range;
 pub mod semantic;

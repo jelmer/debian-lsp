@@ -5,6 +5,7 @@ pub mod fields;
 pub mod folding;
 pub mod inlay_hints;
 pub mod on_type_formatting;
+pub mod selection_range;
 pub mod semantic;
 pub mod symbols;
 
@@ -13,5 +14,6 @@ pub use completion::*;
 pub use detection::is_changelog_file;
 pub use folding::generate_folding_ranges;
 pub use inlay_hints::generate_inlay_hints;
+pub use selection_range::generate_selection_ranges;
 pub use semantic::generate_semantic_tokens;
 pub use symbols::generate_document_symbols;
