@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod code_lens;
 pub mod completion;
+pub mod definition;
 pub mod detection;
 pub mod diagnostics;
 pub mod fields;
@@ -12,6 +13,7 @@ pub mod symbols;
 pub use actions::*;
 pub use code_lens::generate_code_lenses;
 pub use completion::*;
+pub use definition::goto_definition;
 pub use detection::is_control_file;
 pub use fields::get_standard_field_name;
 pub use inlay_hints::generate_inlay_hints;
