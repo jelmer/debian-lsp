@@ -12,7 +12,19 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
         "Build-Depends-Indep",
         "Architecture-independent build dependencies",
     ),
+    FieldInfo::new(
+        "Build-Depends-Arch",
+        "Architecture-specific build dependencies",
+    ),
     FieldInfo::new("Build-Conflicts", "Packages that conflict during build"),
+    FieldInfo::new(
+        "Build-Conflicts-Indep",
+        "Architecture-independent build conflicts",
+    ),
+    FieldInfo::new(
+        "Build-Conflicts-Arch",
+        "Architecture-specific build conflicts",
+    ),
     FieldInfo::new("Standards-Version", "Debian Policy version"),
     FieldInfo::new("Homepage", "Upstream project homepage"),
     FieldInfo::new("Vcs-Browser", "Web interface for VCS"),
@@ -32,6 +44,7 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("Description", "Package description"),
     FieldInfo::new("Essential", "Essential package flag"),
     FieldInfo::new("Rules-Requires-Root", "Root privileges requirement"),
+    FieldInfo::new("Testsuite", "DEP-8 test suite"),
 ];
 
 /// Get the standard casing for a field name
@@ -136,6 +149,35 @@ pub const CONTROL_SPECIAL_SECTION_VALUES: &[(&str, &str)] =
 pub const ESSENTIAL_VALUES: &[(&str, &str)] = &[
     ("yes", "Essential package for the system"),
     ("no", "Not an essential package"),
+];
+
+/// Debian Rules-Requires-Root values.
+pub const RULES_REQUIRES_ROOT_VALUES: &[(&str, &str)] = &[
+    ("no", "Build process does not require root"),
+    (
+        "binary-targets",
+        "Only the binary targets require (fake)root",
+    ),
+];
+
+/// Debian Testsuite values.
+pub const TESTSUITE_VALUES: &[(&str, &str)] = &[
+    ("autopkgtest", "Standard autopkgtest test suite"),
+    (
+        "autopkgtest-pkg-dkms",
+        "Autopkgtest for DKMS kernel module packages",
+    ),
+    (
+        "autopkgtest-pkg-elpa",
+        "Autopkgtest for Emacs Lisp packages",
+    ),
+    ("autopkgtest-pkg-go", "Autopkgtest for Go packages"),
+    ("autopkgtest-pkg-nodejs", "Autopkgtest for Node.js packages"),
+    ("autopkgtest-pkg-octave", "Autopkgtest for Octave packages"),
+    ("autopkgtest-pkg-perl", "Autopkgtest for Perl packages"),
+    ("autopkgtest-pkg-python", "Autopkgtest for Python packages"),
+    ("autopkgtest-pkg-r", "Autopkgtest for R packages"),
+    ("autopkgtest-pkg-ruby", "Autopkgtest for Ruby packages"),
 ];
 
 /// Debian multi-architecture values.
