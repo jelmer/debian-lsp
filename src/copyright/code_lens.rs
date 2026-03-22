@@ -52,6 +52,12 @@ fn build_pattern_key(file_lens_data: &FileLensData) -> Vec<String> {
         .iter()
         .map(|p| format!("X:{p}"))
         .collect();
+    key.extend(
+        file_lens_data
+            .included_patterns_raw
+            .iter()
+            .map(|p| format!("I:{p}")),
+    );
     for para in &file_lens_data.paragraphs {
         for p in &para.patterns_raw {
             key.push(format!("F:{p}"));
@@ -102,15 +108,23 @@ async fn get_file_count_lenses(
         }
     };
 
-    // Compute file counts.
+    // Apply Files-Excluded then Files-Included (re-include from excluded set).
     let included_files: Vec<&str> = git_files
         .iter()
         .map(|s| s.as_str())
         .filter(|f| {
-            !file_lens_data
+            let excluded = file_lens_data
                 .excluded_patterns
                 .iter()
-                .any(|p| p.is_match(f))
+                .any(|p| p.is_match(f));
+            if excluded {
+                file_lens_data
+                    .included_patterns
+                    .iter()
+                    .any(|p| p.is_match(f))
+            } else {
+                true
+            }
         })
         .collect();
 
@@ -240,6 +254,8 @@ struct FilesParagraphData {
 struct FileLensData {
     excluded_patterns_raw: Vec<String>,
     excluded_patterns: Vec<GlobPattern>,
+    included_patterns_raw: Vec<String>,
+    included_patterns: Vec<GlobPattern>,
     paragraphs: Vec<FilesParagraphData>,
 }
 
@@ -257,11 +273,22 @@ fn extract_file_lens_data(
 ) -> FileLensData {
     let copyright = parsed.to_copyright();
 
-    let excluded_patterns_raw: Vec<String> = copyright
-        .header()
+    let header = copyright.header();
+
+    let excluded_patterns_raw: Vec<String> = header
+        .as_ref()
         .and_then(|h| h.files_excluded())
         .unwrap_or_default();
     let excluded_patterns: Vec<GlobPattern> = excluded_patterns_raw
+        .iter()
+        .map(|p| GlobPattern::new(p))
+        .collect();
+
+    let included_patterns_raw: Vec<String> = header
+        .as_ref()
+        .and_then(|h| h.files_included())
+        .unwrap_or_default();
+    let included_patterns: Vec<GlobPattern> = included_patterns_raw
         .iter()
         .map(|p| GlobPattern::new(p))
         .collect();
@@ -293,6 +320,8 @@ fn extract_file_lens_data(
     FileLensData {
         excluded_patterns_raw,
         excluded_patterns,
+        included_patterns_raw,
+        included_patterns,
         paragraphs,
     }
 }
@@ -587,6 +616,44 @@ License: MIT
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "1 file");
+    }
+
+    #[tokio::test]
+    async fn test_file_count_files_included_overrides_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("vendor/lib.js"), "").unwrap();
+        std::fs::write(root.join("vendor/keep.js"), "").unwrap();
+        std::fs::write(root.join("foo.c"), "").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Files-Excluded: vendor/*
+Files-Included: vendor/keep.js
+
+Files: *
+Copyright: 2024 Test
+License: MIT
+";
+        let parsed = parse(text);
+        let lenses =
+            generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
+
+        // vendor/lib.js excluded, vendor/keep.js re-included, foo.c included
+        assert_eq!(lenses.len(), 1);
+        assert_eq!(lenses[0].command.as_ref().unwrap().title, "2 files");
     }
 
     #[tokio::test]
