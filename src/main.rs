@@ -338,6 +338,10 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![control::code_lens::OPEN_URL_COMMAND.to_string()],
+                    ..Default::default()
+                }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
                     first_trigger_character: ":".to_string(),
@@ -1394,6 +1398,28 @@ impl LanguageServer for Backend {
             }
             _ => Ok(None),
         }
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        if params.command == control::code_lens::OPEN_URL_COMMAND {
+            if let Some(url) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = url.parse::<Uri>() {
+                    let _ = self
+                        .client
+                        .show_document(ShowDocumentParams {
+                            uri,
+                            external: Some(true),
+                            take_focus: Some(true),
+                            selection: None,
+                        })
+                        .await;
+                }
+            }
+        }
+        Ok(None)
     }
 }
 

@@ -9,6 +9,35 @@ use tower_lsp_server::ls_types::{CodeLens, Command, Range};
 
 use crate::position::text_range_to_lsp_range;
 
+/// Command name for opening a URL via `window/showDocument`.
+pub const OPEN_URL_COMMAND: &str = "debian-lsp.openUrl";
+
+/// Create a code lens that opens the given URL when clicked.
+fn make_link_lens(range: Range, title: String, url: String) -> CodeLens {
+    CodeLens {
+        range,
+        command: Some(Command {
+            title,
+            command: OPEN_URL_COMMAND.to_string(),
+            arguments: Some(vec![serde_json::Value::String(url)]),
+        }),
+        data: None,
+    }
+}
+
+/// Create a code lens that is informational only (not clickable).
+fn make_info_lens(range: Range, title: String) -> CodeLens {
+    CodeLens {
+        range,
+        command: Some(Command {
+            title,
+            command: "debian-lsp.noop".to_string(),
+            arguments: None,
+        }),
+        data: None,
+    }
+}
+
 /// Context for generating code lenses.
 pub struct LensContext<'a> {
     /// Cache for package version lookups.
@@ -305,15 +334,14 @@ pub async fn generate_code_lenses(
                 if sv.value == latest || !is_outdated(&sv.value, &latest) {
                     continue;
                 }
-                lenses.push(CodeLens {
-                    range: sv.range,
-                    command: Some(Command {
-                        title: format!("latest: {}", latest),
-                        command: "debian-lsp.noop".to_string(),
-                        arguments: None,
-                    }),
-                    data: None,
-                });
+                lenses.push(make_link_lens(
+                    sv.range,
+                    format!("latest: {}", latest),
+                    format!(
+                        "https://www.debian.org/doc/debian-policy/upgrading-checklist.html#version-{}",
+                        latest.replace('.', "-")
+                    ),
+                ));
             }
         } else {
             uncached.needs_policy_version = true;
@@ -329,15 +357,7 @@ pub async fn generate_code_lenses(
                 } else {
                     format!("stable: {}, max: {}", levels.highest_stable, levels.max)
                 };
-                lenses.push(CodeLens {
-                    range: dh.range,
-                    command: Some(Command {
-                        title,
-                        command: "debian-lsp.noop".to_string(),
-                        arguments: None,
-                    }),
-                    data: None,
-                });
+                lenses.push(make_info_lens(dh.range, title));
             }
         }
     }
@@ -352,15 +372,11 @@ pub async fn generate_code_lenses(
         drop(cache);
 
         if let Some(version) = version {
-            lenses.push(CodeLens {
+            lenses.push(make_link_lens(
                 range,
-                command: Some(Command {
-                    title: format!("git: {}", version),
-                    command: "debian-lsp.noop".to_string(),
-                    arguments: None,
-                }),
-                data: None,
-            });
+                format!("git: {}", version),
+                url.clone(),
+            ));
         } else if !is_cached {
             uncached.vcs_git_url = Some(url);
         }
@@ -374,19 +390,11 @@ pub async fn generate_code_lenses(
 
         match bug_count {
             Some(count) if count > 0 => {
-                lenses.push(CodeLens {
-                    range: source.range,
-                    command: Some(Command {
-                        title: format!(
-                            "{} open {}",
-                            count,
-                            if count == 1 { "bug" } else { "bugs" }
-                        ),
-                        command: "debian-lsp.noop".to_string(),
-                        arguments: None,
-                    }),
-                    data: None,
-                });
+                lenses.push(make_link_lens(
+                    source.range,
+                    format!("{} open {}", count, if count == 1 { "bug" } else { "bugs" }),
+                    format!("https://bugs.debian.org/src:{}", source.name),
+                ));
             }
             None => {
                 uncached.source_package = Some(source.name.clone());
@@ -395,15 +403,21 @@ pub async fn generate_code_lenses(
         }
     }
 
-    // Binary package lenses: popcon + rdeps (cache-only)
+    // Binary package lenses: popcon + rdeps (cache-only, separate clickable lenses)
     for pkg in &data.binary_packages {
-        let mut parts = Vec::new();
         let mut needs_fetch = false;
 
         {
             let cache = ctx.popcon_cache.read().await;
             if let Some(count) = cache.get_cached_inst_count(&pkg.name) {
-                parts.push(format!("popcon: {} installs", format_count(count)));
+                lenses.push(make_link_lens(
+                    pkg.range,
+                    format!("popcon: {} installs", format_count(count)),
+                    format!(
+                        "https://qa.debian.org/popcon-graph.php?packages={}",
+                        pkg.name
+                    ),
+                ));
             } else if !cache.is_cached(&pkg.name) {
                 needs_fetch = true;
             }
@@ -413,23 +427,15 @@ pub async fn generate_code_lenses(
             let cache = ctx.rdeps_cache.read().await;
             if let Some(count) = cache.get_cached_rdeps_count(&pkg.name) {
                 if count > 0 {
-                    parts.push(format!("{} reverse deps", format_count(count)));
+                    lenses.push(make_link_lens(
+                        pkg.range,
+                        format!("{} reverse deps", format_count(count)),
+                        format!("https://tracker.debian.org/pkg/{}", pkg.name),
+                    ));
                 }
             } else if !cache.is_cached(&pkg.name) {
                 needs_fetch = true;
             }
-        }
-
-        if !parts.is_empty() {
-            lenses.push(CodeLens {
-                range: pkg.range,
-                command: Some(Command {
-                    title: parts.join(" | "),
-                    command: "debian-lsp.noop".to_string(),
-                    arguments: None,
-                }),
-                data: None,
-            });
         }
 
         if needs_fetch {
@@ -777,6 +783,10 @@ Maintainer: Test <test@example.com>
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "3 open bugs");
+        assert_eq!(
+            lenses[0].command.as_ref().unwrap().command,
+            OPEN_URL_COMMAND
+        );
     }
 
     #[tokio::test]
@@ -820,10 +830,22 @@ Description: Foo library
         };
         let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
 
-        assert_eq!(lenses.len(), 1);
+        assert_eq!(lenses.len(), 2);
         assert_eq!(
             lenses[0].command.as_ref().unwrap().title,
-            "popcon: 42.0k installs | 150 reverse deps"
+            "popcon: 42.0k installs"
+        );
+        assert_eq!(
+            lenses[0].command.as_ref().unwrap().command,
+            OPEN_URL_COMMAND
+        );
+        assert_eq!(
+            lenses[1].command.as_ref().unwrap().title,
+            "150 reverse deps"
+        );
+        assert_eq!(
+            lenses[1].command.as_ref().unwrap().command,
+            OPEN_URL_COMMAND
         );
     }
 
