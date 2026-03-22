@@ -138,6 +138,15 @@ pub const ESSENTIAL_VALUES: &[(&str, &str)] = &[
     ("no", "Not an essential package"),
 ];
 
+/// Debian Rules-Requires-Root values.
+pub const RULES_REQUIRES_ROOT_VALUES: &[(&str, &str)] = &[
+    ("no", "Build process does not require root"),
+    (
+        "binary-targets",
+        "Only the binary targets require (fake)root",
+    ),
+];
+
 /// Debian multi-architecture values.
 pub const MULTI_ARCH_VALUES: &[(&str, &str)] = &[
     ("allowed", "Multi-arch allowed"),
