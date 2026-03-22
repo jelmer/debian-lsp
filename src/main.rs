@@ -348,6 +348,10 @@ impl LanguageServer for Backend {
                     more_trigger_character: Some(vec!["\n".to_string(), "-".to_string()]),
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -791,6 +795,136 @@ impl LanguageServer for Backend {
         } else {
             Ok(Some(actions))
         }
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+
+        let file_info = match files.get(&params.text_document.uri) {
+            Some(info) => info,
+            None => return Ok(None),
+        };
+
+        if file_info.file_type != FileType::Control {
+            return Ok(None);
+        }
+
+        let source_text = workspace.source_text(file_info.source_file);
+        let parsed = workspace.get_parsed_control(file_info.source_file);
+
+        let Some(pkg) =
+            control::find_package_name_at_position(&parsed, &source_text, &params.position)
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: pkg.range,
+            placeholder: pkg.name,
+        }))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+
+        let uri = &params.text_document_position.text_document.uri;
+        let file_info = match files.get(uri) {
+            Some(info) => info,
+            None => return Ok(None),
+        };
+
+        if file_info.file_type != FileType::Control {
+            return Ok(None);
+        }
+
+        let source_text = workspace.source_text(file_info.source_file);
+        let parsed = workspace.get_parsed_control(file_info.source_file);
+
+        let Some(pkg) = control::find_package_name_at_position(
+            &parsed,
+            &source_text,
+            &params.text_document_position.position,
+        ) else {
+            return Ok(None);
+        };
+
+        let old_name = &pkg.name;
+        let new_name = &params.new_name;
+
+        // Edit the Package: field value in debian/control
+        let control_edit = TextEdit {
+            range: pkg.range,
+            new_text: new_name.clone(),
+        };
+
+        let mut document_changes: Vec<DocumentChangeOperation> = Vec::new();
+
+        // Add the text edit for the control file
+        document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: None,
+            },
+            edits: vec![OneOf::Left(control_edit)],
+        }));
+
+        // Determine the debian/ directory from the control file URI
+        if let Some(control_path) = uri.to_file_path() {
+            if let Some(debian_dir) = control_path.parent() {
+                // Collect file renames for debian/<pkg>.<ext> files
+                let file_renames =
+                    control::collect_package_file_renames(debian_dir, old_name, new_name);
+                for op in file_renames {
+                    document_changes.push(DocumentChangeOperation::Op(op));
+                }
+
+                // Update references in debian/tests/control
+                let tests_control_path = debian_dir.join("tests/control");
+                if tests_control_path.exists() {
+                    // Try to use the open file from the workspace first
+                    let tests_control_uri = Uri::from_file_path(&tests_control_path);
+                    let tests_text = if let Some(ref tc_uri) = tests_control_uri {
+                        files
+                            .get(tc_uri)
+                            .map(|info| (tc_uri.clone(), workspace.source_text(info.source_file)))
+                    } else {
+                        None
+                    };
+
+                    // Fall back to reading from disk
+                    let tests_text = tests_text.or_else(|| {
+                        let text = std::fs::read_to_string(&tests_control_path).ok()?;
+                        let tc_uri = Uri::from_file_path(&tests_control_path)?;
+                        Some((tc_uri, text))
+                    });
+
+                    if let Some((tc_uri, text)) = tests_text {
+                        let edits = control::collect_tests_control_edits(&text, old_name, new_name);
+                        if !edits.is_empty() {
+                            document_changes.push(DocumentChangeOperation::Edit(
+                                TextDocumentEdit {
+                                    text_document: OptionalVersionedTextDocumentIdentifier {
+                                        uri: tc_uri,
+                                        version: None,
+                                    },
+                                    edits: edits.into_iter().map(OneOf::Left).collect(),
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Some(WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Operations(document_changes)),
+            ..Default::default()
+        }))
     }
 
     async fn semantic_tokens_full(
