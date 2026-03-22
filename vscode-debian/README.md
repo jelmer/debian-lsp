@@ -4,6 +4,8 @@ Language Server Protocol extension for Debian package files, including:
 - `debian/control` - Package control files
 - `debian/copyright` - DEP-5 copyright files
 - `debian/watch` - Upstream watch files
+- `debian/source/options` - dpkg-source options files
+- `debian/source/local-options` - Local dpkg-source options files
 - `debian/tests/control` - Autopkgtest control files
 
 ## Features
@@ -71,6 +73,8 @@ Simply open any Debian package file:
 - `debian/control`
 - `debian/copyright`
 - `debian/watch`
+- `debian/source/options`
+- `debian/source/local-options`
 - `debian/tests/control`
 
 The extension will automatically activate and provide language features.

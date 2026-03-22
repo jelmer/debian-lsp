@@ -35,6 +35,7 @@
     "onLanguage:debtestscontrol",
     "onLanguage:debchangelog",
     "onLanguage:debsourceformat",
+    "onLanguage:debsourceoptions",
     "onLanguage:debupstreammetadata",
     "onLanguage:debrules"
   ],
@@ -112,6 +113,17 @@
         "configuration": "./language-configuration.json"
       },
       {
+        "id": "debsourceoptions",
+        "aliases": [
+          "Debian Source Options",
+          "debsourceoptions"
+        ],
+        "filenamePatterns": [
+          "**/debian/source/options",
+          "**/debian/source/local-options"
+        ]
+      },
+      {
         "id": "debupstreammetadata",
         "aliases": [
           "Debian Upstream Metadata",
@@ -155,6 +167,9 @@
         "editor.formatOnType": true
       },
       "[debsourceformat]": {
+        "editor.colorDecorators": false
+      },
+      "[debsourceoptions]": {
         "editor.colorDecorators": false
       },
       "[debupstreammetadata]": {
@@ -286,6 +301,15 @@
       },
       {
         "language": "debupstreammetadata",
+        "scopes": {
+          "debianField": ["entity.name.tag"],
+          "debianUnknownField": ["variable.other"],
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
+        }
+      },
+      {
+        "language": "debsourceoptions",
         "scopes": {
           "debianField": ["entity.name.tag"],
           "debianUnknownField": ["variable.other"],
