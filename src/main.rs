@@ -20,6 +20,7 @@ mod package_cache;
 mod position;
 mod rules;
 mod source_format;
+mod source_options;
 mod tests;
 mod udd;
 mod upstream_metadata;
@@ -64,6 +65,8 @@ enum FileType {
     Changelog,
     /// debian/source/format file
     SourceFormat,
+    /// debian/source/options or debian/source/local-options file
+    SourceOptions,
     /// debian/upstream/metadata file
     UpstreamMetadata,
     /// debian/rules file
@@ -85,6 +88,8 @@ impl FileType {
             Some(Self::Changelog)
         } else if source_format::is_source_format_file(uri) {
             Some(Self::SourceFormat)
+        } else if source_options::is_source_options_or_local_options_file(uri) {
+            Some(Self::SourceOptions)
         } else if upstream_metadata::is_upstream_metadata_file(uri) {
             Some(Self::UpstreamMetadata)
         } else if rules::is_rules_file(uri) {
@@ -132,6 +137,7 @@ impl Backend {
             | FileType::TestsControl
             | FileType::Changelog
             | FileType::SourceFormat
+            | FileType::SourceOptions
             | FileType::UpstreamMetadata
             | FileType::Rules => None,
         }
@@ -575,6 +581,11 @@ impl LanguageServer for Backend {
                 }
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
+            Some((FileType::SourceOptions, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                source_options::get_completions(&uri, position, &source_text)
+            }
             Some((FileType::UpstreamMetadata, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
@@ -810,6 +821,7 @@ impl LanguageServer for Backend {
                 rules::generate_semantic_tokens(&makefile, &source_text)
             }
             FileType::SourceFormat => vec![],
+            FileType::SourceOptions => source_options::generate_semantic_tokens(&source_text),
         };
 
         if tokens.is_empty() {
@@ -1521,5 +1533,23 @@ mod main_tests {
             Some(FileType::UpstreamMetadata)
         );
         assert_eq!(FileType::detect(&non_metadata_uri), None);
+    }
+
+    #[test]
+    fn test_source_options_file_type_detection() {
+        let options_uri: Uri = str::parse("file:///path/to/debian/source/options").unwrap();
+        let local_options_uri: Uri =
+            str::parse("file:///path/to/debian/source/local-options").unwrap();
+        let non_options_uri: Uri = str::parse("file:///path/to/debian/options").unwrap();
+
+        assert_eq!(
+            FileType::detect(&options_uri),
+            Some(FileType::SourceOptions)
+        );
+        assert_eq!(
+            FileType::detect(&local_options_uri),
+            Some(FileType::SourceOptions)
+        );
+        assert_eq!(FileType::detect(&non_options_uri), None);
     }
 }
