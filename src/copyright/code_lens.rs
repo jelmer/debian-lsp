@@ -151,7 +151,7 @@ async fn get_file_count_lenses(
                 range: para_data.range,
                 command: Some(Command {
                     title,
-                    command: "debian-lsp.noop".to_string(),
+                    command: String::new(),
                     arguments: None,
                 }),
                 data: None,
