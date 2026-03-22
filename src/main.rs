@@ -975,6 +975,9 @@ impl LanguageServer for Backend {
                     Err(_) => return Ok(None),
                 }
             }
+            FileType::SourceOptions => {
+                source_options::generate_selection_ranges(&source_text, &params.positions)
+            }
             _ => return Ok(None),
         };
 
