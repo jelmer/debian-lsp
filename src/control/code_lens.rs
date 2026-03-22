@@ -15,6 +15,12 @@ pub struct LensContext<'a> {
     pub package_cache: &'a crate::package_cache::SharedPackageCache,
     /// Cache for VCS watch lookups from UDD.
     pub vcswatch_cache: &'a crate::vcswatch::SharedVcsWatchCache,
+    /// Cache for bug lookups from UDD.
+    pub bug_cache: &'a crate::bugs::SharedBugCache,
+    /// Cache for popcon lookups from UDD.
+    pub popcon_cache: &'a crate::popcon::SharedPopconCache,
+    /// Cache for reverse dependency lookups from UDD.
+    pub rdeps_cache: &'a crate::rdeps::SharedRdepsCache,
 }
 
 /// Info about a Standards-Version field found in the control file.
@@ -28,6 +34,22 @@ struct StandardsVersionField {
 /// Info about a debhelper-compat relation found in the control file.
 struct DebhelperCompatField {
     /// The LSP range of the relation.
+    range: Range,
+}
+
+/// Info about a binary package paragraph found in the control file.
+struct BinaryPackageField {
+    /// The binary package name.
+    name: String,
+    /// The LSP range of the Package field entry.
+    range: Range,
+}
+
+/// Info about the source package paragraph.
+struct SourcePackageField {
+    /// The source package name.
+    name: String,
+    /// The LSP range of the Source field entry.
     range: Range,
 }
 
@@ -91,20 +113,48 @@ fn is_outdated(current: &str, latest: &str) -> bool {
     current_parts.len() < latest_parts.len()
 }
 
-/// Extract Standards-Version and debhelper-compat fields from a parsed control file.
+/// All extracted lens data from a parsed control file.
+struct LensData {
+    standards_versions: Vec<StandardsVersionField>,
+    debhelper_compats: Vec<DebhelperCompatField>,
+    source_package: Option<SourcePackageField>,
+    binary_packages: Vec<BinaryPackageField>,
+}
+
+/// Extract Standards-Version, debhelper-compat, and package fields from a parsed control file.
 fn extract_lens_data(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
-) -> (Vec<StandardsVersionField>, Vec<DebhelperCompatField>) {
+) -> LensData {
     let control = parsed.tree();
     let mut standards_versions = Vec::new();
     let mut debhelper_compats = Vec::new();
+    let mut source_package = None;
+    let mut binary_packages = Vec::new();
 
     for paragraph in control.as_deb822().paragraphs() {
         for entry in paragraph.entries() {
             let Some(field_name) = entry.key() else {
                 continue;
             };
+
+            if field_name.eq_ignore_ascii_case("Source") {
+                let value = entry.value().trim().to_string();
+                if !value.is_empty() {
+                    let range = text_range_to_lsp_range(source_text, entry.text_range());
+                    source_package = Some(SourcePackageField { name: value, range });
+                }
+                continue;
+            }
+
+            if field_name.eq_ignore_ascii_case("Package") {
+                let value = entry.value().trim().to_string();
+                if !value.is_empty() {
+                    let range = text_range_to_lsp_range(source_text, entry.text_range());
+                    binary_packages.push(BinaryPackageField { name: value, range });
+                }
+                continue;
+            }
 
             if field_name.eq_ignore_ascii_case("Standards-Version") {
                 let value = entry.value().trim().to_string();
@@ -159,7 +209,12 @@ fn extract_lens_data(
         }
     }
 
-    (standards_versions, debhelper_compats)
+    LensData {
+        standards_versions,
+        debhelper_compats,
+        source_package,
+        binary_packages,
+    }
 }
 
 /// Find the Vcs-Git field in a parsed control file and return its URL and range.
@@ -184,20 +239,33 @@ fn find_vcs_git_field(
     Some((parsed_vcs.repo_url, range))
 }
 
+/// Format a count for display, using k/M suffixes for large numbers.
+fn format_count(count: u32) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
 /// Generate code lenses for a control file.
 ///
 /// Provides lenses for:
 /// - Standards-Version: shows latest version when outdated
 /// - debhelper-compat (= N): shows current compat level
 /// - Vcs-Git: shows packaged version from UDD vcswatch
+/// - Source package: shows open bug count
+/// - Binary packages: shows popcon install count and reverse dependency count
 pub async fn generate_code_lenses(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     source_text: &str,
     ctx: &LensContext<'_>,
 ) -> Vec<CodeLens> {
-    let (standards_versions, debhelper_compats) = extract_lens_data(parsed, source_text);
+    let data = extract_lens_data(parsed, source_text);
 
-    let latest_standards = if !standards_versions.is_empty() {
+    let latest_standards = if !data.standards_versions.is_empty() {
         let mut cache = ctx.package_cache.write().await;
         let versions = cache.load_versions("debian-policy").await;
         versions.and_then(|vs| {
@@ -209,7 +277,7 @@ pub async fn generate_code_lenses(
         None
     };
 
-    let compat_levels = if !debhelper_compats.is_empty() {
+    let compat_levels = if !data.debhelper_compats.is_empty() {
         get_compat_levels().await
     } else {
         None
@@ -218,7 +286,7 @@ pub async fn generate_code_lenses(
     let mut lenses = Vec::new();
 
     if let Some(latest) = &latest_standards {
-        for sv in &standards_versions {
+        for sv in &data.standards_versions {
             if sv.value == *latest || !is_outdated(&sv.value, latest) {
                 continue;
             }
@@ -235,7 +303,7 @@ pub async fn generate_code_lenses(
     }
 
     if let Some(levels) = &compat_levels {
-        for dh in &debhelper_compats {
+        for dh in &data.debhelper_compats {
             let title = if levels.max == levels.highest_stable {
                 format!("stable: {}", levels.highest_stable)
             } else {
@@ -272,6 +340,64 @@ pub async fn generate_code_lenses(
         }
     }
 
+    // Source package bug count lens
+    if let Some(source) = &data.source_package {
+        let bug_count = {
+            let mut cache = ctx.bug_cache.write().await;
+            cache.get_open_bug_count(&source.name).await
+        };
+        if bug_count > 0 {
+            lenses.push(CodeLens {
+                range: source.range,
+                command: Some(Command {
+                    title: format!(
+                        "{} open {}",
+                        bug_count,
+                        if bug_count == 1 { "bug" } else { "bugs" }
+                    ),
+                    command: "debian-lsp.noop".to_string(),
+                    arguments: None,
+                }),
+                data: None,
+            });
+        }
+    }
+
+    // Binary package lenses: popcon + rdeps
+    for pkg in &data.binary_packages {
+        let mut parts = Vec::new();
+
+        let popcon = {
+            let mut cache = ctx.popcon_cache.write().await;
+            cache.get_inst_count(&pkg.name).await
+        };
+        if let Some(count) = popcon {
+            parts.push(format!("popcon: {} installs", format_count(count)));
+        }
+
+        let rdeps = {
+            let mut cache = ctx.rdeps_cache.write().await;
+            cache.get_rdeps_count(&pkg.name).await
+        };
+        if let Some(count) = rdeps {
+            if count > 0 {
+                parts.push(format!("{} reverse deps", format_count(count)));
+            }
+        }
+
+        if !parts.is_empty() {
+            lenses.push(CodeLens {
+                range: pkg.range,
+                command: Some(Command {
+                    title: parts.join(" | "),
+                    command: "debian-lsp.noop".to_string(),
+                    arguments: None,
+                }),
+                data: None,
+            });
+        }
+    }
+
     lenses
 }
 
@@ -285,6 +411,18 @@ mod tests {
         use tokio::sync::RwLock;
 
         Arc::new(RwLock::new(VcsWatchCache::new(crate::udd::shared_pool())))
+    }
+
+    fn make_shared_bug_cache() -> crate::bugs::SharedBugCache {
+        crate::bugs::new_shared_bug_cache(crate::udd::shared_pool())
+    }
+
+    fn make_shared_popcon_cache() -> crate::popcon::SharedPopconCache {
+        crate::popcon::new_shared_popcon_cache(crate::udd::shared_pool())
+    }
+
+    fn make_shared_rdeps_cache() -> crate::rdeps::SharedRdepsCache {
+        crate::rdeps::new_shared_rdeps_cache(crate::udd::shared_pool())
     }
 
     #[tokio::test]
@@ -308,9 +446,15 @@ mod tests {
             "Source: test-package\nStandards-Version: 4.6.2\nMaintainer: Test <test@example.com>\n";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
@@ -339,9 +483,15 @@ mod tests {
             "Source: test-package\nStandards-Version: 4.7.3\nMaintainer: Test <test@example.com>\n";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
@@ -375,9 +525,15 @@ Maintainer: Test <test@example.com>
 ";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
@@ -425,9 +581,15 @@ Maintainer: Test <test@example.com>
 ";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
@@ -460,9 +622,15 @@ Maintainer: Test <test@example.com>
         let content = "Source: dulwich\nVcs-Git: https://salsa.debian.org/python-team/packages/dulwich.git\nVcs-Browser: https://salsa.debian.org/python-team/packages/dulwich\n";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
@@ -487,9 +655,15 @@ Maintainer: Test <test@example.com>
             "Source: pkg\nVcs-Git: https://salsa.debian.org/team/pkg.git -b debian/latest\n";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
@@ -510,12 +684,116 @@ Maintainer: Test <test@example.com>
         let content = "Source: unknown\nVcs-Git: https://example.com/unknown.git\n";
         let parsed = debian_control::lossless::Control::parse(content);
 
+        let bug_cache = make_shared_bug_cache();
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
         let ctx = LensContext {
             package_cache: &shared_cache,
             vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
         };
         let lenses = generate_code_lenses(&parsed, content, &ctx).await;
 
         assert_eq!(lenses.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_code_lens_source_bug_count() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let cache = TestPackageCache::default();
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+        let vcswatch_cache = make_shared_vcswatch_cache();
+
+        let bug_cache = {
+            let mut bc = crate::bugs::BugCache::new(crate::udd::shared_pool());
+            bc.insert_cached_open_bugs_for_package(
+                "test-package",
+                vec![
+                    (100001, Some("Bug one")),
+                    (100002, Some("Bug two")),
+                    (100003, Some("Bug three")),
+                ],
+            );
+            Arc::new(RwLock::new(bc))
+        };
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
+
+        let content = "Source: test-package\nMaintainer: Test <test@example.com>\n";
+        let parsed = debian_control::lossless::Control::parse(content);
+
+        let ctx = LensContext {
+            package_cache: &shared_cache,
+            vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
+        };
+        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+
+        assert_eq!(lenses.len(), 1);
+        assert_eq!(lenses[0].command.as_ref().unwrap().title, "3 open bugs");
+    }
+
+    #[tokio::test]
+    async fn test_code_lens_binary_package_popcon_and_rdeps() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let cache = TestPackageCache::default();
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+        let vcswatch_cache = make_shared_vcswatch_cache();
+        let bug_cache = make_shared_bug_cache();
+
+        let popcon_cache = {
+            let mut pc = crate::popcon::PopconCache::new(crate::udd::shared_pool());
+            pc.insert_cached("libfoo1", 42000);
+            Arc::new(RwLock::new(pc))
+        };
+        let rdeps_cache = {
+            let mut rc = crate::rdeps::RdepsCache::new(crate::udd::shared_pool());
+            rc.insert_cached("libfoo1", 150);
+            Arc::new(RwLock::new(rc))
+        };
+
+        let content = "\
+Source: foo
+Maintainer: Test <test@example.com>
+
+Package: libfoo1
+Architecture: any
+Description: Foo library
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+
+        let ctx = LensContext {
+            package_cache: &shared_cache,
+            vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
+        };
+        let lenses = generate_code_lenses(&parsed, content, &ctx).await;
+
+        assert_eq!(lenses.len(), 1);
+        assert_eq!(
+            lenses[0].command.as_ref().unwrap().title,
+            "popcon: 42.0k installs | 150 reverse deps"
+        );
+    }
+
+    #[test]
+    fn test_format_count() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1000), "1.0k");
+        assert_eq!(format_count(42000), "42.0k");
+        assert_eq!(format_count(1_500_000), "1.5M");
     }
 }

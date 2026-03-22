@@ -17,7 +17,9 @@ mod copyright;
 mod deb822;
 mod distros;
 mod package_cache;
+mod popcon;
 mod position;
+mod rdeps;
 mod rules;
 mod source_format;
 mod source_options;
@@ -117,6 +119,8 @@ struct Backend {
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
     vcswatch_cache: vcswatch::SharedVcsWatchCache,
+    popcon_cache: popcon::SharedPopconCache,
+    rdeps_cache: rdeps::SharedRdepsCache,
     git_file_cache: copyright::code_lens::SharedGitFileCache,
 }
 
@@ -1171,6 +1175,9 @@ impl LanguageServer for Backend {
                 let ctx = control::code_lens::LensContext {
                     package_cache: &self.package_cache,
                     vcswatch_cache: &self.vcswatch_cache,
+                    bug_cache: &self.bug_cache,
+                    popcon_cache: &self.popcon_cache,
+                    rdeps_cache: &self.rdeps_cache,
                 };
                 let lenses = control::generate_code_lenses(&parsed, &source_text, &ctx).await;
                 if lenses.is_empty() {
@@ -1380,7 +1387,9 @@ async fn main() {
 
     let udd_pool = udd::shared_pool();
     let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
-    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool);
+    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
+    let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
+    let rdeps_cache = rdeps::new_shared_rdeps_cache(udd_pool);
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -1390,6 +1399,8 @@ async fn main() {
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
         vcswatch_cache: vcswatch_cache.clone(),
+        popcon_cache: popcon_cache.clone(),
+        rdeps_cache: rdeps_cache.clone(),
         git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
     });
 
