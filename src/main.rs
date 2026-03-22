@@ -335,6 +335,7 @@ impl LanguageServer for Backend {
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -1259,6 +1260,32 @@ impl LanguageServer for Backend {
                 } else {
                     Ok(Some(hints))
                 }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Control => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                let location = control::goto_definition(&parsed, &source_text, position, uri);
+                Ok(location.map(GotoDefinitionResponse::Scalar))
             }
             _ => Ok(None),
         }
