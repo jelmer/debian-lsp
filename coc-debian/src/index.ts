@@ -70,11 +70,13 @@ export async function activate(context: ExtensionContext): Promise<void> {
       { scheme: 'file', pattern: '**/debian/changelog.dch' },
       { scheme: 'file', pattern: '**/changelog.dch' },
       { scheme: 'file', pattern: '**/debian/source/format' },
+      { scheme: 'file', pattern: '**/debian/source/options' },
+      { scheme: 'file', pattern: '**/debian/source/local-options' },
       { scheme: 'file', pattern: '**/debian/upstream/metadata' },
       { scheme: 'file', pattern: '**/debian/rules' }
     ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,changelog.dch,tests/control,source/format,upstream/metadata,rules}')
+      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,changelog.dch,tests/control,source/format,source/options,source/local-options,upstream/metadata,rules}')
     }
   };
 

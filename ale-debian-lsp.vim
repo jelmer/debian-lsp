@@ -18,6 +18,7 @@ let g:ale_linters.debcontrol = ['debian-lsp']
 let g:ale_linters.debcopyright = ['debian-lsp']
 let g:ale_linters.debchangelog = ['debian-lsp']
 let g:ale_linters.debsources = ['debian-lsp']
+let g:ale_linters.debsourceoptions = ['debian-lsp']
 let g:ale_linters.debwatch = ['debian-lsp']
 let g:ale_linters.debupstream = ['debian-lsp']
 let g:ale_linters.autopkgtest = ['debian-lsp']
@@ -52,6 +53,15 @@ call ale#linter#Define('debchangelog', {
 
 " Define debian-lsp for debian/source/format files
 call ale#linter#Define('debsources', {
+\   'name': 'debian-lsp',
+\   'lsp': 'stdio',
+\   'executable': g:debian_lsp_executable,
+\   'command': '%e',
+\   'project_root': function('ale#handlers#lsp#GetProjectRoot'),
+\})
+
+" Define debian-lsp for debian/source/options files
+call ale#linter#Define('debsourceoptions', {
 \   'name': 'debian-lsp',
 \   'lsp': 'stdio',
 \   'executable': g:debian_lsp_executable,
@@ -105,6 +115,8 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/changelog setfiletype debchangelog
   autocmd BufNewFile,BufRead */debian/changelog.dch setfiletype debchangelog
   autocmd BufNewFile,BufRead */debian/source/format setfiletype debsources
+  autocmd BufNewFile,BufRead */debian/source/options setfiletype debsourceoptions
+  autocmd BufNewFile,BufRead */debian/source/local-options setfiletype debsourceoptions
   autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
   autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
   autocmd BufNewFile,BufRead */debian/rules setfiletype debrules
