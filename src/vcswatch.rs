@@ -33,14 +33,24 @@ impl VcsWatchCache {
         }
     }
 
-    /// Look up the packaged version for a VCS URL.
+    /// Look up the packaged version for a VCS URL, fetching if needed.
     ///
     /// Returns `None` if the URL is not found in vcswatch or the query fails.
     pub async fn get_version_for_url(&mut self, url: &str) -> Option<&str> {
         if !self.version_by_url.contains_key(url) {
             self.fetch_version_for_url(url).await;
         }
+        self.get_cached_version_for_url(url)
+    }
+
+    /// Look up the packaged version from cache only, without fetching.
+    pub fn get_cached_version_for_url(&self, url: &str) -> Option<&str> {
         self.version_by_url.get(url).and_then(|v| v.as_deref())
+    }
+
+    /// Returns `true` if this URL has been looked up (hit or miss).
+    pub fn is_cached(&self, url: &str) -> bool {
+        self.version_by_url.contains_key(url)
     }
 
     async fn fetch_version_for_url(&mut self, url: &str) {

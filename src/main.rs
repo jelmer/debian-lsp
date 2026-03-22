@@ -17,7 +17,9 @@ mod copyright;
 mod deb822;
 mod distros;
 mod package_cache;
+mod popcon;
 mod position;
+mod rdeps;
 mod rules;
 mod source_format;
 mod source_options;
@@ -117,6 +119,8 @@ struct Backend {
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
     vcswatch_cache: vcswatch::SharedVcsWatchCache,
+    popcon_cache: popcon::SharedPopconCache,
+    rdeps_cache: rdeps::SharedRdepsCache,
     git_file_cache: copyright::code_lens::SharedGitFileCache,
 }
 
@@ -333,6 +337,10 @@ impl LanguageServer for Backend {
                 ),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![control::code_lens::OPEN_URL_COMMAND.to_string()],
+                    ..Default::default()
                 }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
@@ -1171,8 +1179,47 @@ impl LanguageServer for Backend {
                 let ctx = control::code_lens::LensContext {
                     package_cache: &self.package_cache,
                     vcswatch_cache: &self.vcswatch_cache,
+                    bug_cache: &self.bug_cache,
+                    popcon_cache: &self.popcon_cache,
+                    rdeps_cache: &self.rdeps_cache,
                 };
-                let lenses = control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+                let (lenses, uncached) =
+                    control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+
+                if !uncached.is_empty() {
+                    let client = self.client.clone();
+                    let package_cache = self.package_cache.clone();
+                    let vcswatch_cache = self.vcswatch_cache.clone();
+                    let bug_cache = self.bug_cache.clone();
+                    let popcon_cache = self.popcon_cache.clone();
+                    let rdeps_cache = self.rdeps_cache.clone();
+                    tokio::spawn(async move {
+                        if uncached.needs_policy_version {
+                            let mut cache = package_cache.write().await;
+                            cache.load_versions("debian-policy").await;
+                        }
+                        if let Some(url) = &uncached.vcs_git_url {
+                            let mut cache = vcswatch_cache.write().await;
+                            cache.get_version_for_url(url).await;
+                        }
+                        if let Some(source) = &uncached.source_package {
+                            let mut cache = bug_cache.write().await;
+                            cache.prefetch_bugs_for_package(source).await;
+                        }
+                        for pkg in &uncached.binary_packages {
+                            {
+                                let mut cache = popcon_cache.write().await;
+                                cache.get_inst_count(pkg).await;
+                            }
+                            {
+                                let mut cache = rdeps_cache.write().await;
+                                cache.get_rdeps_count(pkg).await;
+                            }
+                        }
+                        let _ = client.code_lens_refresh().await;
+                    });
+                }
+
                 if lenses.is_empty() {
                     Ok(None)
                 } else {
@@ -1352,6 +1399,28 @@ impl LanguageServer for Backend {
             _ => Ok(None),
         }
     }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        if params.command == control::code_lens::OPEN_URL_COMMAND {
+            if let Some(url) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = url.parse::<Uri>() {
+                    let _ = self
+                        .client
+                        .show_document(ShowDocumentParams {
+                            uri,
+                            external: Some(true),
+                            take_focus: Some(true),
+                            selection: None,
+                        })
+                        .await;
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[tokio::main]
@@ -1380,7 +1449,9 @@ async fn main() {
 
     let udd_pool = udd::shared_pool();
     let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
-    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool);
+    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
+    let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
+    let rdeps_cache = rdeps::new_shared_rdeps_cache(udd_pool);
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -1390,6 +1461,8 @@ async fn main() {
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
         vcswatch_cache: vcswatch_cache.clone(),
+        popcon_cache: popcon_cache.clone(),
+        rdeps_cache: rdeps_cache.clone(),
         git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
     });
 
