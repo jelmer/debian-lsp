@@ -12,7 +12,16 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
         "Build-Depends-Indep",
         "Architecture-independent build dependencies",
     ),
+    FieldInfo::new("Build-Depends-Arch", "Architecture-specific build dependencies"),
     FieldInfo::new("Build-Conflicts", "Packages that conflict during build"),
+    FieldInfo::new(
+        "Build-Conflicts-Indep",
+        "Architecture-independent build conflicts",
+    ),
+    FieldInfo::new(
+        "Build-Conflicts-Arch",
+        "Architecture-specific build conflicts",
+    ),
     FieldInfo::new("Standards-Version", "Debian Policy version"),
     FieldInfo::new("Homepage", "Upstream project homepage"),
     FieldInfo::new("Vcs-Browser", "Web interface for VCS"),
