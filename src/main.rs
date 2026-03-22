@@ -342,6 +342,7 @@ impl LanguageServer for Backend {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -1274,6 +1275,52 @@ impl LanguageServer for Backend {
                     Ok(None)
                 } else {
                     Ok(Some(hints))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        let workspace = self.workspace.lock().await;
+        let source_text = workspace.source_text(file.source_file);
+
+        match file.file_type {
+            FileType::Control => {
+                let parsed = workspace.get_parsed_control(file.source_file);
+                Ok(control::get_hover(
+                    parsed.tree().as_deb822(),
+                    &source_text,
+                    position,
+                ))
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                let copyright = parsed.to_copyright();
+                Ok(copyright::get_hover(
+                    copyright.as_deb822(),
+                    &source_text,
+                    position,
+                ))
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                let wf = parsed.to_watch_file();
+                match &wf {
+                    debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
+                        Ok(watch::get_hover(wf.as_deb822(), &source_text, position))
+                    }
+                    _ => Ok(None),
                 }
             }
             _ => Ok(None),
