@@ -32,6 +32,7 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("Description", "Package description"),
     FieldInfo::new("Essential", "Essential package flag"),
     FieldInfo::new("Rules-Requires-Root", "Root privileges requirement"),
+    FieldInfo::new("Testsuite", "DEP-8 test suite"),
 ];
 
 /// Get the standard casing for a field name
@@ -144,6 +145,47 @@ pub const RULES_REQUIRES_ROOT_VALUES: &[(&str, &str)] = &[
     (
         "binary-targets",
         "Only the binary targets require (fake)root",
+    ),
+];
+
+/// Debian Testsuite values.
+pub const TESTSUITE_VALUES: &[(&str, &str)] = &[
+    ("autopkgtest", "Standard autopkgtest test suite"),
+    (
+        "autopkgtest-pkg-dkms",
+        "Autopkgtest for DKMS kernel module packages",
+    ),
+    (
+        "autopkgtest-pkg-elpa",
+        "Autopkgtest for Emacs Lisp packages",
+    ),
+    (
+        "autopkgtest-pkg-go",
+        "Autopkgtest for Go packages",
+    ),
+    (
+        "autopkgtest-pkg-nodejs",
+        "Autopkgtest for Node.js packages",
+    ),
+    (
+        "autopkgtest-pkg-octave",
+        "Autopkgtest for Octave packages",
+    ),
+    (
+        "autopkgtest-pkg-perl",
+        "Autopkgtest for Perl packages",
+    ),
+    (
+        "autopkgtest-pkg-python",
+        "Autopkgtest for Python packages",
+    ),
+    (
+        "autopkgtest-pkg-r",
+        "Autopkgtest for R packages",
+    ),
+    (
+        "autopkgtest-pkg-ruby",
+        "Autopkgtest for Ruby packages",
     ),
 ];
 

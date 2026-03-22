@@ -3,7 +3,7 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 use super::fields::{
     CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS, CONTROL_SECTION_VALUES,
     CONTROL_SPECIAL_SECTION_VALUES, ESSENTIAL_VALUES, MULTI_ARCH_VALUES,
-    RULES_REQUIRES_ROOT_VALUES,
+    RULES_REQUIRES_ROOT_VALUES, TESTSUITE_VALUES,
 };
 
 use super::relation_completion;
@@ -47,6 +47,8 @@ pub fn get_field_value_completions(field_name: &str, prefix: &str) -> Vec<Comple
         get_multiarch_value_completions(prefix)
     } else if field_name.eq_ignore_ascii_case("Rules-Requires-Root") {
         get_rules_requires_root_value_completions(prefix)
+    } else if field_name.eq_ignore_ascii_case("Testsuite") {
+        get_testsuite_value_completions(prefix)
     } else {
         vec![]
     }
@@ -242,6 +244,26 @@ pub fn get_multiarch_value_completions(prefix: &str) -> Vec<CompletionItem> {
         .collect()
 }
 
+/// Get completion items for "Testsuite" control field.
+///
+/// The Testsuite field is comma-separated, so we complete the last token.
+pub fn get_testsuite_value_completions(prefix: &str) -> Vec<CompletionItem> {
+    let current_token = prefix.rsplit(',').next().unwrap_or("").trim();
+    let normalized_prefix = current_token.to_ascii_lowercase();
+
+    TESTSUITE_VALUES
+        .iter()
+        .filter(|(value, _)| value.starts_with(&normalized_prefix))
+        .map(|&(value, description)| CompletionItem {
+            label: value.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(description.to_string()),
+            insert_text: Some(value.to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
 /// Get completion items for "Rules-Requires-Root" control field.
 pub fn get_rules_requires_root_value_completions(prefix: &str) -> Vec<CompletionItem> {
     let normalized_prefix = prefix.trim().to_ascii_lowercase();
@@ -415,6 +437,36 @@ mod tests {
         let completions = get_field_value_completions("Multi-Arch", "all");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["allowed"]);
+    }
+
+    #[test]
+    fn test_get_field_value_completions_for_testsuite() {
+        let completions = get_field_value_completions("Testsuite", "autopkgtest-pkg-p");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["autopkgtest-pkg-perl", "autopkgtest-pkg-python"]);
+    }
+
+    #[test]
+    fn test_testsuite_value_completions() {
+        let completions = get_testsuite_value_completions("");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"autopkgtest"));
+        assert!(labels.contains(&"autopkgtest-pkg-python"));
+    }
+
+    #[test]
+    fn test_testsuite_value_completions_with_prefix() {
+        let completions = get_testsuite_value_completions("autopkgtest-pkg-r");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["autopkgtest-pkg-r", "autopkgtest-pkg-ruby"]);
+    }
+
+    #[test]
+    fn test_testsuite_value_completions_after_comma() {
+        let completions = get_testsuite_value_completions("autopkgtest, autopkgtest-pkg-g");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["autopkgtest-pkg-go"]);
     }
 
     #[test]
