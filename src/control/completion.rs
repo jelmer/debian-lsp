@@ -443,7 +443,10 @@ mod tests {
     fn test_get_field_value_completions_for_testsuite() {
         let completions = get_field_value_completions("Testsuite", "autopkgtest-pkg-p");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
-        assert_eq!(labels, vec!["autopkgtest-pkg-perl", "autopkgtest-pkg-python"]);
+        assert_eq!(
+            labels,
+            vec!["autopkgtest-pkg-perl", "autopkgtest-pkg-python"]
+        );
     }
 
     #[test]

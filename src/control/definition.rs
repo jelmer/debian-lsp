@@ -125,7 +125,11 @@ mod tests {
     use super::*;
 
     fn test_uri() -> Uri {
-        Uri::from_file_path("/tmp/debian/control").unwrap()
+        if cfg!(windows) {
+            Uri::from_file_path("C:\\tmp\\debian\\control").unwrap()
+        } else {
+            Uri::from_file_path("/tmp/debian/control").unwrap()
+        }
     }
 
     #[test]

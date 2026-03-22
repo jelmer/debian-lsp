@@ -12,7 +12,10 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
         "Build-Depends-Indep",
         "Architecture-independent build dependencies",
     ),
-    FieldInfo::new("Build-Depends-Arch", "Architecture-specific build dependencies"),
+    FieldInfo::new(
+        "Build-Depends-Arch",
+        "Architecture-specific build dependencies",
+    ),
     FieldInfo::new("Build-Conflicts", "Packages that conflict during build"),
     FieldInfo::new(
         "Build-Conflicts-Indep",
@@ -168,34 +171,13 @@ pub const TESTSUITE_VALUES: &[(&str, &str)] = &[
         "autopkgtest-pkg-elpa",
         "Autopkgtest for Emacs Lisp packages",
     ),
-    (
-        "autopkgtest-pkg-go",
-        "Autopkgtest for Go packages",
-    ),
-    (
-        "autopkgtest-pkg-nodejs",
-        "Autopkgtest for Node.js packages",
-    ),
-    (
-        "autopkgtest-pkg-octave",
-        "Autopkgtest for Octave packages",
-    ),
-    (
-        "autopkgtest-pkg-perl",
-        "Autopkgtest for Perl packages",
-    ),
-    (
-        "autopkgtest-pkg-python",
-        "Autopkgtest for Python packages",
-    ),
-    (
-        "autopkgtest-pkg-r",
-        "Autopkgtest for R packages",
-    ),
-    (
-        "autopkgtest-pkg-ruby",
-        "Autopkgtest for Ruby packages",
-    ),
+    ("autopkgtest-pkg-go", "Autopkgtest for Go packages"),
+    ("autopkgtest-pkg-nodejs", "Autopkgtest for Node.js packages"),
+    ("autopkgtest-pkg-octave", "Autopkgtest for Octave packages"),
+    ("autopkgtest-pkg-perl", "Autopkgtest for Perl packages"),
+    ("autopkgtest-pkg-python", "Autopkgtest for Python packages"),
+    ("autopkgtest-pkg-r", "Autopkgtest for R packages"),
+    ("autopkgtest-pkg-ruby", "Autopkgtest for Ruby packages"),
 ];
 
 /// Debian multi-architecture values.
