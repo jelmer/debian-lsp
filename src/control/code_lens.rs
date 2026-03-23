@@ -403,9 +403,27 @@ pub async fn generate_code_lenses(
         }
     }
 
-    // Binary package lenses: popcon + rdeps (cache-only, separate clickable lenses)
+    // Binary package lenses: bugs + popcon + rdeps (cache-only, separate clickable lenses)
     for pkg in &data.binary_packages {
         let mut needs_fetch = false;
+
+        {
+            let cache = ctx.bug_cache.read().await;
+            let bug_count = cache.get_cached_open_binary_bug_count(&pkg.name);
+            match bug_count {
+                Some(count) if count > 0 => {
+                    lenses.push(make_link_lens(
+                        pkg.range,
+                        format!("{} open {}", count, if count == 1 { "bug" } else { "bugs" }),
+                        format!("https://bugs.debian.org/{}", pkg.name),
+                    ));
+                }
+                None => {
+                    needs_fetch = true;
+                }
+                _ => {}
+            }
+        }
 
         {
             let cache = ctx.popcon_cache.read().await;
@@ -846,6 +864,65 @@ Description: Foo library
         assert_eq!(
             lenses[1].command.as_ref().unwrap().command,
             OPEN_URL_COMMAND
+        );
+    }
+
+    #[tokio::test]
+    async fn test_code_lens_binary_package_bug_count() {
+        use crate::package_cache::TestPackageCache;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let cache = TestPackageCache::default();
+        let shared_cache: crate::package_cache::SharedPackageCache = Arc::new(RwLock::new(cache));
+        let vcswatch_cache = make_shared_vcswatch_cache();
+
+        let bug_cache = {
+            let mut bc = crate::bugs::BugCache::new(crate::udd::shared_pool());
+            bc.insert_cached_open_bugs_for_binary_package(
+                "libfoo1",
+                vec![(200001, Some("Crash on load")), (200002, Some("Typo"))],
+            );
+            Arc::new(RwLock::new(bc))
+        };
+        let popcon_cache = make_shared_popcon_cache();
+        let rdeps_cache = make_shared_rdeps_cache();
+
+        let content = "\
+Source: foo
+Maintainer: Test <test@example.com>
+
+Package: libfoo1
+Architecture: any
+Description: Foo library
+";
+        let parsed = debian_control::lossless::Control::parse(content);
+
+        let ctx = LensContext {
+            package_cache: &shared_cache,
+            vcswatch_cache: &vcswatch_cache,
+            bug_cache: &bug_cache,
+            popcon_cache: &popcon_cache,
+            rdeps_cache: &rdeps_cache,
+        };
+        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+
+        assert_eq!(lenses.len(), 1);
+        assert_eq!(lenses[0].command.as_ref().unwrap().title, "2 open bugs");
+        assert_eq!(
+            lenses[0].command.as_ref().unwrap().command,
+            OPEN_URL_COMMAND
+        );
+        let args = lenses[0]
+            .command
+            .as_ref()
+            .unwrap()
+            .arguments
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            args[0],
+            serde_json::json!("https://bugs.debian.org/libfoo1")
         );
     }
 

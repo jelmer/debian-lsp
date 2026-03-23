@@ -20,9 +20,10 @@ pub struct DebbugsBugSummary {
 }
 
 impl BugCache {
-    /// Fetch bug IDs and details for a package from UDD in a single query.
-    async fn fetch_bugs_for_package(&mut self, package: &str) {
-        if self.bug_ids_by_package.contains_key(package) {
+    /// Fetch bug IDs and details for a source package from UDD in a single query.
+    async fn fetch_bugs_for_source_package(&mut self, source_package: &str) {
+        let key = format!("src:{}", source_package);
+        if self.bug_ids_by_package.contains_key(&key) {
             return;
         }
 
@@ -33,13 +34,13 @@ impl BugCache {
              WHERE b.source = $1 \
              ORDER BY b.id",
         )
-        .bind(package)
+        .bind(source_package)
         .fetch_all(&*self.pool)
         .await
         {
             Ok(rows) => rows,
             Err(e) => {
-                tracing::warn!(package, error = %e, "UDD bug query failed");
+                tracing::warn!(source_package, error = %e, "UDD bug query failed");
                 return;
             }
         };
@@ -63,19 +64,20 @@ impl BugCache {
             );
         }
 
-        self.bug_ids_by_package.insert(package.to_string(), ids);
+        self.bug_ids_by_package.insert(key, ids);
     }
 
-    /// Return Debian bug summaries for `package` that match a decimal prefix.
+    /// Return Debian bug summaries for a source `package` that match a decimal prefix.
     pub async fn get_bug_summaries_with_prefix(
         &mut self,
         package: &str,
         prefix: &str,
     ) -> Vec<DebbugsBugSummary> {
-        self.fetch_bugs_for_package(package).await;
+        self.fetch_bugs_for_source_package(package).await;
 
         let normalized_prefix = prefix.trim();
-        let Some(ids) = self.bug_ids_by_package.get(package) else {
+        let key = format!("src:{}", package);
+        let Some(ids) = self.bug_ids_by_package.get(&key) else {
             return Vec::new();
         };
 
@@ -155,11 +157,12 @@ impl BugCache {
         }
     }
 
-    /// Count open bugs from cache only, without fetching.
+    /// Count open bugs for a source package from cache only, without fetching.
     ///
-    /// Returns `None` if the package has not been fetched yet.
-    pub fn get_cached_open_bug_count(&self, package: &str) -> Option<usize> {
-        let ids = self.bug_ids_by_package.get(package)?;
+    /// Returns `None` if the source package has not been fetched yet.
+    pub fn get_cached_open_bug_count(&self, source_package: &str) -> Option<usize> {
+        let key = format!("src:{}", source_package);
+        let ids = self.bug_ids_by_package.get(&key)?;
         Some(
             ids.iter()
                 .filter(|id| self.bug_details_by_id.get(id).is_some_and(|d| !d.done))
@@ -167,18 +170,81 @@ impl BugCache {
         )
     }
 
-    /// Pre-fetch open bug IDs and their details for a package.
+    /// Count open bugs filed against a binary package from cache only.
+    ///
+    /// Returns `None` if the binary package has not been fetched yet.
+    pub fn get_cached_open_binary_bug_count(&self, binary_package: &str) -> Option<usize> {
+        let ids = self.bug_ids_by_package.get(binary_package)?;
+        Some(
+            ids.iter()
+                .filter(|id| self.bug_details_by_id.get(id).is_some_and(|d| !d.done))
+                .count(),
+        )
+    }
+
+    /// Pre-fetch open bug IDs and their details for a source package.
     ///
     /// Call this in the background so the data is cached before the user
     /// triggers completion.
     pub async fn prefetch_bugs_for_package(&mut self, package: &str) {
-        self.fetch_bugs_for_package(package).await;
+        self.fetch_bugs_for_source_package(package).await;
+    }
+
+    /// Fetch bugs filed against a binary package name from UDD and cache them.
+    async fn fetch_bugs_for_binary_package(&mut self, binary_package: &str) {
+        if self.bug_ids_by_package.contains_key(binary_package) {
+            return;
+        }
+
+        let rows: Vec<BugRow> = match sqlx::query_as(
+            "SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
+                    (SELECT string_agg(t.tag, ', ') FROM bugs_tags t WHERE t.id = b.id) AS tags \
+             FROM bugs b \
+             WHERE b.package = $1 \
+             ORDER BY b.id",
+        )
+        .bind(binary_package)
+        .fetch_all(&*self.pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(binary_package, error = %e, "UDD binary bug query failed");
+                return;
+            }
+        };
+
+        let mut ids = Vec::new();
+        for row in rows {
+            let Some(id) = u32::try_from(row.id).ok() else {
+                continue;
+            };
+            ids.push(id);
+            self.bug_details_by_id
+                .entry(id)
+                .or_insert(CachedDebbugsBugDetails {
+                    title: row.title,
+                    severity: row.severity,
+                    done: row.done.as_ref().is_some_and(|d| !d.is_empty()),
+                    tags: row.tags,
+                    forwarded: row.forwarded,
+                    originator: row.submitter,
+                });
+        }
+
+        self.bug_ids_by_package
+            .insert(binary_package.to_string(), ids);
+    }
+
+    /// Pre-fetch bugs filed against a binary package name.
+    pub async fn prefetch_bugs_for_binary_package(&mut self, binary_package: &str) {
+        self.fetch_bugs_for_binary_package(binary_package).await;
     }
 
     #[cfg(test)]
     pub(crate) fn insert_cached_open_bugs_for_package(
         &mut self,
-        package: &str,
+        source_package: &str,
         bugs: Vec<(u32, Option<&str>)>,
     ) {
         let mut sorted_unique_ids = std::collections::BTreeSet::new();
@@ -198,8 +264,39 @@ impl BugCache {
             );
         }
 
-        self.bug_ids_by_package
-            .insert(package.to_string(), sorted_unique_ids.into_iter().collect());
+        self.bug_ids_by_package.insert(
+            format!("src:{}", source_package),
+            sorted_unique_ids.into_iter().collect(),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_cached_open_bugs_for_binary_package(
+        &mut self,
+        binary_package: &str,
+        bugs: Vec<(u32, Option<&str>)>,
+    ) {
+        let mut sorted_unique_ids = std::collections::BTreeSet::new();
+
+        for (id, title) in bugs {
+            sorted_unique_ids.insert(id);
+            self.bug_details_by_id.insert(
+                id,
+                CachedDebbugsBugDetails {
+                    title: title.map(ToString::to_string),
+                    severity: None,
+                    done: false,
+                    tags: None,
+                    forwarded: None,
+                    originator: None,
+                },
+            );
+        }
+
+        self.bug_ids_by_package.insert(
+            binary_package.to_string(),
+            sorted_unique_ids.into_iter().collect(),
+        );
     }
 }
 
