@@ -25,6 +25,59 @@ pub struct LaunchpadBugSummary {
 
 #[cfg(feature = "launchpad")]
 impl BugCache {
+    /// Return a single Launchpad bug summary by ID, fetching directly from the
+    /// Launchpad API if not already cached.
+    pub async fn get_launchpad_bug_summary(&mut self, id: u32) -> Option<LaunchpadBugSummary> {
+        if !self.launchpad_bug_details_by_id.contains_key(&id) {
+            self.fetch_launchpad_bug_by_id(id).await;
+        }
+        if self.launchpad_bug_details_by_id.contains_key(&id) {
+            Some(self.make_launchpad_summary(id))
+        } else {
+            None
+        }
+    }
+
+    /// Fetch a single Launchpad bug by ID and cache it.
+    async fn fetch_launchpad_bug_by_id(&mut self, id: u32) {
+        let service_root =
+            match launchpadlib::r#async::v1_0::service_root(&self.launchpad_client).await {
+                Ok(sr) => sr,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Launchpad service root lookup failed");
+                    return;
+                }
+            };
+        let bugs = match service_root.bugs() {
+            Some(bugs) => bugs,
+            None => {
+                tracing::warn!("Launchpad service root missing bugs link");
+                return;
+            }
+        };
+        let bug = match bugs.get_by_id(&self.launchpad_client, id).await {
+            Ok(bug) => bug,
+            Err(e) => {
+                tracing::warn!(id, error = %e, "Launchpad single bug lookup failed");
+                return;
+            }
+        };
+        let title = if bug.title.trim().is_empty() {
+            None
+        } else {
+            Some(bug.title.clone())
+        };
+        self.launchpad_bug_details_by_id.insert(
+            id,
+            CachedLaunchpadBugDetails {
+                title,
+                // Single-bug fetch doesn't give us task status.
+                status: None,
+                done: false,
+            },
+        );
+    }
+
     /// Return Launchpad bug summaries for `package` that match a decimal prefix.
     pub async fn get_launchpad_bug_summaries_with_prefix(
         &mut self,
@@ -303,6 +356,11 @@ impl BugCache {
 
 #[cfg(not(feature = "launchpad"))]
 impl BugCache {
+    /// Return a single Launchpad bug summary by ID.
+    pub async fn get_launchpad_bug_summary(&mut self, _id: u32) -> Option<LaunchpadBugSummary> {
+        None
+    }
+
     /// Return Launchpad bug summaries for `package` that match a decimal prefix.
     pub async fn get_launchpad_bug_summaries_with_prefix(
         &mut self,

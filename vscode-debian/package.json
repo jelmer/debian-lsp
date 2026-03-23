@@ -260,6 +260,11 @@
         "id": "changelogMetadataValue",
         "superType": "string",
         "description": "Metadata value in changelog header (e.g. urgency level)"
+      },
+      {
+        "id": "changelogBugReference",
+        "superType": "string",
+        "description": "Bug reference in changelog (e.g. Closes: #123456, LP: #789)"
       }
     ],
     "semanticTokenScopes": [
@@ -337,7 +342,8 @@
           "changelogUrgency": ["keyword.other"],
           "changelogMaintainer": ["variable.other"],
           "changelogTimestamp": ["string"],
-          "changelogMetadataValue": ["string"]
+          "changelogMetadataValue": ["string"],
+          "changelogBugReference": ["markup.underline.link"]
         }
       }
     ]

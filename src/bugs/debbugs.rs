@@ -108,6 +108,53 @@ impl BugCache {
         }
     }
 
+    /// Return a single Debian bug summary by ID, fetching from UDD if not
+    /// already cached.
+    pub async fn get_debian_bug_summary(&mut self, id: u32) -> Option<DebbugsBugSummary> {
+        if !self.bug_details_by_id.contains_key(&id) {
+            self.fetch_bug_by_id(id).await;
+        }
+        if self.bug_details_by_id.contains_key(&id) {
+            Some(self.make_summary(id))
+        } else {
+            None
+        }
+    }
+
+    /// Fetch a single bug by ID from UDD and cache it.
+    async fn fetch_bug_by_id(&mut self, id: u32) {
+        let row: Option<BugRow> = match sqlx::query_as(
+            "SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
+                    (SELECT string_agg(t.tag, ', ') FROM bugs_tags t WHERE t.id = b.id) AS tags \
+             FROM bugs b \
+             WHERE b.id = $1",
+        )
+        .bind(id as i32)
+        .fetch_optional(&*self.pool)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(id, error = %e, "UDD single bug query failed");
+                return;
+            }
+        };
+
+        if let Some(row) = row {
+            self.bug_details_by_id.insert(
+                id,
+                CachedDebbugsBugDetails {
+                    title: row.title,
+                    severity: row.severity,
+                    done: row.done.as_ref().is_some_and(|d| !d.is_empty()),
+                    tags: row.tags,
+                    forwarded: row.forwarded,
+                    originator: row.submitter,
+                },
+            );
+        }
+    }
+
     /// Count open bugs from cache only, without fetching.
     ///
     /// Returns `None` if the package has not been fetched yet.

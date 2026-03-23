@@ -5,4 +5,3 @@ src/**
 .eslintrc.json
 tsconfig.json
 *.vsix
-node_modules/**
