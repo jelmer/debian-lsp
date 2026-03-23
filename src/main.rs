@@ -327,6 +327,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::new("changelogMaintainer"),
                                     SemanticTokenType::new("changelogTimestamp"),
                                     SemanticTokenType::new("changelogMetadataValue"),
+                                    SemanticTokenType::new("changelogBugReference"),
                                 ],
                                 token_modifiers: vec![SemanticTokenModifier::DECLARATION],
                             },
@@ -1512,6 +1513,11 @@ impl LanguageServer for Backend {
                     }
                     _ => Ok(None),
                 }
+            }
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(file.source_file);
+                drop(workspace);
+                Ok(changelog::get_hover(&parsed, &source_text, position, &self.bug_cache).await)
             }
             _ => Ok(None),
         }
