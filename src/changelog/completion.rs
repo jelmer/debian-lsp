@@ -239,6 +239,20 @@ fn package_prefix_at_offset(
     Some(String::new())
 }
 
+/// Check whether `offset` falls within `range`, inclusive at both ends.
+///
+/// Unlike [`TextRange::contains`] (which is end-exclusive), this returns
+/// `true` when the cursor is right at the end of the range — the typical
+/// position when the user has finished typing a token and the cursor sits
+/// between the last character and the next delimiter.
+fn range_contains_inclusive(range: TextRange, offset: TextSize) -> bool {
+    if range.start() == range.end() {
+        offset == range.start()
+    } else {
+        offset >= range.start() && offset <= range.end()
+    }
+}
+
 fn distribution_prefix_at_offset(
     header: &debian_changelog::EntryHeader,
     offset: TextSize,
@@ -249,7 +263,7 @@ fn distribution_prefix_at_offset(
         .find(|n| n.kind() == debian_changelog::SyntaxKind::DISTRIBUTIONS)?;
     let range = distributions.text_range();
 
-    if !range.contains(offset) {
+    if !range_contains_inclusive(range, offset) {
         // If distributions are currently empty, still offer completions when the
         // cursor is between the version and semicolon (on whitespaces).
         if range.start() == range.end() && offset < range.start() {
@@ -312,7 +326,7 @@ fn urgency_prefix_at_offset(
 
         if let Some(value_node) = value_node {
             let value_range = value_node.text_range();
-            if !value_range.contains(offset) {
+            if !range_contains_inclusive(value_range, offset) {
                 continue;
             }
 
