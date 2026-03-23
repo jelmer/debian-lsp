@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use debian_copyright::LicenseExpr;
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use super::fields::{get_common_licenses, COPYRIGHT_FIELDS};
 
@@ -35,17 +35,119 @@ pub fn get_completions(
             }
         }
     }
-    crate::deb822::completion::get_completions(
+    let mut completions = crate::deb822::completion::get_completions(
         &deb822,
         source_text,
         position,
         COPYRIGHT_FIELDS,
         |field_name, prefix| get_field_value_completions(field_name, prefix, &file_licenses),
-    )
+    );
+
+    // Offer snippet completions at positions where new paragraphs can be started
+    let context = crate::deb822::completion::get_cursor_context(deb822, source_text, position);
+    match context {
+        Some(crate::deb822::completion::CursorContext::StartOfLine) => {
+            if source_text.trim().is_empty() {
+                completions.extend(get_snippet_completions());
+            } else {
+                completions.extend(get_paragraph_snippet_completions());
+            }
+        }
+        Some(crate::deb822::completion::CursorContext::FieldKey)
+            if source_text.trim().is_empty() =>
+        {
+            completions.extend(get_snippet_completions());
+        }
+        _ => {}
+    }
+
+    completions
 }
 
 /// The standard DEP-5 format URL.
 const DEP5_FORMAT_URL: &str = "https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/";
+
+/// Get snippet completions for scaffolding a new copyright file from scratch.
+fn get_snippet_completions() -> Vec<CompletionItem> {
+    let mut snippets = vec![
+        CompletionItem {
+            label: "DEP-5 copyright file".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some("Scaffold a complete DEP-5 copyright file".to_string()),
+            insert_text: Some(format!(
+                "Format: {}\n\
+                 Upstream-Name: ${{1:package}}\n\
+                 Upstream-Contact: ${{2:name <email>}}\n\
+                 Source: ${{3:url}}\n\
+                 \n\
+                 Files: *\n\
+                 Copyright: ${{4:year}} ${{5:author}}\n\
+                 License: ${{6:license}}\n\
+                 \n\
+                 Files: debian/*\n\
+                 Copyright: ${{7:year}} ${{8:maintainer}}\n\
+                 License: ${{9:license}}\n\
+                 \n\
+                 License: ${{6:license}}\n\
+                 ${{10:License text.}}\n",
+                DEP5_FORMAT_URL,
+            )),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some("0".to_string()),
+            ..Default::default()
+        },
+        CompletionItem {
+            label: "DEP-5 header".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some("Scaffold the DEP-5 header paragraph".to_string()),
+            insert_text: Some(format!(
+                "Format: {}\n\
+                 Upstream-Name: ${{1:package}}\n\
+                 Upstream-Contact: ${{2:name <email>}}\n\
+                 Source: ${{3:url}}\n",
+                DEP5_FORMAT_URL,
+            )),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some("1".to_string()),
+            ..Default::default()
+        },
+    ];
+    snippets.extend(get_paragraph_snippet_completions());
+    snippets
+}
+
+/// Get snippet completions for adding new paragraphs to an existing copyright file.
+fn get_paragraph_snippet_completions() -> Vec<CompletionItem> {
+    vec![
+        CompletionItem {
+            label: "Files paragraph".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some("Scaffold a Files paragraph".to_string()),
+            insert_text: Some(
+                "Files: ${1:*}\n\
+                 Copyright: ${2:year} ${3:author}\n\
+                 License: ${4:license}\n"
+                    .to_string(),
+            ),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some("2".to_string()),
+            ..Default::default()
+        },
+        CompletionItem {
+            label: "License paragraph".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some("Scaffold a standalone License paragraph".to_string()),
+            insert_text: Some(
+                "License: ${1:license}\n\
+                 ${2:License text.}\n"
+                    .to_string(),
+            ),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some("3".to_string()),
+            ..Default::default()
+        },
+    ]
+}
 
 /// Get value completions for a specific copyright field.
 fn get_field_value_completions(
@@ -216,12 +318,30 @@ mod tests {
         let parsed = parse(text);
         let completions = get_completions(&parsed, text, Position::new(0, 0));
 
-        for completion in &completions {
-            assert_eq!(completion.kind, Some(CompletionItemKind::FIELD));
+        let field_completions: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::FIELD))
+            .collect();
+        assert!(!field_completions.is_empty());
+        for completion in &field_completions {
             assert!(!completion.label.is_empty());
             assert!(completion.detail.is_some());
             assert!(completion.documentation.is_some());
             assert!(completion.insert_text.as_ref().unwrap().ends_with(": "));
+        }
+
+        let snippet_completions: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .collect();
+        assert!(!snippet_completions.is_empty());
+        for completion in &snippet_completions {
+            assert!(!completion.label.is_empty());
+            assert!(completion.detail.is_some());
+            assert_eq!(
+                completion.insert_text_format,
+                Some(InsertTextFormat::SNIPPET)
+            );
         }
     }
 
@@ -403,17 +523,6 @@ License: GPL-2+ or MI\n";
 
     #[test]
     fn test_license_expression_with_or_parses_names() {
-        let text = "\
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-
-Files: src/*
-Copyright: 2024 Alice
-License: GPL-2+ or MIT
-
-License: GPL-2+
- Free software...
-";
-
         // The file_licenses should pick up both GPL-2+ and MIT
         // from the expression "GPL-2+ or MIT"
         // Verify by checking completions on an empty License field
@@ -472,5 +581,122 @@ License: \n";
 
         // After second license
         assert_eq!(last_expression_token("MIT or GPL-2+ "), ("", false));
+    }
+
+    #[test]
+    fn test_snippet_completions_on_empty_file() {
+        let text = "";
+        let parsed = parse(text);
+        let completions = get_completions(&parsed, text, Position::new(0, 0));
+
+        let mut snippet_labels: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .map(|c| c.label.as_str())
+            .collect();
+        snippet_labels.sort();
+
+        assert_eq!(
+            snippet_labels,
+            vec![
+                "DEP-5 copyright file",
+                "DEP-5 header",
+                "Files paragraph",
+                "License paragraph",
+            ]
+        );
+
+        for snippet in completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+        {
+            assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+            assert!(snippet.insert_text.is_some());
+        }
+    }
+
+    #[test]
+    fn test_snippet_completions_on_whitespace_only_file() {
+        let text = "  \n\n";
+        let parsed = parse(text);
+        let completions = get_completions(&parsed, text, Position::new(2, 0));
+
+        let mut snippet_labels: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .map(|c| c.label.as_str())
+            .collect();
+        snippet_labels.sort();
+
+        assert_eq!(
+            snippet_labels,
+            vec![
+                "DEP-5 copyright file",
+                "DEP-5 header",
+                "Files paragraph",
+                "License paragraph",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_paragraph_snippets_on_non_empty_file() {
+        let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\n";
+        let parsed = parse(text);
+        // Cursor at start of blank line after header paragraph
+        let completions = get_completions(&parsed, text, Position::new(1, 0));
+
+        let mut snippet_labels: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .map(|c| c.label.as_str())
+            .collect();
+        snippet_labels.sort();
+
+        assert_eq!(snippet_labels, vec!["Files paragraph", "License paragraph"]);
+    }
+
+    #[test]
+    fn test_no_snippets_on_field_value() {
+        let text = "Format: \n";
+        let parsed = parse(text);
+        let completions = get_completions(&parsed, text, Position::new(0, 8));
+
+        let snippet_count = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .count();
+        assert_eq!(snippet_count, 0);
+    }
+
+    #[test]
+    fn test_full_file_snippet_content() {
+        let snippets = get_snippet_completions();
+        let full = snippets
+            .iter()
+            .find(|c| c.label == "DEP-5 copyright file")
+            .expect("Should have full file snippet");
+        let text = full.insert_text.as_ref().unwrap();
+        assert_eq!(
+            text,
+            &format!(
+                "Format: {}\n\
+                 Upstream-Name: ${{1:package}}\n\
+                 Upstream-Contact: ${{2:name <email>}}\n\
+                 Source: ${{3:url}}\n\
+                 \n\
+                 Files: *\n\
+                 Copyright: ${{4:year}} ${{5:author}}\n\
+                 License: ${{6:license}}\n\
+                 \n\
+                 Files: debian/*\n\
+                 Copyright: ${{7:year}} ${{8:maintainer}}\n\
+                 License: ${{9:license}}\n\
+                 \n\
+                 License: ${{6:license}}\n\
+                 ${{10:License text.}}\n",
+                DEP5_FORMAT_URL,
+            )
+        );
     }
 }

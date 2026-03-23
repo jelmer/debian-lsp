@@ -107,8 +107,7 @@ fn push_token(
 /// Highlights `Closes: #NNN, #NNN` and `LP: #NNN, #NNN` spans, including
 /// references that wrap across DETAIL tokens (continuation lines).
 ///
-/// Returns `true` if the reference continues past the end of this token
-/// (the line ended with a trailing comma or with the marker but no digits).
+/// Returns `true` if the reference continues past the end of this token.
 fn push_bug_references(
     builder: &mut SemanticTokensBuilder,
     source_text: &str,
@@ -117,128 +116,29 @@ fn push_bug_references(
     continues_from_prev: bool,
 ) -> bool {
     let start: usize = token_start.into();
-    let lower = text.to_ascii_lowercase();
-
-    // If we're continuing from a previous line, highlight leading bug numbers.
-    // A continuation line looks like "    #789012" or "    #789012, #345678".
-    if continues_from_prev {
-        if let Some(end) = highlight_continuation(builder, source_text, start, text) {
-            // Check if this continuation itself continues (trailing comma).
-            let highlighted = &text[..end];
-            if highlighted.trim_end().ends_with(',') {
-                return true;
-            }
-        }
-    }
-
-    // Scan for new marker occurrences in this token.
+    let spans = debian_changelog::bugs::bug_ref_spans(text, continues_from_prev);
     let mut last_continues = false;
-    for marker in &["closes:", "lp:"] {
-        for (idx, _) in lower.match_indices(marker) {
-            if idx > 0 {
-                let prev = lower.as_bytes()[idx - 1];
-                if prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_' {
-                    continue;
-                }
-            }
 
-            let after = &text[idx + marker.len()..];
-            let span_end = idx
-                + marker.len()
-                + after
-                    .find(|c: char| {
-                        !(c.is_ascii_whitespace() || c == ',' || c == '#' || c.is_ascii_digit())
-                    })
-                    .unwrap_or(after.len());
-
-            let content = &text[idx + marker.len()..span_end];
-
-            // Trim trailing whitespace/commas from the highlighted span.
-            let trimmed_end = idx
-                + marker.len()
-                + content
-                    .trim_end_matches(|c: char| c == ',' || c.is_ascii_whitespace())
-                    .len();
-
-            let matched_text = &text[idx..trimmed_end];
-            // Even if there are no digits yet (e.g. "Closes:" at end of line),
-            // we still emit the marker if there's content; the continuation
-            // will pick up the digits on the next line.
-            let has_digits = content.chars().any(|c| c.is_ascii_digit());
-
-            if has_digits {
-                let abs_start = text_size::TextSize::from((start + idx) as u32);
-                let start_pos = offset_to_position(source_text, abs_start);
-                let length = crate::position::utf16_len(matched_text);
-                if length > 0 {
-                    builder.push(
-                        start_pos.line,
-                        start_pos.character,
-                        length,
-                        TokenType::ChangelogBugReference,
-                        0,
-                    );
-                }
-            }
-
-            // Check if this reference continues to the next line:
-            // either the marker has no digits (just "Closes:" at EOL),
-            // or it ends with a trailing comma.
-            let reaches_eol = span_end == text.len();
-            if reaches_eol {
-                let trimmed_content = content.trim();
-                last_continues =
-                    !has_digits || trimmed_content.ends_with(',') || trimmed_content.is_empty();
-            }
+    for span in &spans {
+        let matched_text = &text[span.start..span.end];
+        let abs_start = text_size::TextSize::from((start + span.start) as u32);
+        let start_pos = offset_to_position(source_text, abs_start);
+        let length = crate::position::utf16_len(matched_text);
+        if length > 0 {
+            builder.push(
+                start_pos.line,
+                start_pos.character,
+                length,
+                TokenType::ChangelogBugReference,
+                0,
+            );
+        }
+        if span.continues {
+            last_continues = true;
         }
     }
 
     last_continues
-}
-
-/// Highlight continuation bug numbers at the start of a DETAIL token.
-///
-/// Returns the byte offset within `text` up to which we highlighted,
-/// or `None` if this doesn't look like a continuation line.
-fn highlight_continuation(
-    builder: &mut SemanticTokensBuilder,
-    source_text: &str,
-    start: usize,
-    text: &str,
-) -> Option<usize> {
-    // Continuation lines contain only whitespace, commas, hashes, and digits.
-    // Find the extent of the bug-number portion.
-    let end = text
-        .find(|c: char| !(c.is_ascii_whitespace() || c == ',' || c == '#' || c.is_ascii_digit()))
-        .unwrap_or(text.len());
-
-    let span = &text[..end];
-    if !span.chars().any(|c| c.is_ascii_digit()) {
-        return None;
-    }
-
-    // Trim leading/trailing whitespace for the highlighted region.
-    let trimmed = span.trim();
-    let trimmed = trimmed.trim_end_matches(|c: char| c == ',' || c.is_ascii_whitespace());
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let offset_in_text = text.find(trimmed).unwrap();
-    let abs_start = text_size::TextSize::from((start + offset_in_text) as u32);
-    let start_pos = offset_to_position(source_text, abs_start);
-    let length = crate::position::utf16_len(trimmed);
-    if length > 0 {
-        builder.push(
-            start_pos.line,
-            start_pos.character,
-            length,
-            TokenType::ChangelogBugReference,
-            0,
-        );
-    }
-
-    Some(end)
 }
 
 #[cfg(test)]
@@ -436,9 +336,9 @@ pkg (1.0-1) unstable; urgency=low
             .filter(|t| t.token_type == TokenType::ChangelogBugReference as u32)
             .collect();
         // Two tokens: "Closes:" on line 2, "#123456" on line 3
-        assert_eq!(bug_tokens.len(), 1, "bug tokens: {bug_tokens:?}");
-        // The continuation line should highlight "#123456" (7 chars)
-        assert_eq!(bug_tokens[0].length, 7);
+        assert_eq!(bug_tokens.len(), 2, "bug tokens: {bug_tokens:?}");
+        assert_eq!(bug_tokens[0].length, 7); // "Closes:"
+        assert_eq!(bug_tokens[1].length, 7); // "#123456"
     }
 
     #[test]

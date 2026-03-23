@@ -1,4 +1,4 @@
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat};
 
 use super::fields::{
     CONTROL_FIELDS, CONTROL_PRIORITY_VALUES, CONTROL_SECTION_AREAS, CONTROL_SECTION_VALUES,
@@ -22,13 +22,82 @@ pub fn get_completions(
     source_text: &str,
     position: tower_lsp_server::ls_types::Position,
 ) -> Vec<CompletionItem> {
-    crate::deb822::completion::get_completions(
+    let mut completions = crate::deb822::completion::get_completions(
         deb822,
         source_text,
         position,
         CONTROL_FIELDS,
         get_field_value_completions,
-    )
+    );
+
+    let context = crate::deb822::completion::get_cursor_context(deb822, source_text, position);
+    match context {
+        Some(crate::deb822::completion::CursorContext::StartOfLine) => {
+            if source_text.trim().is_empty() {
+                completions.extend(get_snippet_completions());
+            } else {
+                completions.extend(get_paragraph_snippet_completions());
+            }
+        }
+        Some(crate::deb822::completion::CursorContext::FieldKey)
+            if source_text.trim().is_empty() =>
+        {
+            completions.extend(get_snippet_completions());
+        }
+        _ => {}
+    }
+
+    completions
+}
+
+/// Get snippet completions for scaffolding a new control file from scratch.
+fn get_snippet_completions() -> Vec<CompletionItem> {
+    let mut snippets = vec![CompletionItem {
+        label: "Source package".to_string(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some("Scaffold a source + binary control file".to_string()),
+        insert_text: Some(
+            "Source: ${1:package}\n\
+             Section: ${2:misc}\n\
+             Priority: ${3:optional}\n\
+             Maintainer: ${4:name <email>}\n\
+             Build-Depends: ${5:debhelper-compat (= 13)}\n\
+             Standards-Version: ${6:4.7.0}\n\
+             Rules-Requires-Root: no\n\
+             \n\
+             Package: ${7:$1}\n\
+             Architecture: ${8:any}\n\
+             Depends: ${9:\\${shlibs:Depends\\}, \\${misc:Depends\\}}\n\
+             Description: ${10:short description}\n\
+             ${11: long description}\n"
+                .to_string(),
+        ),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        sort_text: Some("0".to_string()),
+        ..Default::default()
+    }];
+    snippets.extend(get_paragraph_snippet_completions());
+    snippets
+}
+
+/// Get snippet completions for adding new paragraphs to an existing control file.
+fn get_paragraph_snippet_completions() -> Vec<CompletionItem> {
+    vec![CompletionItem {
+        label: "Binary package".to_string(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some("Scaffold a binary package paragraph".to_string()),
+        insert_text: Some(
+            "Package: ${1:package}\n\
+             Architecture: ${2:any}\n\
+             Depends: ${3:\\${shlibs:Depends\\}, \\${misc:Depends\\}}\n\
+             Description: ${4:short description}\n\
+             ${5: long description}\n"
+                .to_string(),
+        ),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        sort_text: Some("1".to_string()),
+        ..Default::default()
+    }]
 }
 
 /// Get value completions for specific control file fields (sync only).
@@ -812,5 +881,82 @@ mod tests {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["!i386"]);
+    }
+
+    #[test]
+    fn test_snippet_completions_on_empty_file() {
+        let text = "";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let completions = get_completions(&deb822, text, Position::new(0, 0));
+
+        let mut snippet_labels: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .map(|c| c.label.as_str())
+            .collect();
+        snippet_labels.sort();
+
+        assert_eq!(snippet_labels, vec!["Binary package", "Source package"]);
+
+        for snippet in completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+        {
+            assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+            assert!(snippet.insert_text.is_some());
+        }
+    }
+
+    #[test]
+    fn test_paragraph_snippets_on_non_empty_file() {
+        let text = "Source: test\nSection: misc\n\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let completions = get_completions(&deb822, text, Position::new(2, 0));
+
+        let snippet_labels: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .map(|c| c.label.as_str())
+            .collect();
+
+        assert_eq!(snippet_labels, vec!["Binary package"]);
+    }
+
+    #[test]
+    fn test_no_snippets_on_field_value() {
+        let text = "Source: test\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let completions = get_completions(&deb822, text, Position::new(0, 10));
+
+        let snippet_count = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::SNIPPET))
+            .count();
+        assert_eq!(snippet_count, 0);
+    }
+
+    #[test]
+    fn test_source_package_snippet_content() {
+        let snippets = get_snippet_completions();
+        let source = snippets
+            .iter()
+            .find(|c| c.label == "Source package")
+            .expect("Should have Source package snippet");
+        assert_eq!(
+            source.insert_text.as_deref().unwrap(),
+            "Source: ${1:package}\n\
+             Section: ${2:misc}\n\
+             Priority: ${3:optional}\n\
+             Maintainer: ${4:name <email>}\n\
+             Build-Depends: ${5:debhelper-compat (= 13)}\n\
+             Standards-Version: ${6:4.7.0}\n\
+             Rules-Requires-Root: no\n\
+             \n\
+             Package: ${7:$1}\n\
+             Architecture: ${8:any}\n\
+             Depends: ${9:\\${shlibs:Depends\\}, \\${misc:Depends\\}}\n\
+             Description: ${10:short description}\n\
+             ${11: long description}\n"
+        );
     }
 }
