@@ -31,6 +31,7 @@ pub enum TokenType {
     ChangelogMaintainer = 8,
     ChangelogTimestamp = 9,
     ChangelogMetadataValue = 10,
+    ChangelogBugReference = 11,
 }
 
 /// Token modifier bit flags

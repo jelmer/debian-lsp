@@ -32,6 +32,7 @@ function setupSemanticHighlights(): void {
     CocSemTypechangelogMaintainer: 'Special',
     CocSemTypechangelogTimestamp: 'String',
     CocSemTypechangelogMetadataValue: 'String',
+    CocSemTypechangelogBugReference: 'Underlined',
   };
 
   for (const [group, target] of Object.entries(links)) {
