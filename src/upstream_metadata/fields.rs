@@ -10,8 +10,6 @@ impl UpstreamField {
     }
 }
 
-// TODO: Read field definitions from the debian-json-schemas project instead of hardcoding.
-
 /// DEP-12 upstream metadata fields.
 pub const UPSTREAM_FIELDS: &[UpstreamField] = &[
     UpstreamField::new("Repository", "URL of the upstream source repository"),

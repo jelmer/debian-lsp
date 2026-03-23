@@ -1,17 +1,12 @@
 use std::collections::BTreeSet;
 
+use debian_changelog::bugs::BugTracker;
 use rowan::ast::AstNode;
 use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
 use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BugTracker {
-    Debian,
-    Launchpad,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CursorContext {
@@ -165,7 +160,7 @@ fn get_cursor_context(
         }
     }
 
-    if let Some((tracker, value_prefix)) = bug_prefix_at_offset(&entry, offset) {
+    if let Some((tracker, value_prefix)) = entry.bug_prefix_at_offset(offset) {
         return Some(CursorContext::BugNumber {
             tracker,
             package_name: entry.package(),
@@ -254,7 +249,7 @@ fn distribution_prefix_at_offset(
         .find(|n| n.kind() == debian_changelog::SyntaxKind::DISTRIBUTIONS)?;
     let range = distributions.text_range();
 
-    if !range_contains_offset(range, offset) {
+    if !range.contains(offset) {
         // If distributions are currently empty, still offer completions when the
         // cursor is between the version and semicolon (on whitespaces).
         if range.start() == range.end() && offset < range.start() {
@@ -317,7 +312,7 @@ fn urgency_prefix_at_offset(
 
         if let Some(value_node) = value_node {
             let value_range = value_node.text_range();
-            if !range_contains_offset(value_range, offset) {
+            if !value_range.contains(offset) {
                 continue;
             }
 
@@ -367,133 +362,6 @@ fn urgency_prefix_at_offset(
     }
 
     None
-}
-
-/// Return bug-reference context at `offset` inside an entry.
-///
-/// Supports Debian bug references (`Closes: #...`) and Launchpad bug
-/// references (`LP: #...`) on detail lines (`DETAIL` tokens).
-fn bug_prefix_at_offset(
-    entry: &debian_changelog::Entry,
-    offset: TextSize,
-) -> Option<(BugTracker, String)> {
-    let detail = match entry.syntax().token_at_offset(offset) {
-        rowan::TokenAtOffset::Single(token) => Some(token),
-        rowan::TokenAtOffset::Between(left, right) => {
-            if left.kind() == debian_changelog::SyntaxKind::DETAIL {
-                Some(left)
-            } else if right.kind() == debian_changelog::SyntaxKind::DETAIL {
-                Some(right)
-            } else {
-                None
-            }
-        }
-        rowan::TokenAtOffset::None => None,
-    }?;
-
-    if detail.kind() != debian_changelog::SyntaxKind::DETAIL {
-        return None;
-    }
-
-    if let Some(prefix) = closes_bug_prefix_at_offset(detail.text(), detail.text_range(), offset) {
-        return Some((BugTracker::Debian, prefix));
-    }
-
-    if let Some(prefix) = launchpad_bug_prefix_at_offset(detail.text(), detail.text_range(), offset)
-    {
-        return Some((BugTracker::Launchpad, prefix));
-    }
-
-    None
-}
-
-/// Parse a `Closes:` bug-number prefix from a single detail line slice.
-///
-/// Supports comma-separated references like `Closes: #123, #456` and returns
-/// the digits of the currently edited fragment.
-fn closes_bug_prefix_at_offset(
-    detail_text: &str,
-    detail_range: TextRange,
-    offset: TextSize,
-) -> Option<String> {
-    prefixed_bug_prefix_at_offset(detail_text, detail_range, offset, "closes:")
-}
-
-/// Parse an `LP:` bug-number prefix from a single detail line slice.
-///
-/// Supports comma-separated references like `LP: #123, #456` and returns
-/// the digits of the currently edited fragment.
-fn launchpad_bug_prefix_at_offset(
-    detail_text: &str,
-    detail_range: TextRange,
-    offset: TextSize,
-) -> Option<String> {
-    prefixed_bug_prefix_at_offset(detail_text, detail_range, offset, "lp:")
-}
-
-/// Parse a marker-prefixed bug number fragment (e.g. `closes:` or `lp:`).
-fn prefixed_bug_prefix_at_offset(
-    detail_text: &str,
-    detail_range: TextRange,
-    offset: TextSize,
-    marker: &str,
-) -> Option<String> {
-    if !range_contains_offset(detail_range, offset) {
-        return None;
-    }
-
-    let relative_end: usize =
-        (std::cmp::min(offset, detail_range.end()) - detail_range.start()).into();
-    let mut prefix_end = std::cmp::min(relative_end, detail_text.len());
-    while !detail_text.is_char_boundary(prefix_end) {
-        prefix_end -= 1;
-    }
-    let up_to_cursor = &detail_text[..prefix_end];
-
-    let lower = up_to_cursor.to_ascii_lowercase();
-    let mut marker_pos = None;
-    for (idx, _) in lower.match_indices(marker) {
-        let is_word_boundary = if idx == 0 {
-            true
-        } else {
-            let prev = lower.as_bytes()[idx - 1];
-            !(prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_')
-        };
-
-        if is_word_boundary {
-            marker_pos = Some(idx);
-        }
-    }
-    let marker_pos = marker_pos?;
-    let after_marker = &up_to_cursor[marker_pos + marker.len()..];
-
-    if after_marker
-        .chars()
-        .any(|c| !(c.is_ascii_whitespace() || c == ',' || c == '#' || c.is_ascii_digit()))
-    {
-        return None;
-    }
-
-    let current_fragment = after_marker
-        .rsplit(',')
-        .next()
-        .unwrap_or(after_marker)
-        .trim_start();
-    let digits = current_fragment.strip_prefix('#')?;
-
-    if !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-
-    Some(digits.to_string())
-}
-
-fn range_contains_offset(range: TextRange, offset: TextSize) -> bool {
-    if range.start() == range.end() {
-        offset == range.start()
-    } else {
-        offset >= range.start() && offset <= range.end()
-    }
 }
 
 fn token_prefix(token_text: &str, token_range: TextRange, offset: TextSize) -> String {
@@ -953,96 +821,6 @@ bar (1.0-1) unstable; urgency=low
         let completions = get_urgency_completions("me");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["medium"]);
-    }
-
-    #[test]
-    fn test_closes_bug_prefix_detection() {
-        let text = "  * Fix issue. Closes: #1234, #5678";
-        let offset = TextSize::try_from(text.find("#567").unwrap() + 4).unwrap();
-        let prefix = closes_bug_prefix_at_offset(
-            text,
-            TextRange::new(
-                TextSize::from(0u32),
-                TextSize::try_from(text.len()).unwrap(),
-            ),
-            offset,
-        );
-        assert_eq!(prefix.as_deref(), Some("567"));
-    }
-
-    #[test]
-    fn test_closes_bug_prefix_rejects_non_closes_context() {
-        let text = "  * Mention #123456";
-        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
-        let prefix = closes_bug_prefix_at_offset(
-            text,
-            TextRange::new(
-                TextSize::from(0u32),
-                TextSize::try_from(text.len()).unwrap(),
-            ),
-            offset,
-        );
-        assert!(prefix.is_none());
-    }
-
-    #[test]
-    fn test_closes_bug_prefix_rejects_embedded_marker() {
-        let text = "  * This line says discloses: #123456";
-        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
-        let prefix = closes_bug_prefix_at_offset(
-            text,
-            TextRange::new(
-                TextSize::from(0u32),
-                TextSize::try_from(text.len()).unwrap(),
-            ),
-            offset,
-        );
-        assert!(prefix.is_none());
-    }
-
-    #[test]
-    fn test_lp_bug_prefix_detection() {
-        let text = "  * Fix issue. LP: #1234, #5678";
-        let offset = TextSize::try_from(text.find("#567").unwrap() + 4).unwrap();
-        let prefix = launchpad_bug_prefix_at_offset(
-            text,
-            TextRange::new(
-                TextSize::from(0u32),
-                TextSize::try_from(text.len()).unwrap(),
-            ),
-            offset,
-        );
-        assert_eq!(prefix.as_deref(), Some("567"));
-    }
-
-    #[test]
-    fn test_lp_bug_prefix_rejects_non_lp_context() {
-        let text = "  * Mention #123456";
-        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
-        let prefix = launchpad_bug_prefix_at_offset(
-            text,
-            TextRange::new(
-                TextSize::from(0u32),
-                TextSize::try_from(text.len()).unwrap(),
-            ),
-            offset,
-        );
-        assert!(prefix.is_none());
-    }
-
-    #[test]
-    fn test_lp_bug_prefix_rejects_embedded_marker() {
-        let text = "  * This line says help: #123456";
-        let offset = TextSize::try_from(text.find("#123").unwrap() + 4).unwrap();
-        let prefix = launchpad_bug_prefix_at_offset(
-            text,
-            TextRange::new(
-                TextSize::from(0u32),
-                TextSize::try_from(text.len()).unwrap(),
-            ),
-            offset,
-        );
-        assert!(prefix.is_none());
     }
 
     #[tokio::test]
