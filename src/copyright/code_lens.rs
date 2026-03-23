@@ -271,7 +271,7 @@ fn extract_file_lens_data(
     parsed: &debian_copyright::lossless::Parse,
     source_text: &str,
 ) -> FileLensData {
-    let copyright = parsed.to_copyright();
+    let copyright = parsed.tree();
 
     let header = copyright.header();
 
@@ -331,7 +331,7 @@ pub fn generate_license_lenses(
     parsed: &debian_copyright::lossless::Parse,
     source_text: &str,
 ) -> Vec<CodeLens> {
-    let copyright = parsed.to_copyright();
+    let copyright = parsed.tree();
     let mut lenses = Vec::new();
 
     let mut license_usage: HashMap<String, usize> = HashMap::new();

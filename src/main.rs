@@ -1047,10 +1047,7 @@ impl LanguageServer for Backend {
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
-                deb822::folding::generate_folding_ranges(
-                    parsed.to_copyright().as_deb822(),
-                    &source_text,
-                )
+                deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), &source_text)
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
@@ -1105,7 +1102,7 @@ impl LanguageServer for Backend {
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 deb822::selection_range::generate_selection_ranges(
-                    parsed.to_copyright().as_deb822(),
+                    parsed.tree().as_deb822(),
                     &source_text,
                     &params.positions,
                 )
@@ -1172,7 +1169,7 @@ impl LanguageServer for Backend {
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 Ok(deb822::on_type_formatting::on_type_formatting(
-                    parsed.to_copyright().as_deb822(),
+                    parsed.tree().as_deb822(),
                     &source_text,
                     position,
                     &params.ch,
@@ -1501,7 +1498,7 @@ impl LanguageServer for Backend {
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
-                let copyright = parsed.to_copyright();
+                let copyright = parsed.tree();
                 Ok(copyright::get_hover(
                     copyright.as_deb822(),
                     &source_text,

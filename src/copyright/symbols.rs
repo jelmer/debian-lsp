@@ -13,7 +13,7 @@ use crate::position::text_range_to_lsp_range;
 /// outline navigation.
 #[allow(deprecated)] // DocumentSymbol::deprecated field
 pub fn generate_document_symbols(parse: &Parse, source_text: &str) -> Vec<DocumentSymbol> {
-    let copyright = parse.to_copyright();
+    let copyright = parse.tree();
     let mut symbols = Vec::new();
 
     if let Some(header) = copyright.header() {
