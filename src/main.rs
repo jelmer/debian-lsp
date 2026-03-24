@@ -1352,6 +1352,10 @@ impl LanguageServer for Backend {
                         }
                         for pkg in &uncached.binary_packages {
                             {
+                                let mut cache = bug_cache.write().await;
+                                cache.prefetch_bugs_for_binary_package(pkg).await;
+                            }
+                            {
                                 let mut cache = popcon_cache.write().await;
                                 cache.get_inst_count(pkg).await;
                             }
