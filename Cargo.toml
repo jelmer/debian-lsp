@@ -1,6 +1,6 @@
 [package]
 name = "debian-lsp"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
 description = "Language Server Protocol implementation for Debian control files with field completion, diagnostics, and quickfixes"
@@ -37,8 +37,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 salsa = ">=0.23, <0.27"
 text-size = "1.1"
-# change to the lastest version once the patch to blocking api gating is released.
-launchpadlib = { git = "https://github.com/jelmer/launchpadlib-rs", rev = "b96ebb7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
+launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 
 [dev-dependencies]
 tempfile = "3"
