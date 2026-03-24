@@ -26,12 +26,15 @@ fn make_link_lens(range: Range, title: String, url: String) -> CodeLens {
 }
 
 /// Create an informational code lens (not clickable).
+///
+/// Uses a dummy command name because some editors silently drop
+/// code lenses whose command string is empty.
 fn make_info_lens(range: Range, title: String) -> CodeLens {
     CodeLens {
         range,
         command: Some(Command {
             title,
-            command: String::new(),
+            command: "debian-lsp.noop".to_string(),
             arguments: None,
         }),
         data: None,

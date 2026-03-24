@@ -151,7 +151,8 @@ async fn get_file_count_lenses(
                 range: para_data.range,
                 command: Some(Command {
                     title,
-                    command: String::new(),
+                    // Some editors silently drop lenses with an empty command
+                    command: "debian-lsp.noop".to_string(),
                     arguments: None,
                 }),
                 data: None,
@@ -228,17 +229,24 @@ pub async fn generate_code_lenses(
     let mut lenses = generate_license_lenses(parsed, source_text);
     let file_lens_data = extract_file_lens_data(parsed, source_text);
 
-    if file_lens_data.is_empty() || source_root.is_none() {
+    if file_lens_data.is_empty() {
+        tracing::debug!("no file paragraphs found in copyright file");
         return lenses;
     }
 
+    let Some(root) = source_root else {
+        tracing::debug!("no source root provided, skipping file count lenses");
+        return lenses;
+    };
+
     // Get file-count lenses (cached when patterns and git file list unchanged).
     if let Some(mut file_lenses) =
-        get_file_count_lenses(git_file_cache, source_root.unwrap(), &file_lens_data).await
+        get_file_count_lenses(git_file_cache, root, &file_lens_data).await
     {
         file_lenses.append(&mut lenses);
         file_lenses
     } else {
+        tracing::warn!("failed to get file count lenses for {}", root.display());
         lenses
     }
 }
