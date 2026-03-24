@@ -14,7 +14,7 @@ pub fn get_completions(
     source_text: &str,
     position: Position,
 ) -> Vec<CompletionItem> {
-    let copyright = parsed.to_copyright();
+    let copyright = parsed.tree();
     let deb822 = copyright.as_deb822();
 
     // Collect all license names used in the file for completion

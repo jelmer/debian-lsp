@@ -128,7 +128,7 @@ impl Workspace {
     ) -> Vec<FieldCasingIssue> {
         let mut issues = Vec::new();
         let copyright_parse = self.get_parsed_copyright(file);
-        let copyright = copyright_parse.to_copyright();
+        let copyright = copyright_parse.tree();
 
         // Check header fields
         if let Some(header) = copyright.header() {
@@ -338,7 +338,7 @@ License: MIT
 
         assert!(parsed.errors().is_empty());
 
-        let copyright = parsed.to_copyright();
+        let copyright = parsed.tree();
         assert!(copyright.header().is_some());
         assert_eq!(copyright.iter_files().count(), 1);
     }
@@ -361,7 +361,7 @@ license: MIT
 
         assert!(parsed.errors().is_empty());
 
-        let copyright = parsed.to_copyright();
+        let copyright = parsed.tree();
         assert!(copyright.header().is_some());
         assert_eq!(copyright.iter_files().count(), 1);
     }
