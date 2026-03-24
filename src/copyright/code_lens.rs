@@ -246,10 +246,7 @@ pub async fn generate_code_lenses(
         file_lenses.append(&mut lenses);
         file_lenses
     } else {
-        tracing::warn!(
-            "failed to get file count lenses for {}",
-            root.display()
-        );
+        tracing::warn!("failed to get file count lenses for {}", root.display());
         lenses
     }
 }
@@ -689,5 +686,4 @@ License: MIT
             "used by 1 Files paragraph"
         );
     }
-
 }
