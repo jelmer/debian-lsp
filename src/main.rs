@@ -355,6 +355,7 @@ impl LanguageServer for Backend {
                 })),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
@@ -1545,6 +1546,40 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_control(file.source_file);
                 let location = control::goto_definition(&parsed, &source_text, position, uri);
                 Ok(location.map(GotoDefinitionResponse::Scalar))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::Control => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                let refs = control::find_references(
+                    &parsed,
+                    &source_text,
+                    position,
+                    uri,
+                    include_declaration,
+                );
+                if refs.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(refs))
+                }
             }
             _ => Ok(None),
         }
