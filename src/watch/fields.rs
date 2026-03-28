@@ -80,6 +80,14 @@ fn ctype_completions(prefix: &str) -> Vec<CompletionItem> {
     enum_completions(&["perl", "nodejs"], prefix)
 }
 
+// TODO: derive template names from debian_watch::templates::Template enum
+fn template_completions(prefix: &str) -> Vec<CompletionItem> {
+    enum_completions(
+        &["github", "gitlab", "pypi", "npmregistry", "metacpan"],
+        prefix,
+    )
+}
+
 impl WatchField {
     pub const fn new(
         deb822_name: &'static str,
@@ -125,21 +133,42 @@ pub const WATCH_FIELDS: &[WatchField] = &[
     WatchField::new(
         "Template",
         None,
-        "URL template for constructing download URLs",
-        OptionValueType::String,
-        no_completions,
+        "URL template for constructing download URLs (github, gitlab, pypi, npmregistry, metacpan)",
+        OptionValueType::Enum(&["github", "gitlab", "pypi", "npmregistry", "metacpan"]),
+        template_completions,
     ),
     WatchField::new(
         "Owner",
         None,
-        "Owner name for repository-based sources",
+        "Owner name for repository-based sources (used with github template)",
         OptionValueType::String,
         no_completions,
     ),
     WatchField::new(
         "Project",
         None,
-        "Project name for repository-based sources",
+        "Project name for repository-based sources (used with github template)",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Dist",
+        None,
+        "Distribution or package name (used with gitlab, pypi, npmregistry, metacpan templates)",
+        OptionValueType::String,
+        no_completions,
+    ),
+    WatchField::new(
+        "Release-Only",
+        None,
+        "Restrict to releases only, not all tags (used with github and gitlab templates)",
+        OptionValueType::Boolean,
+        boolean_completions,
+    ),
+    WatchField::new(
+        "Version-Type",
+        None,
+        "Version pattern type (e.g. semantic, stable) — expands to @TYPE_VERSION@ in matching pattern",
         OptionValueType::String,
         no_completions,
     ),
@@ -373,6 +402,9 @@ mod tests {
                 "Template",
                 "Owner",
                 "Project",
+                "Dist",
+                "Release-Only",
+                "Version-Type",
             ]
             .contains(&field.deb822_name)
             {

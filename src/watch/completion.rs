@@ -344,6 +344,28 @@ mod tests {
     }
 
     #[test]
+    fn test_get_completions_deb822_on_template_value() {
+        let text = "Version: 5\n\nTemplate: \n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+
+        let completions = get_completions_deb822(&deb822, text, Position::new(2, 10));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["github", "gitlab", "pypi", "npmregistry", "metacpan"]);
+    }
+
+    #[test]
+    fn test_get_completions_deb822_on_template_value_with_prefix() {
+        let text = "Version: 5\n\nTemplate: g\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+
+        let completions = get_completions_deb822(&deb822, text, Position::new(2, 11));
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["github", "gitlab"]);
+    }
+
+    #[test]
     fn test_get_completions_deb822_on_empty() {
         let text = "";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
