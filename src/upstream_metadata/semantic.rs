@@ -1,7 +1,7 @@
 //! Semantic token generation for debian/upstream/metadata files.
 
 use tower_lsp_server::ls_types::SemanticToken;
-use yaml_edit::{Document, YamlNode};
+use yaml_edit::{Document, Mapping, YamlNode};
 
 use super::fields::get_standard_field_name;
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
@@ -20,6 +20,22 @@ pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
 
     let mut builder = SemanticTokensBuilder::new();
 
+    emit_mapping_tokens(&mapping, source_text, &mut builder, true);
+
+    builder.build()
+}
+
+/// Emit semantic tokens for all entries in a mapping.
+///
+/// When `top_level` is true, keys are checked against DEP-12 field names to
+/// distinguish known fields from unknown ones. Nested mapping keys are always
+/// emitted as plain fields.
+fn emit_mapping_tokens(
+    mapping: &Mapping,
+    source_text: &str,
+    builder: &mut SemanticTokensBuilder,
+    top_level: bool,
+) {
     for entry in mapping.entries() {
         // Emit token for the key
         if let Some(YamlNode::Scalar(key_scalar)) = entry.key_node() {
@@ -32,10 +48,14 @@ pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
             let line = pos.line.saturating_sub(1) as u32;
             let col = pos.column.saturating_sub(1) as u32;
 
-            let token_type = if get_standard_field_name(&key_text).is_some() {
-                TokenType::Field
+            let token_type = if top_level {
+                if get_standard_field_name(&key_text).is_some() {
+                    TokenType::Field
+                } else {
+                    TokenType::UnknownField
+                }
             } else {
-                TokenType::UnknownField
+                TokenType::Field
             };
 
             builder.push(
@@ -47,10 +67,19 @@ pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
             );
         }
 
-        // Emit token for the value (only for scalar values)
-        if let Some(YamlNode::Scalar(val_scalar)) = entry.value_node() {
-            let pos = val_scalar.start_position(source_text);
-            let range = val_scalar.byte_range();
+        // Emit tokens for the value, recursing into nested structures
+        if let Some(value_node) = entry.value_node() {
+            emit_node_tokens(&value_node, source_text, builder);
+        }
+    }
+}
+
+/// Emit semantic tokens for a YAML node, recursing into mappings and sequences.
+fn emit_node_tokens(node: &YamlNode, source_text: &str, builder: &mut SemanticTokensBuilder) {
+    match node {
+        YamlNode::Scalar(scalar) => {
+            let pos = scalar.start_position(source_text);
+            let range = scalar.byte_range();
             let len = range.end - range.start;
 
             let line = pos.line.saturating_sub(1) as u32;
@@ -60,9 +89,16 @@ pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
                 builder.push(line, col, len, TokenType::Value, 0);
             }
         }
+        YamlNode::Mapping(mapping) => {
+            emit_mapping_tokens(mapping, source_text, builder, false);
+        }
+        YamlNode::Sequence(sequence) => {
+            for item in sequence.values() {
+                emit_node_tokens(&item, source_text, builder);
+            }
+        }
+        _ => {}
     }
-
-    builder.build()
 }
 
 #[cfg(test)]
@@ -114,15 +150,35 @@ mod tests {
     }
 
     #[test]
-    fn test_sequence_value_skipped() {
-        // Registry has a sequence value — only the key should get a token
+    fn test_sequence_with_nested_mappings() {
+        // Registry has a sequence of mappings — all keys and values should get tokens
         let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
         let tokens = generate_semantic_tokens(text);
 
-        // Only the top-level key "Registry" gets a token (value is a sequence, not scalar)
-        assert_eq!(tokens.len(), 1);
+        // Registry (key) + Name (key) + PyPI (value) + Entry (key) + example (value)
+        assert_eq!(tokens.len(), 5);
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
         assert_eq!(tokens[0].length, 8); // "Registry"
+        assert_eq!(tokens[1].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[1].length, 4); // "Name"
+        assert_eq!(tokens[2].token_type, TokenType::Value as u32);
+        assert_eq!(tokens[2].length, 4); // "PyPI"
+        assert_eq!(tokens[3].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[3].length, 5); // "Entry"
+        assert_eq!(tokens[4].token_type, TokenType::Value as u32);
+        assert_eq!(tokens[4].length, 7); // "example"
+    }
+
+    #[test]
+    fn test_sequence_of_scalars() {
+        let text = "Other-References:\n  - https://example.com\n  - https://example.org\n";
+        let tokens = generate_semantic_tokens(text);
+
+        // Other-References (key) + 2 scalar values
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].token_type, TokenType::Field as u32);
+        assert_eq!(tokens[1].token_type, TokenType::Value as u32);
+        assert_eq!(tokens[2].token_type, TokenType::Value as u32);
     }
 
     #[test]
