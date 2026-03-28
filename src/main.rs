@@ -354,6 +354,10 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -1533,6 +1537,34 @@ impl LanguageServer for Backend {
                 let yaml_file = parsed.tree();
                 match yaml_file.document() {
                     Some(doc) => Ok(upstream_metadata::get_hover(&doc, &source_text, position)),
+                    None => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
+        let uri = &params.text_document.uri;
+
+        let files = self.files.lock().await;
+        let file = match files.get(uri) {
+            Some(f) => *f,
+            None => return Ok(None),
+        };
+        drop(files);
+
+        match file.file_type {
+            FileType::UpstreamMetadata => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
+                let yaml_file = parsed.tree();
+                match yaml_file.document() {
+                    Some(doc) => Ok(Some(upstream_metadata::get_document_links(
+                        &doc,
+                        &source_text,
+                    ))),
                     None => Ok(None),
                 }
             }

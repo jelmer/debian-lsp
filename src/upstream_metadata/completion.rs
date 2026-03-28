@@ -75,7 +75,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_completions_on_existing_field() {
+    fn test_get_completions_on_existing_field_key() {
+        // Line has a colon, so the field name is already complete
         let text = "Repository: https://example.com\n";
         let completions = get_completions(text, Position::new(0, 0));
         assert_eq!(completions.len(), 0);
@@ -89,9 +90,24 @@ mod tests {
     }
 
     #[test]
+    fn test_get_completions_partial_field_name_at_col_zero() {
+        let text = "Repository: https://example.com\nBug";
+        let completions = get_completions(text, Position::new(1, 0));
+        assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
+    }
+
+    #[test]
     fn test_get_completions_on_indented_line() {
         let text = "Reference:\n  - https://example.com\n";
         let completions = get_completions(text, Position::new(1, 4));
+        assert_eq!(completions.len(), 0);
+    }
+
+    #[test]
+    fn test_get_completions_indented_line() {
+        // Indented lines are continuation/value lines — no field completions
+        let text = "Repository: https://example.com\n  indented\n";
+        let completions = get_completions(text, Position::new(1, 2));
         assert_eq!(completions.len(), 0);
     }
 

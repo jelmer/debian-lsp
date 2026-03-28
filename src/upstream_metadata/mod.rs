@@ -5,11 +5,13 @@
 
 pub mod completion;
 pub mod detection;
+pub mod document_link;
 pub mod fields;
 pub mod hover;
 pub mod semantic;
 
 pub use completion::get_completions;
 pub use detection::is_upstream_metadata_file;
+pub use document_link::get_document_links;
 pub use hover::get_hover;
 pub use semantic::generate_semantic_tokens;
