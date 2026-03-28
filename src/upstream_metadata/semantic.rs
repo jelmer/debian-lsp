@@ -7,12 +7,7 @@ use super::fields::get_standard_field_name;
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
 
 /// Generate semantic tokens for a debian/upstream/metadata file.
-pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
-    let doc = match source_text.parse::<Document>() {
-        Ok(doc) => doc,
-        Err(_) => return vec![],
-    };
-
+pub fn generate_semantic_tokens(doc: &Document, source_text: &str) -> Vec<SemanticToken> {
     let mapping = match doc.as_mapping() {
         Some(m) => m,
         None => return vec![],
@@ -105,10 +100,15 @@ fn emit_node_tokens(node: &YamlNode, source_text: &str, builder: &mut SemanticTo
 mod tests {
     use super::*;
 
+    fn parse_doc(text: &str) -> Document {
+        text.parse::<Document>().unwrap()
+    }
+
     #[test]
     fn test_known_fields() {
         let text = "Repository: https://github.com/example/project\nBug-Database: https://github.com/example/project/issues\n";
-        let tokens = generate_semantic_tokens(text);
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
 
         assert_eq!(tokens.len(), 4);
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
@@ -122,7 +122,8 @@ mod tests {
     #[test]
     fn test_unknown_field() {
         let text = "Repository: https://example.com\nX-Custom: value\n";
-        let tokens = generate_semantic_tokens(text);
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
 
         assert_eq!(tokens.len(), 4);
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
@@ -131,21 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_text() {
-        let tokens = generate_semantic_tokens("");
-        assert_eq!(tokens.len(), 0);
-    }
-
-    #[test]
-    fn test_invalid_yaml() {
-        let tokens = generate_semantic_tokens("{{invalid yaml");
-        assert_eq!(tokens.len(), 0);
-    }
-
-    #[test]
     fn test_non_mapping_document() {
         // A YAML document that is a sequence, not a mapping
-        let tokens = generate_semantic_tokens("- item1\n- item2\n");
+        let text = "- item1\n- item2\n";
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
         assert_eq!(tokens.len(), 0);
     }
 
@@ -153,7 +144,8 @@ mod tests {
     fn test_sequence_with_nested_mappings() {
         // Registry has a sequence of mappings — all keys and values should get tokens
         let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
-        let tokens = generate_semantic_tokens(text);
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
 
         // Registry (key) + Name (key) + PyPI (value) + Entry (key) + example (value)
         assert_eq!(tokens.len(), 5);
@@ -184,7 +176,8 @@ mod tests {
     #[test]
     fn test_declaration_modifier_on_keys() {
         let text = "Repository: https://example.com\n";
-        let tokens = generate_semantic_tokens(text);
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
 
         assert_eq!(tokens.len(), 2);
         // Key should have DECLARATION modifier
@@ -199,7 +192,8 @@ mod tests {
     #[test]
     fn test_delta_positions() {
         let text = "Repository: https://example.com\nBug-Database: https://bugs.example.com\n";
-        let tokens = generate_semantic_tokens(text);
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
 
         assert_eq!(tokens.len(), 4);
         // First key at line 0

@@ -79,6 +79,15 @@ pub fn parse_deb822(
     deb822_lossless::Deb822::parse(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_upstream_metadata(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> yaml_edit::Parse<yaml_edit::YamlFile> {
+    let text = file.text(db);
+    yaml_edit::YamlFile::parse(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -262,6 +271,13 @@ impl Workspace {
         file: SourceFile,
     ) -> deb822_lossless::Parse<deb822_lossless::Deb822> {
         parse_deb822(self, file)
+    }
+
+    pub fn get_parsed_upstream_metadata(
+        &self,
+        file: SourceFile,
+    ) -> yaml_edit::Parse<yaml_edit::YamlFile> {
+        parse_upstream_metadata(self, file)
     }
 
     pub fn get_parsed_changelog(
