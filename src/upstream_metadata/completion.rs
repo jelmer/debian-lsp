@@ -4,22 +4,35 @@ use super::fields::UPSTREAM_FIELDS;
 
 /// Get completions for a debian/upstream/metadata file at the given position.
 ///
-/// If the cursor is at the start of a line (column 0), returns field name
-/// completions. Otherwise returns empty.
+/// Returns field name completions when the cursor is at the start of a line
+/// (empty line or typing a top-level YAML key that hasn't been completed with
+/// a colon yet).
 pub fn get_completions(source_text: &str, position: Position) -> Vec<CompletionItem> {
-    if position.character != 0 {
-        return vec![];
-    }
-
-    // Check if the cursor is on an empty line or at the start of a new line
     let lines: Vec<&str> = source_text.lines().collect();
     let line = lines.get(position.line as usize).copied().unwrap_or("");
 
-    // Only offer field completions on empty or whitespace-only lines
-    if !line.trim().is_empty() {
+    // Offer field completions when:
+    // 1. The line is empty/whitespace (cursor at column 0)
+    // 2. The cursor is on a line that looks like an incomplete top-level key
+    //    (no colon yet, no leading whitespace — i.e. not a nested value)
+    if line.trim().is_empty() {
+        if position.character == 0 {
+            return get_field_completions();
+        }
         return vec![];
     }
 
+    // If the line already has a colon, the user is editing a value, not a key
+    if line.contains(':') {
+        return vec![];
+    }
+
+    // If the line starts with whitespace, it's a nested/continuation value
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return vec![];
+    }
+
+    // The user is typing a top-level key name — offer field completions
     get_field_completions()
 }
 
@@ -55,7 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_completions_not_at_column_zero() {
+    fn test_get_completions_on_value() {
         let text = "Repository: https://example.com\n";
         let completions = get_completions(text, Position::new(0, 12));
         assert_eq!(completions.len(), 0);
@@ -65,6 +78,20 @@ mod tests {
     fn test_get_completions_on_existing_field() {
         let text = "Repository: https://example.com\n";
         let completions = get_completions(text, Position::new(0, 0));
+        assert_eq!(completions.len(), 0);
+    }
+
+    #[test]
+    fn test_get_completions_typing_field_name() {
+        let text = "Repository: https://example.com\nBug";
+        let completions = get_completions(text, Position::new(1, 3));
+        assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
+    }
+
+    #[test]
+    fn test_get_completions_on_indented_line() {
+        let text = "Reference:\n  - https://example.com\n";
+        let completions = get_completions(text, Position::new(1, 4));
         assert_eq!(completions.len(), 0);
     }
 
