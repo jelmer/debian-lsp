@@ -164,7 +164,8 @@ mod tests {
     #[test]
     fn test_sequence_of_scalars() {
         let text = "Other-References:\n  - https://example.com\n  - https://example.org\n";
-        let tokens = generate_semantic_tokens(text);
+        let doc = parse_doc(text);
+        let tokens = generate_semantic_tokens(&doc, text);
 
         // Other-References (key) + 2 scalar values
         assert_eq!(tokens.len(), 3);
