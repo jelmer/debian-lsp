@@ -6,8 +6,10 @@
 pub mod completion;
 pub mod detection;
 pub mod fields;
+pub mod hover;
 pub mod semantic;
 
 pub use completion::get_completions;
 pub use detection::is_upstream_metadata_file;
+pub use hover::get_hover;
 pub use semantic::generate_semantic_tokens;

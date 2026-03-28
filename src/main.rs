@@ -969,7 +969,14 @@ impl LanguageServer for Backend {
                 let deb822_parse = workspace.get_parsed_deb822(file.source_file);
                 tests::generate_semantic_tokens(&deb822_parse, &source_text)
             }
-            FileType::UpstreamMetadata => upstream_metadata::generate_semantic_tokens(&source_text),
+            FileType::UpstreamMetadata => {
+                let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
+                let yaml_file = parsed.tree();
+                match yaml_file.document() {
+                    Some(doc) => upstream_metadata::generate_semantic_tokens(&doc, &source_text),
+                    None => vec![],
+                }
+            }
             FileType::Rules => {
                 let parsed = workspace.get_parsed_rules(file.source_file);
                 let makefile = parsed.tree();
@@ -1520,6 +1527,14 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 drop(workspace);
                 Ok(changelog::get_hover(&parsed, &source_text, position, &self.bug_cache).await)
+            }
+            FileType::UpstreamMetadata => {
+                let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
+                let yaml_file = parsed.tree();
+                match yaml_file.document() {
+                    Some(doc) => Ok(upstream_metadata::get_hover(&doc, &source_text, position)),
+                    None => Ok(None),
+                }
             }
             _ => Ok(None),
         }
