@@ -351,7 +351,10 @@ mod tests {
         let completions = get_completions_deb822(&deb822, text, Position::new(2, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
-        assert_eq!(labels, vec!["github", "gitlab", "pypi", "npmregistry", "metacpan"]);
+        assert_eq!(
+            labels,
+            vec!["github", "gitlab", "pypi", "npmregistry", "metacpan"]
+        );
     }
 
     #[test]
