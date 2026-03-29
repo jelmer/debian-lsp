@@ -1224,6 +1224,13 @@ impl LanguageServer for Backend {
                     &params.ch,
                 ))
             }
+            FileType::UpstreamMetadata => {
+                Ok(upstream_metadata::on_type_formatting::on_type_formatting(
+                    &source_text,
+                    position,
+                    &params.ch,
+                ))
+            }
             _ => Ok(None),
         }
     }

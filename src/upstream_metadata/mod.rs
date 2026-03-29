@@ -8,6 +8,7 @@ pub mod detection;
 pub mod document_link;
 pub mod fields;
 pub mod hover;
+pub mod on_type_formatting;
 pub mod semantic;
 
 pub use completion::get_completions;

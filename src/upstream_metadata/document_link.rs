@@ -6,7 +6,26 @@
 use tower_lsp_server::ls_types::{DocumentLink, Position, Range, Uri};
 use yaml_edit::{Document, YamlNode};
 
-use super::fields::{get_field_value_type, FieldValueType};
+/// Field names whose values are URLs that should be clickable links.
+const URL_FIELD_NAMES: &[&str] = &[
+    "Repository",
+    "Repository-Browse",
+    "Bug-Database",
+    "Bug-Submit",
+    "Changelog",
+    "Documentation",
+    "FAQ",
+    "Donation",
+    "Gallery",
+    "Webservice",
+];
+
+fn is_url_field(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    URL_FIELD_NAMES
+        .iter()
+        .any(|f| f.to_ascii_lowercase() == lower)
+}
 
 /// Get document links for URL-valued fields in an upstream/metadata file.
 pub fn get_document_links(doc: &Document, source_text: &str) -> Vec<DocumentLink> {
@@ -24,7 +43,7 @@ pub fn get_document_links(doc: &Document, source_text: &str) -> Vec<DocumentLink
         };
 
         let key_text = key_scalar.as_string();
-        if get_field_value_type(&key_text) != Some(FieldValueType::Url) {
+        if !is_url_field(&key_text) {
             continue;
         }
 

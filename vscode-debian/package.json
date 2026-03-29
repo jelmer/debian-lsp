@@ -173,7 +173,8 @@
         "editor.colorDecorators": false
       },
       "[debupstreammetadata]": {
-        "editor.colorDecorators": false
+        "editor.colorDecorators": false,
+        "editor.formatOnType": true
       },
       "[debrules]": {
         "editor.colorDecorators": false
