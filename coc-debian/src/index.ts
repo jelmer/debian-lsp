@@ -118,6 +118,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
       { scheme: 'file', pattern: '**/debian/upstream/metadata' },
       { scheme: 'file', pattern: '**/debian/rules' },
     ],
+    initializationOptions: {
+      upstreamOntologistNetAccess: config.get<boolean>('upstreamOntologistNetAccess', false),
+    },
     synchronize: {
       fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,changelog.dch,tests/control,source/format,source/options,source/local-options,upstream/metadata,rules}')
     }

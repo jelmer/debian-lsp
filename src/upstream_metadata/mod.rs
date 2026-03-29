@@ -10,9 +10,11 @@ pub mod fields;
 pub mod hover;
 pub mod on_type_formatting;
 pub mod semantic;
+pub mod upstream_cache;
 
 pub use completion::get_completions;
 pub use detection::is_upstream_metadata_file;
 pub use document_link::get_document_links;
 pub use hover::get_hover;
 pub use semantic::generate_semantic_tokens;
+pub use upstream_cache::SharedUpstreamCache;
