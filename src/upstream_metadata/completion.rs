@@ -1,18 +1,23 @@
+use std::path::Path;
+
 use rowan::ast::AstNode;
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, CompletionTextEdit, Position, Range, TextEdit,
+};
 use yaml_edit::{Document, Mapping, YamlFile, YamlNode};
 
 use super::fields::{
     get_subfield_name_completions, get_subfield_value_completions, FieldValueType, UPSTREAM_FIELDS,
 };
+use super::upstream_cache::SharedUpstreamCache;
 use crate::position::try_position_to_offset;
 
 /// Cursor context within the upstream/metadata YAML document.
 enum CursorContext {
     /// Cursor is at a position where a new top-level field name can be typed.
     TopLevelKey,
-    /// Cursor is on a top-level scalar value (no special completions).
-    TopLevelValue,
+    /// Cursor is on a top-level scalar value.
+    TopLevelValue { field_name: String, prefix: String },
     /// Cursor is inside a mapping-list value, on a sub-field key position.
     SubFieldKey {
         subfields: &'static [super::fields::SubField],
@@ -91,6 +96,24 @@ fn lookup_field(key: &str) -> Option<&'static super::fields::UpstreamField> {
         .find(|f| f.name.to_ascii_lowercase() == lower)
 }
 
+/// Extract the text between the value start and the cursor offset.
+fn extract_value_prefix(entry: &yaml_edit::MappingEntry, source_text: &str, offset: u32) -> String {
+    match entry.value_node() {
+        Some(YamlNode::Scalar(s)) => {
+            let r = s.byte_range();
+            if offset >= r.start {
+                source_text
+                    .get(r.start as usize..offset as usize)
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 /// Determine the cursor context by walking the YAML CST.
 fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorContext {
     let mapping = match doc.as_mapping() {
@@ -166,7 +189,8 @@ fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorCo
     match field.value_type {
         FieldValueType::Scalar => {
             if cursor_line == key_line || in_value {
-                CursorContext::TopLevelValue
+                let prefix = extract_value_prefix(&entry, source_text, offset);
+                CursorContext::TopLevelValue { field_name, prefix }
             } else {
                 CursorContext::TopLevelKey
             }
@@ -351,36 +375,116 @@ fn determine_inner_mapping_context(
     }
 }
 
-/// Get completions for a debian/upstream/metadata file at the given position.
-pub fn get_completions(source_text: &str, position: Position) -> Vec<CompletionItem> {
+/// Determine context and produce completions synchronously where possible.
+///
+/// Returns `Ok(completions)` for contexts that don't need the cache, or
+/// `Err((field_name, prefix))` when the cache must be consulted.
+fn get_sync_completions(
+    source_text: &str,
+    position: Position,
+) -> Result<Vec<CompletionItem>, (String, String)> {
     let offset = match try_position_to_offset(source_text, position) {
         Some(o) => u32::from(o),
-        None => return get_field_completions(),
+        None => return Ok(get_field_completions()),
     };
 
     let parse = YamlFile::parse(source_text);
     let yaml_file = parse.tree();
     let doc = match yaml_file.document() {
         Some(d) => d,
-        None => return get_field_completions(),
+        None => return Ok(get_field_completions()),
     };
 
     match determine_context(&doc, source_text, offset) {
-        CursorContext::TopLevelKey => get_field_completions(),
-        CursorContext::TopLevelValue => vec![],
+        CursorContext::TopLevelKey => Ok(get_field_completions()),
+        CursorContext::TopLevelValue { field_name, prefix } => Err((field_name, prefix)),
         CursorContext::SubFieldKey {
             subfields,
             ref prefix,
             indent,
-        } => get_subfield_name_completions(subfields, prefix, indent),
+        } => Ok(get_subfield_name_completions(subfields, prefix, indent)),
         CursorContext::SubFieldValue {
             subfields,
             ref subfield_name,
             ref prefix,
             indent,
-        } => get_subfield_value_completions(subfields, subfield_name, prefix, indent),
-        CursorContext::None => vec![],
+        } => Ok(get_subfield_value_completions(
+            subfields,
+            subfield_name,
+            prefix,
+            indent,
+        )),
+        CursorContext::None => Ok(vec![]),
     }
+}
+
+/// Get completions for a debian/upstream/metadata file at the given position.
+pub async fn get_completions(
+    source_text: &str,
+    position: Position,
+    upstream_cache: &SharedUpstreamCache,
+    project_root: Option<&Path>,
+) -> Vec<CompletionItem> {
+    // Do the YAML parsing and context determination synchronously first,
+    // since YamlFile contains non-Send CST nodes that cannot be held
+    // across an await point.
+    match get_sync_completions(source_text, position) {
+        Ok(completions) => completions,
+        Err((field_name, prefix)) => {
+            get_guessed_value_completions(
+                upstream_cache,
+                project_root,
+                &field_name,
+                &prefix,
+                position,
+            )
+            .await
+        }
+    }
+}
+
+/// Get completions from guessed upstream metadata values.
+async fn get_guessed_value_completions(
+    upstream_cache: &SharedUpstreamCache,
+    project_root: Option<&Path>,
+    field_name: &str,
+    prefix: &str,
+    position: Position,
+) -> Vec<CompletionItem> {
+    let project_root = match project_root {
+        Some(p) => p,
+        None => return vec![],
+    };
+
+    let cache = upstream_cache.read().await;
+    let values = match cache.get_values(project_root, field_name) {
+        Some(v) => v,
+        None => return vec![],
+    };
+
+    // The prefix may include leading whitespace (e.g. the space after the
+    // colon). Trim it for matching, and compute the range that covers
+    // the typed prefix so that the client replaces it correctly.
+    let trimmed = prefix.trim_start();
+    let normalized = trimmed.to_ascii_lowercase();
+    let prefix_start_col = position.character - trimmed.len() as u32;
+    let replace_range = Range::new(Position::new(position.line, prefix_start_col), position);
+
+    values
+        .iter()
+        .filter(|v| v.to_ascii_lowercase().starts_with(&normalized))
+        .map(|v| CompletionItem {
+            label: v.clone(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(format!("Guessed value for {field_name}")),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                replace_range,
+                v.clone(),
+            ))),
+            filter_text: Some(trimmed.to_string()),
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// Generate field name completions for all known DEP-12 fields.
@@ -402,10 +506,16 @@ mod tests {
     use super::*;
     use tower_lsp_server::ls_types::InsertTextFormat;
 
+    /// Test helper: calls the sync completion path, returning empty for
+    /// contexts that would need the upstream cache.
+    fn test_completions(source_text: &str, position: Position) -> Vec<CompletionItem> {
+        get_sync_completions(source_text, position).unwrap_or_default()
+    }
+
     #[test]
     fn test_get_completions_at_start_of_empty_line() {
         let text = "Repository: https://example.com\n\n";
-        let completions = get_completions(text, Position::new(1, 0));
+        let completions = test_completions(text, Position::new(1, 0));
 
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
         assert_eq!(completions[0].label, "Repository");
@@ -418,14 +528,14 @@ mod tests {
     #[test]
     fn test_get_completions_on_value() {
         let text = "Repository: https://example.com\n";
-        let completions = get_completions(text, Position::new(0, 12));
+        let completions = test_completions(text, Position::new(0, 12));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_get_completions_on_existing_field_key() {
         let text = "Repository: https://example.com\n";
-        let completions = get_completions(text, Position::new(0, 0));
+        let completions = test_completions(text, Position::new(0, 0));
         // Cursor is on the key of an existing entry.
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
     }
@@ -433,14 +543,14 @@ mod tests {
     #[test]
     fn test_get_completions_typing_field_name() {
         let text = "Repository: https://example.com\nBug";
-        let completions = get_completions(text, Position::new(1, 3));
+        let completions = test_completions(text, Position::new(1, 3));
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
     }
 
     #[test]
     fn test_get_completions_partial_field_name_at_col_zero() {
         let text = "Repository: https://example.com\nBug";
-        let completions = get_completions(text, Position::new(1, 0));
+        let completions = test_completions(text, Position::new(1, 0));
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
     }
 
@@ -448,7 +558,7 @@ mod tests {
     fn test_get_completions_on_indented_scalar_list() {
         // Other-References is a ScalarList — no sub-field completions.
         let text = "Other-References:\n  - https://example.com\n";
-        let completions = get_completions(text, Position::new(1, 4));
+        let completions = test_completions(text, Position::new(1, 4));
         assert_eq!(completions.len(), 0);
     }
 
@@ -456,20 +566,20 @@ mod tests {
     fn test_get_completions_indented_line() {
         // Indented lines are continuation/value lines — no field completions
         let text = "Repository: https://example.com\n  indented\n";
-        let completions = get_completions(text, Position::new(1, 2));
+        let completions = test_completions(text, Position::new(1, 2));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_get_completions_empty_file() {
-        let completions = get_completions("", Position::new(0, 0));
+        let completions = test_completions("", Position::new(0, 0));
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
     }
 
     #[test]
     fn test_get_completions_line_beyond_file() {
         let text = "Repository: https://example.com\n";
-        let completions = get_completions(text, Position::new(5, 0));
+        let completions = test_completions(text, Position::new(5, 0));
         // Line 5 doesn't exist — falls back to field completions.
         assert_eq!(completions.len(), UPSTREAM_FIELDS.len());
     }
@@ -488,7 +598,7 @@ mod tests {
     #[test]
     fn test_registry_subfield_name_completions() {
         let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
-        let completions = get_completions(text, Position::new(1, 4));
+        let completions = test_completions(text, Position::new(1, 4));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["Name", "Entry"]);
     }
@@ -496,7 +606,7 @@ mod tests {
     #[test]
     fn test_registry_name_value_completions() {
         let text = "Registry:\n  - Name: \n";
-        let completions = get_completions(text, Position::new(1, 10));
+        let completions = test_completions(text, Position::new(1, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -525,7 +635,7 @@ mod tests {
     #[test]
     fn test_registry_name_value_completions_with_prefix() {
         let text = "Registry:\n  - Name: Py\n";
-        let completions = get_completions(text, Position::new(1, 12));
+        let completions = test_completions(text, Position::new(1, 12));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["PyPI"]);
     }
@@ -533,14 +643,14 @@ mod tests {
     #[test]
     fn test_registry_entry_no_value_completions() {
         let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
-        let completions = get_completions(text, Position::new(2, 11));
+        let completions = test_completions(text, Position::new(2, 11));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_registry_second_subfield_key() {
         let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
-        let completions = get_completions(text, Position::new(2, 4));
+        let completions = test_completions(text, Position::new(2, 4));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["Name", "Entry"]);
     }
@@ -548,7 +658,7 @@ mod tests {
     #[test]
     fn test_reference_subfield_name_completions() {
         let text = "Reference:\n  - Type: Article\n    Title: A paper\n";
-        let completions = get_completions(text, Position::new(1, 4));
+        let completions = test_completions(text, Position::new(1, 4));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -562,7 +672,7 @@ mod tests {
     #[test]
     fn test_reference_type_value_completions() {
         let text = "Reference:\n  - Type: \n";
-        let completions = get_completions(text, Position::new(1, 10));
+        let completions = test_completions(text, Position::new(1, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -582,7 +692,7 @@ mod tests {
     #[test]
     fn test_reference_type_value_with_prefix() {
         let text = "Reference:\n  - Type: Art\n";
-        let completions = get_completions(text, Position::new(1, 13));
+        let completions = test_completions(text, Position::new(1, 13));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["Article"]);
     }
@@ -590,7 +700,7 @@ mod tests {
     #[test]
     fn test_funding_subfield_completions() {
         let text = "Funding:\n  - Type: grant\n    Funder: NSF\n";
-        let completions = get_completions(text, Position::new(1, 4));
+        let completions = test_completions(text, Position::new(1, 4));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["Type", "Funder", "Grant", "URL"]);
     }
@@ -598,14 +708,14 @@ mod tests {
     #[test]
     fn test_non_mapping_list_indented() {
         let text = "Screenshots:\n  - https://example.com\n";
-        let completions = get_completions(text, Position::new(1, 4));
+        let completions = test_completions(text, Position::new(1, 4));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_registry_name_value_right_after_colon() {
         let text = "Registry:\n  - Name:\n";
-        let completions = get_completions(text, Position::new(1, 8));
+        let completions = test_completions(text, Position::new(1, 8));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 17); // all known registries
         assert_eq!(labels[0], "ASCL");
@@ -614,7 +724,7 @@ mod tests {
     #[test]
     fn test_registry_name_value_after_colon_space() {
         let text = "Registry:\n  - Name: \n";
-        let completions = get_completions(text, Position::new(1, 10));
+        let completions = test_completions(text, Position::new(1, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 17);
         assert_eq!(labels[0], "ASCL");
@@ -623,35 +733,102 @@ mod tests {
     #[test]
     fn test_top_level_value_right_after_colon() {
         let text = "Repository:\n";
-        let completions = get_completions(text, Position::new(0, 10));
-        assert_eq!(completions.len(), 0);
+        // Cursor right after the colon — should be in value context.
+        let result = get_sync_completions(text, Position::new(0, 11));
+        assert!(result.is_err(), "expected TopLevelValue context");
+    }
+
+    #[test]
+    fn test_top_level_value_after_colon_space() {
+        let text = "Repository: \n";
+        // Cursor after "Repository: " — should be in value context.
+        let result = get_sync_completions(text, Position::new(0, 12));
+        assert!(result.is_err(), "expected TopLevelValue context");
+    }
+
+    #[test]
+    fn test_top_level_value_after_colon_space_no_newline() {
+        let text = "Repository: ";
+        let result = get_sync_completions(text, Position::new(0, 12));
+        assert!(result.is_err(), "expected TopLevelValue context");
+    }
+
+    #[test]
+    fn test_top_level_value_after_colon_space_with_other_fields() {
+        let text = "Name: foo\nRepository: \n";
+        let result = get_sync_completions(text, Position::new(1, 12));
+        assert!(result.is_err(), "expected TopLevelValue context");
+    }
+
+    #[test]
+    fn test_top_level_value_on_colon() {
+        // Position on the colon itself — still value context (same line as key).
+        let text = "Repository: \n";
+        let result = get_sync_completions(text, Position::new(0, 10));
+        assert!(result.is_err(), "expected TopLevelValue context");
+    }
+
+    #[test]
+    fn test_top_level_value_between_colon_and_space() {
+        // Position between colon and space.
+        let text = "Repository: \n";
+        let result = get_sync_completions(text, Position::new(0, 11));
+        assert!(result.is_err(), "expected TopLevelValue context");
+    }
+
+    #[test]
+    fn test_top_level_value_prefix_extraction() {
+        // Check what prefix we extract for various cursor positions.
+        for (text, line, col, expected_prefix) in [
+            ("Repository:\n", 0u32, 11u32, ""),
+            ("Repository: \n", 0, 12, ""),
+            ("Repository: https\n", 0, 17, "https"),
+            ("Repository: ", 0, 12, ""),
+        ] {
+            let result = get_sync_completions(text, Position::new(line, col));
+            match result {
+                Err((field, prefix)) => {
+                    assert_eq!(field, "Repository");
+                    assert_eq!(prefix, expected_prefix, "text={text:?} col={col}");
+                }
+                Ok(_) => panic!("expected TopLevelValue for text={text:?} col={col}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_top_level_value_colon_space_with_existing_content() {
+        // Simulates typing "Repository: " when there's already other content.
+        let text = "Name: foo\nRepository: ";
+        let result = get_sync_completions(text, Position::new(1, 12));
+        assert!(result.is_err(), "expected TopLevelValue context, got Ok");
     }
 
     #[test]
     fn test_mapping_list_no_completions_on_key_line() {
         let text = "Reference:\n";
-        let completions = get_completions(text, Position::new(0, 10));
+        let completions = test_completions(text, Position::new(0, 10));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_mapping_list_no_completions_on_key_line_no_newline() {
         let text = "Reference:";
-        let completions = get_completions(text, Position::new(0, 10));
+        let completions = test_completions(text, Position::new(0, 10));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_unknown_parent_field_indented() {
         let text = "X-Custom:\n  - foo\n";
-        let completions = get_completions(text, Position::new(1, 4));
+        let completions = test_completions(text, Position::new(1, 4));
         assert_eq!(completions.len(), 0);
     }
 
     #[test]
     fn test_subfield_name_after_first_entry_with_indent() {
         let text = "Reference:\n  - Type: Book\n    \n";
-        let completions = get_completions(text, Position::new(2, 4));
+        let completions = test_completions(text, Position::new(2, 4));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 11); // all Reference sub-fields
         assert_eq!(labels[0], "Type");
@@ -661,7 +838,7 @@ mod tests {
     #[test]
     fn test_subfield_name_after_first_entry_less_indent() {
         let text = "Reference:\n  - Type: Book\n   \n";
-        let completions = get_completions(text, Position::new(2, 3));
+        let completions = test_completions(text, Position::new(2, 3));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 11);
         assert_eq!(labels[0], "Type");
@@ -670,7 +847,7 @@ mod tests {
     #[test]
     fn test_subfield_value_after_colon_space_with_existing_value() {
         let text = "Registry:\n  - Name: PyPI\n";
-        let completions = get_completions(text, Position::new(1, 10));
+        let completions = test_completions(text, Position::new(1, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 17);
         assert_eq!(labels[0], "ASCL");
@@ -679,7 +856,7 @@ mod tests {
     #[test]
     fn test_reference_type_value_after_colon_no_space() {
         let text = "Reference:\n  - Type:\n";
-        let completions = get_completions(text, Position::new(1, 8));
+        let completions = test_completions(text, Position::new(1, 8));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 8); // all reference types
         assert_eq!(labels[0], "Article");
@@ -688,7 +865,7 @@ mod tests {
     #[test]
     fn test_reference_type_value_after_colon_space() {
         let text = "Reference:\n  - Type: \n";
-        let completions = get_completions(text, Position::new(1, 10));
+        let completions = test_completions(text, Position::new(1, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels.len(), 8);
         assert_eq!(labels[0], "Article");
@@ -697,7 +874,7 @@ mod tests {
     #[test]
     fn test_subfield_insert_text_has_newline_and_indent() {
         let text = "Reference:\n  - Type: Book\n    \n";
-        let completions = get_completions(text, Position::new(2, 4));
+        let completions = test_completions(text, Position::new(2, 4));
         let title = completions.iter().find(|c| c.label == "Title").unwrap();
         assert_eq!(title.insert_text_format, Some(InsertTextFormat::SNIPPET));
         assert_eq!(title.insert_text.as_deref(), Some("Title: $1\n    $0"));
@@ -706,7 +883,7 @@ mod tests {
     #[test]
     fn test_value_insert_text_has_newline_and_indent() {
         let text = "Reference:\n  - Type: \n";
-        let completions = get_completions(text, Position::new(1, 10));
+        let completions = test_completions(text, Position::new(1, 10));
         let article = completions.iter().find(|c| c.label == "Article").unwrap();
         assert_eq!(article.insert_text_format, Some(InsertTextFormat::SNIPPET));
         assert_eq!(article.insert_text.as_deref(), Some("Article\n    $0"));
