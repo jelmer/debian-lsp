@@ -16,6 +16,7 @@ mod control;
 mod copyright;
 mod deb822;
 mod distros;
+mod maintainers;
 mod package_cache;
 mod popcon;
 mod position;
@@ -118,6 +119,7 @@ struct Backend {
     package_cache: package_cache::SharedPackageCache,
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
+    maintainer_cache: maintainers::SharedMaintainerCache,
     vcswatch_cache: vcswatch::SharedVcsWatchCache,
     popcon_cache: popcon::SharedPopconCache,
     rdeps_cache: rdeps::SharedRdepsCache,
@@ -547,6 +549,7 @@ impl LanguageServer for Backend {
                         position,
                         &self.package_cache,
                         &self.architecture_list,
+                        &self.maintainer_cache,
                     )
                     .await
                     {
@@ -1683,6 +1686,7 @@ async fn main() {
     let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
     let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
     let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
+    let maintainer_cache = maintainers::new_shared_maintainer_cache(udd_pool.clone());
     let rdeps_cache = rdeps::new_shared_rdeps_cache(udd_pool);
 
     let (service, socket) = LspService::new(|client| Backend {
@@ -1692,6 +1696,7 @@ async fn main() {
         package_cache: package_cache.clone(),
         architecture_list: architecture_list.clone(),
         bug_cache: bug_cache.clone(),
+        maintainer_cache: maintainer_cache.clone(),
         vcswatch_cache: vcswatch_cache.clone(),
         popcon_cache: popcon_cache.clone(),
         rdeps_cache: rdeps_cache.clone(),

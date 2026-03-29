@@ -8,6 +8,7 @@ use super::fields::{
 
 use super::relation_completion;
 use crate::architecture::SharedArchitectureList;
+use crate::maintainers::SharedMaintainerCache;
 use crate::package_cache::SharedPackageCache;
 
 /// Get completions for a control file at the given cursor position.
@@ -132,6 +133,7 @@ pub async fn get_async_field_value_completions(
     position: tower_lsp_server::ls_types::Position,
     package_cache: &SharedPackageCache,
     architecture_list: &SharedArchitectureList,
+    maintainer_cache: &SharedMaintainerCache,
 ) -> Option<Vec<CompletionItem>> {
     if relation_completion::is_relationship_field(field_name) {
         Some(
@@ -145,6 +147,10 @@ pub async fn get_async_field_value_completions(
         )
     } else if field_name.eq_ignore_ascii_case("Architecture") {
         Some(get_architecture_value_completions(prefix, architecture_list).await)
+    } else if field_name.eq_ignore_ascii_case("Maintainer")
+        || field_name.eq_ignore_ascii_case("Uploaders")
+    {
+        Some(get_maintainer_completions(prefix, maintainer_cache).await)
     } else {
         None
     }
@@ -204,6 +210,54 @@ pub async fn get_architecture_value_completions(
             };
             completions.push(CompletionItem {
                 label,
+                kind: Some(CompletionItemKind::VALUE),
+                ..Default::default()
+            });
+        }
+    }
+
+    completions
+}
+
+/// Get completion items for "Maintainer" and "Uploaders" control fields.
+///
+/// Suggests the user's identity (from `$DEBEMAIL`/`$DEBFULLNAME`) first,
+/// then known maintainer identities from the UDD `sources` table.
+/// The Uploaders field is comma-separated, so we complete only the last entry.
+pub async fn get_maintainer_completions(
+    prefix: &str,
+    maintainer_cache: &SharedMaintainerCache,
+) -> Vec<CompletionItem> {
+    // For comma-separated fields (Uploaders), complete the last entry
+    let current_token = prefix.rsplit(',').next().unwrap_or("").trim();
+    let normalized_prefix = current_token.to_ascii_lowercase();
+    let mut completions = Vec::new();
+
+    // Suggest user's own identity first
+    if let Some(identity) = crate::maintainers::get_user_identity() {
+        if identity
+            .to_ascii_lowercase()
+            .starts_with(&normalized_prefix)
+        {
+            completions.push(CompletionItem {
+                label: identity,
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some("Your identity".to_string()),
+                sort_text: Some("0".to_string()),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Add known maintainers from UDD
+    let mut cache = maintainer_cache.write().await;
+    for maintainer in cache.get_maintainers().await {
+        if maintainer
+            .to_ascii_lowercase()
+            .starts_with(&normalized_prefix)
+        {
+            completions.push(CompletionItem {
+                label: maintainer.clone(),
                 kind: Some(CompletionItemKind::VALUE),
                 ..Default::default()
             });
@@ -369,6 +423,15 @@ mod tests {
             ("libssl-dev", None),
             ("pkg-config", None),
         ])
+    }
+
+    fn test_maintainer_cache() -> SharedMaintainerCache {
+        let mut cache = crate::maintainers::MaintainerCache::new(crate::udd::shared_pool());
+        cache.insert_cached(vec![
+            "Alice <alice@example.com>".to_string(),
+            "Debian QA Group <packages@qa.debian.org>".to_string(),
+        ]);
+        Arc::new(tokio::sync::RwLock::new(cache))
     }
 
     fn test_arch_list() -> SharedArchitectureList {
@@ -638,6 +701,7 @@ mod tests {
             Position::new(0, 2),
             &cache,
             &test_arch_list(),
+            &test_maintainer_cache(),
         )
         .await
         .expect("Should return completions");
@@ -654,6 +718,7 @@ mod tests {
             Position::new(0, 0),
             &cache,
             &test_arch_list(),
+            &test_maintainer_cache(),
         )
         .await
         .expect("Should return completions");
@@ -669,6 +734,7 @@ mod tests {
             Position::new(0, 4),
             &cache,
             &test_arch_list(),
+            &test_maintainer_cache(),
         )
         .await;
         assert!(completions.is_none());
@@ -701,6 +767,7 @@ mod tests {
                     tower_lsp_server::ls_types::Position::new(0, 15),
                     &cache,
                     &test_arch_list(),
+                    &test_maintainer_cache(),
                 )
                 .await
                 .expect("Should return completions for relationship field");
@@ -736,6 +803,7 @@ mod tests {
                     tower_lsp_server::ls_types::Position::new(0, 17),
                     &cache,
                     &test_arch_list(),
+                    &test_maintainer_cache(),
                 )
                 .await
                 .expect("Should return completions for relationship field");
@@ -769,6 +837,7 @@ mod tests {
                     position,
                     &cache,
                     &test_arch_list(),
+                    &test_maintainer_cache(),
                 )
                 .await
                 .expect("Should return completions");
@@ -881,6 +950,68 @@ mod tests {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["!i386"]);
+    }
+
+    #[tokio::test]
+    async fn test_maintainer_completions_from_cache() {
+        let cache = test_maintainer_cache();
+        let completions = get_maintainer_completions("", &cache).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert!(labels.contains(&"Alice <alice@example.com>"));
+        assert!(labels.contains(&"Debian QA Group <packages@qa.debian.org>"));
+    }
+
+    #[tokio::test]
+    async fn test_maintainer_completions_with_prefix() {
+        let cache = test_maintainer_cache();
+        let completions = get_maintainer_completions("Deb", &cache).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["Debian QA Group <packages@qa.debian.org>"]);
+    }
+
+    #[tokio::test]
+    async fn test_maintainer_completions_after_comma() {
+        let cache = test_maintainer_cache();
+        let completions =
+            get_maintainer_completions("Alice <alice@example.com>, Deb", &cache).await;
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["Debian QA Group <packages@qa.debian.org>"]);
+    }
+
+    #[tokio::test]
+    async fn test_async_field_value_completions_for_maintainer() {
+        let cache = test_cache();
+        let completions = get_async_field_value_completions(
+            "Maintainer",
+            "Ali",
+            Position::new(0, 3),
+            &cache,
+            &test_arch_list(),
+            &test_maintainer_cache(),
+        )
+        .await
+        .expect("Should return completions for Maintainer field");
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Alice <alice@example.com>"]);
+    }
+
+    #[tokio::test]
+    async fn test_async_field_value_completions_for_uploaders() {
+        let cache = test_cache();
+        let completions = get_async_field_value_completions(
+            "Uploaders",
+            "",
+            Position::new(0, 0),
+            &cache,
+            &test_arch_list(),
+            &test_maintainer_cache(),
+        )
+        .await
+        .expect("Should return completions for Uploaders field");
+        assert!(!completions.is_empty());
     }
 
     #[test]
