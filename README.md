@@ -256,6 +256,9 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
   end,
 })
 ```
+### Using with Helix
+
+See [helix-lspconfig/README.md](helix-lspconfig/README.md) for installation and configuration instructions.
 
 ## Development
 
