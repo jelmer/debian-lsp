@@ -572,6 +572,7 @@ dependencies = [
  "debian-watch",
  "distro-info",
  "launchpadlib",
+ "lintian-overrides",
  "makefile-lossless",
  "rowan",
  "salsa",
@@ -1561,6 +1562,17 @@ checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "lintian-overrides"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "646c62b66273a166bdf4fe83c7e4e04f7d7df1881560a8f360d5b984354eeb0f"
+dependencies = [
+ "lazy_static",
+ "regex",
+ "rowan",
 ]
 
 [[package]]
