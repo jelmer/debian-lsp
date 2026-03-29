@@ -42,6 +42,11 @@
           "type": "string",
           "default": "debian-lsp",
           "description": "Path to debian-lsp executable"
+        },
+        "debian.formatOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable format-on-type (auto-indent after newline, space after colon)"
         }
       }
     },
