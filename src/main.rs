@@ -9,6 +9,16 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
+/// Server settings received from the client via initializationOptions.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
+struct Settings {
+    /// Allow the upstream-ontologist to make network requests when guessing
+    /// upstream metadata values. Defaults to `false`.
+    upstream_ontologist_net_access: bool,
+}
+
 mod architecture;
 mod bugs;
 mod changelog;
@@ -124,6 +134,8 @@ struct Backend {
     popcon_cache: popcon::SharedPopconCache,
     rdeps_cache: rdeps::SharedRdepsCache,
     git_file_cache: copyright::code_lens::SharedGitFileCache,
+    upstream_cache: upstream_metadata::SharedUpstreamCache,
+    settings: Arc<Mutex<Settings>>,
 }
 
 impl Backend {
@@ -251,6 +263,27 @@ impl Backend {
         }
     }
 
+    /// Spawn a background task to populate the upstream metadata guess cache.
+    fn prefetch_upstream_guesses(&self, uri: &Uri) {
+        let project_root =
+            Self::find_debian_dir(uri).and_then(|d| d.parent().map(|p| p.to_path_buf()));
+        if let Some(project_root) = project_root {
+            let cache = self.upstream_cache.clone();
+            let settings = self.settings.clone();
+            tokio::spawn(async move {
+                let needs_populate = !cache.read().await.is_cached(&project_root);
+                if needs_populate {
+                    let net_access = settings.lock().await.upstream_ontologist_net_access;
+                    cache
+                        .write()
+                        .await
+                        .populate(&project_root, net_access)
+                        .await;
+                }
+            });
+        }
+    }
+
     /// Send a `debian/packageStatus` notification with the source package name
     /// and version extracted from `debian/changelog`.
     async fn send_package_status(&self, uri: &Uri) {
@@ -281,7 +314,18 @@ impl Backend {
 }
 
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        if let Some(options) = params.initialization_options {
+            match serde_json::from_value::<Settings>(options) {
+                Ok(settings) => {
+                    *self.settings.lock().await = settings;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse initializationOptions: {e}");
+                }
+            }
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -409,6 +453,10 @@ impl LanguageServer for Backend {
 
         if file_type == FileType::Changelog {
             self.prefetch_changelog_bugs(source_file, &workspace);
+        }
+
+        if file_type == FileType::UpstreamMetadata {
+            self.prefetch_upstream_guesses(&params.text_document.uri);
         }
 
         let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
@@ -612,7 +660,16 @@ impl LanguageServer for Backend {
             Some((FileType::UpstreamMetadata, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
-                upstream_metadata::get_completions(&source_text, position)
+                let project_root =
+                    Self::find_debian_dir(&uri).and_then(|d| d.parent().map(|p| p.to_path_buf()));
+                drop(workspace);
+                upstream_metadata::get_completions(
+                    &source_text,
+                    position,
+                    &self.upstream_cache,
+                    project_root.as_deref(),
+                )
+                .await
             }
             Some((FileType::Rules, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -1708,6 +1765,8 @@ async fn main() {
         popcon_cache: popcon_cache.clone(),
         rdeps_cache: rdeps_cache.clone(),
         git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
+        upstream_cache: upstream_metadata::upstream_cache::new_shared(),
+        settings: Arc::new(Mutex::new(Settings::default())),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

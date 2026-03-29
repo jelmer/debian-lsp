@@ -29,6 +29,8 @@ makefile-lossless = "0.3.29"
 deb822-fast = "0.2"
 deb822-lossless = { version = "0.5.12" }
 yaml-edit = { version = "0.2.0" }
+upstream-ontologist = { version = "0.3", default-features = false, features = ["cargo", "debian"] }
+futures = "0.3"
 tower-lsp-server = "0.23"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
