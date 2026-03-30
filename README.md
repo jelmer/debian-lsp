@@ -260,6 +260,10 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
 
 See [helix-lspconfig/README.md](helix-lspconfig/README.md) for installation and configuration instructions.
 
+### Using with Emacs
+
+See [emacs-lspconfig/README.md](emacs-lspconfig/README.md) for installation and configuration instructions.
+
 ## Development
 
 To run the LSP in development mode:
