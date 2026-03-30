@@ -155,14 +155,16 @@ jobs:
           path: vscode-debian/*.vsix
 
       - name: Publish to Open VSX Registry
-        if: startsWith(github.ref, 'refs/tags/v') && secrets.OPENVSX_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           npm install -g ovsx
           ovsx publish -p ${{ secrets.OPENVSX_TOKEN }} --target ${{ matrix.vscode-target }}
+        env:
+          OPENVSX_TOKEN: ${{ secrets.OPENVSX_TOKEN }}
         continue-on-error: true
 
       - name: Publish to VS Code Marketplace
-        if: startsWith(github.ref, 'refs/tags/v') && secrets.VSCE_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           npx vsce publish -p ${{ secrets.VSCE_TOKEN }} --target ${{ matrix.vscode-target }}
         continue-on-error: true
@@ -201,7 +203,7 @@ jobs:
             coc-debian/README.md
 
       - name: Publish to npm
-        if: startsWith(github.ref, 'refs/tags/v') && secrets.NPM_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -250,7 +252,7 @@ jobs:
           cd ../..
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/debian-lsp-*
