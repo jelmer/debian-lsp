@@ -3,7 +3,7 @@
   "displayName": "Debian Language Support",
   "description": "Language Server Protocol support for Debian packaging files",
   "version": "0.1.5",
-  "publisher": "debian",
+  "publisher": "jelmer",
   "license": "Apache-2.0+",
   "icon": "images/debian-logo-256.png",
   "repository": {
