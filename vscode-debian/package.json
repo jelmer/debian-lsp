@@ -2,7 +2,7 @@
   "name": "vscode-debian",
   "displayName": "Debian Language Support",
   "description": "Language Server Protocol support for Debian packaging files",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "jelmer",
   "license": "Apache-2.0+",
   "icon": "images/debian-logo-256.png",
