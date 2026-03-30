@@ -18,27 +18,16 @@ Language Server Protocol extension for Debian package files, including:
 
 ## Requirements
 
-The `debian-lsp` language server must be installed and available in your PATH, or you can configure the path to the executable in settings.
+The `debian-lsp` language server binary is bundled with the extension for supported platforms (Linux x64/arm64, macOS x64/arm64). No separate installation is needed.
 
-### Installing debian-lsp
-
-1. Clone and build the language server:
-   ```bash
-   git clone https://github.com/jelmer/debian-lsp
-   cd debian-lsp
-   cargo build --release
-   ```
-
-2. Either:
-   - Copy `target/release/debian-lsp` to a directory in your PATH, or
-   - Configure the path in VS Code settings (see Configuration below)
+If you are on an unsupported platform or want to use a different build of `debian-lsp`, you can install it manually and configure the path in settings (see Configuration below).
 
 ## Configuration
 
 This extension contributes the following settings:
 
 * `debian.enable`: Enable/disable the Debian language server (default: `true`)
-* `debian.serverPath`: Path to the debian-lsp executable (default: `"debian-lsp"`)
+* `debian.serverPath`: Path to the debian-lsp executable. Override this to use a custom build instead of the bundled binary (default: `"debian-lsp"`)
 * `debian.trace.server`: Trace communication between VS Code and the language server (default: `"off"`)
 
 ### Example configuration

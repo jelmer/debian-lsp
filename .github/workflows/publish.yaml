@@ -54,32 +54,66 @@ jobs:
           echo "All versions match tag $TAG_VERSION"
 
   build-lsp:
-    name: Build LSP Server
-    runs-on: ubuntu-latest
+    name: Build LSP Server (${{ matrix.target }})
     needs: [check-versions]
     if: always() && (needs.check-versions.result == 'success' || needs.check-versions.result == 'skipped')
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            vscode-target: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            vscode-target: linux-arm64
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            vscode-target: darwin-x64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            vscode-target: darwin-arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Install base-files
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y base-files
 
       - name: Build release binary
-        run: cargo build --release --verbose
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Upload LSP binary
         uses: actions/upload-artifact@v4
         with:
-          name: debian-lsp-binary
-          path: target/release/debian-lsp
+          name: debian-lsp-${{ matrix.vscode-target }}
+          path: target/${{ matrix.target }}/release/debian-lsp
 
   publish-vscode:
-    name: Publish VS Code Extension
-    runs-on: ubuntu-latest
+    name: Publish VS Code Extension (${{ matrix.vscode-target }})
     needs: [build-lsp]
+    strategy:
+      matrix:
+        include:
+          - vscode-target: linux-x64
+          - vscode-target: linux-arm64
+          - vscode-target: darwin-x64
+          - vscode-target: darwin-arm64
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./vscode-debian
@@ -102,26 +136,35 @@ jobs:
       - name: Compile
         run: npm run compile
 
-      - name: Package extension
-        run: npm run package
+      - name: Download LSP binary
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-lsp-${{ matrix.vscode-target }}
+          path: vscode-debian/bin/
+
+      - name: Make binary executable
+        run: chmod +x bin/debian-lsp
+
+      - name: Package platform-specific extension
+        run: npx vsce package --target ${{ matrix.vscode-target }}
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vscode-debian-vsix
+          name: vscode-debian-vsix-${{ matrix.vscode-target }}
           path: vscode-debian/*.vsix
 
       - name: Publish to Open VSX Registry
         if: startsWith(github.ref, 'refs/tags/v') && secrets.OPENVSX_TOKEN != ''
         run: |
           npm install -g ovsx
-          ovsx publish -p ${{ secrets.OPENVSX_TOKEN }}
+          ovsx publish -p ${{ secrets.OPENVSX_TOKEN }} --target ${{ matrix.vscode-target }}
         continue-on-error: true
 
       - name: Publish to VS Code Marketplace
         if: startsWith(github.ref, 'refs/tags/v') && secrets.VSCE_TOKEN != ''
         run: |
-          npx vsce publish -p ${{ secrets.VSCE_TOKEN }}
+          npx vsce publish -p ${{ secrets.VSCE_TOKEN }} --target ${{ matrix.vscode-target }}
         continue-on-error: true
 
   publish-coc:
@@ -173,17 +216,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download LSP binary
+      - name: Download LSP binaries
         uses: actions/download-artifact@v4
         with:
-          name: debian-lsp-binary
-          path: ./artifacts/
+          pattern: debian-lsp-*
+          path: ./artifacts/lsp-binaries/
+          merge-multiple: false
 
-      - name: Download VSIX
+      - name: Prepare LSP binaries for release
+        run: |
+          for dir in artifacts/lsp-binaries/debian-lsp-*/; do
+            target=$(basename "$dir" | sed 's/debian-lsp-//')
+            cp "$dir/debian-lsp" "artifacts/debian-lsp-${target}"
+          done
+
+      - name: Download VSIXes
         uses: actions/download-artifact@v4
         with:
-          name: vscode-debian-vsix
-          path: ./artifacts/
+          pattern: vscode-debian-vsix-*
+          path: ./artifacts/vsix/
+          merge-multiple: true
 
       - name: Download coc-debian
         uses: actions/download-artifact@v4
@@ -201,8 +253,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/debian-lsp
-            artifacts/*.vsix
+            artifacts/debian-lsp-*
+            artifacts/vsix/*.vsix
             artifacts/coc-debian.tar.gz
           draft: false
           prerelease: false
