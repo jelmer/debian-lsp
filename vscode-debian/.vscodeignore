@@ -5,3 +5,4 @@ src/**
 .eslintrc.json
 tsconfig.json
 *.vsix
+!bin/

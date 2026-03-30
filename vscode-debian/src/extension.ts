@@ -1,3 +1,5 @@
+import * as path from 'path';
+import * as fs from 'fs';
 import { workspace, window, StatusBarAlignment, StatusBarItem, ExtensionContext } from 'vscode';
 import {
   LanguageClient,
@@ -14,6 +16,15 @@ interface PackageStatusParams {
   version: string;
 }
 
+function getBundledServerPath(context: ExtensionContext): string | undefined {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const bundledPath = path.join(context.extensionPath, 'bin', `debian-lsp${ext}`);
+  if (fs.existsSync(bundledPath)) {
+    return bundledPath;
+  }
+  return undefined;
+}
+
 export function activate(context: ExtensionContext) {
   const config = workspace.getConfiguration('debian');
   const isEnable = config.get<boolean>('enable', true);
@@ -22,7 +33,10 @@ export function activate(context: ExtensionContext) {
     return;
   }
 
-  const serverPath = config.get<string>('serverPath', 'debian-lsp');
+  const configuredPath = config.get<string>('serverPath', 'debian-lsp');
+  const serverPath = configuredPath !== 'debian-lsp'
+    ? configuredPath
+    : getBundledServerPath(context) ?? 'debian-lsp';
 
   // Server options: spawn the debian-lsp executable
   const serverOptions: ServerOptions = {
