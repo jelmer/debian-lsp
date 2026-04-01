@@ -98,7 +98,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Upload LSP binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: debian-lsp-${{ matrix.vscode-target }}
           path: target/${{ matrix.target }}/release/debian-lsp
@@ -149,7 +149,7 @@ jobs:
         run: npx vsce package --target ${{ matrix.vscode-target }}
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vscode-debian-vsix-${{ matrix.vscode-target }}
           path: vscode-debian/*.vsix
@@ -200,7 +200,7 @@ jobs:
         run: npm run build
 
       - name: Upload coc-debian artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coc-debian
           path: |
