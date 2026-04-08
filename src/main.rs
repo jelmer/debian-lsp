@@ -16,6 +16,7 @@ mod control;
 mod copyright;
 mod deb822;
 mod distros;
+mod lintian_overrides;
 mod maintainers;
 mod package_cache;
 mod popcon;
@@ -74,6 +75,8 @@ enum FileType {
     UpstreamMetadata,
     /// debian/rules file
     Rules,
+    /// lintian overrides file (debian/source/lintian-overrides or debian/*.lintian-overrides)
+    LintianOverrides,
 }
 
 impl FileType {
@@ -97,6 +100,8 @@ impl FileType {
             Some(Self::UpstreamMetadata)
         } else if rules::is_rules_file(uri) {
             Some(Self::Rules)
+        } else if lintian_overrides::is_lintian_overrides_file(uri) {
+            Some(Self::LintianOverrides)
         } else {
             None
         }
@@ -124,6 +129,7 @@ struct Backend {
     popcon_cache: popcon::SharedPopconCache,
     rdeps_cache: rdeps::SharedRdepsCache,
     git_file_cache: copyright::code_lens::SharedGitFileCache,
+    lintian_tag_cache: lintian_overrides::SharedLintianTagCache,
 }
 
 impl Backend {
@@ -145,7 +151,8 @@ impl Backend {
             | FileType::SourceFormat
             | FileType::SourceOptions
             | FileType::UpstreamMetadata
-            | FileType::Rules => None,
+            | FileType::Rules
+            | FileType::LintianOverrides => None,
         }
     }
 
@@ -604,6 +611,14 @@ impl LanguageServer for Backend {
                 }
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
+            Some((FileType::LintianOverrides, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                drop(workspace);
+                let mut tag_cache = self.lintian_tag_cache.write().await;
+                let tags = tag_cache.get_tags().await;
+                lintian_overrides::get_completions(&source_text, position, tags)
+            }
             Some((FileType::SourceOptions, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
@@ -991,6 +1006,15 @@ impl LanguageServer for Backend {
             }
             FileType::SourceFormat => vec![],
             FileType::SourceOptions => source_options::generate_semantic_tokens(&source_text),
+            FileType::LintianOverrides => {
+                let parsed = lintian_overrides::LintianOverrides::parse(&source_text);
+                match parsed.ok() {
+                    Ok(overrides) => {
+                        lintian_overrides::generate_semantic_tokens(&overrides, &source_text)
+                    }
+                    Err(_) => vec![],
+                }
+            }
         };
 
         if tokens.is_empty() {
@@ -1708,6 +1732,9 @@ async fn main() {
         popcon_cache: popcon_cache.clone(),
         rdeps_cache: rdeps_cache.clone(),
         git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
+        lintian_tag_cache: Arc::new(tokio::sync::RwLock::new(
+            lintian_overrides::LintianTagCache::new(),
+        )),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
