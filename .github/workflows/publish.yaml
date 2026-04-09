@@ -96,6 +96,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --verbose
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PYO3_CROSS_PYTHON_VERSION: "3.12"
 
       - name: Upload LSP binary
         uses: actions/upload-artifact@v7
