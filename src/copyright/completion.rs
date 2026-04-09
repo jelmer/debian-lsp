@@ -36,7 +36,7 @@ pub fn get_completions(
         }
     }
     let mut completions = crate::deb822::completion::get_completions(
-        &deb822,
+        deb822,
         source_text,
         position,
         COPYRIGHT_FIELDS,
