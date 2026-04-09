@@ -47,6 +47,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable format-on-type (auto-indent after newline, space after colon)"
+        },
+        "debian.upstreamOntologistNetAccess": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the upstream-ontologist to make network requests when guessing upstream metadata values."
         }
       }
     },

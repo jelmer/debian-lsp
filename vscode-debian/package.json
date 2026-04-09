@@ -203,6 +203,11 @@
           ],
           "default": "off",
           "description": "Traces the communication between VS Code and the language server."
+        },
+        "debian.upstreamOntologistNetAccess": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the upstream-ontologist to make network requests when guessing upstream metadata values."
         }
       }
     },
