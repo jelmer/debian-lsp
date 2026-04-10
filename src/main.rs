@@ -1084,7 +1084,11 @@ impl LanguageServer for Backend {
                     Err(_) => vec![],
                 }
             }
-            FileType::PatchesSeries => vec![],
+            FileType::PatchesSeries => {
+                let parsed = workspace.get_parsed_patches_series(file.source_file);
+                let patches_series = parsed.tree();
+                patches_series::generate_semantic_tokens(&patches_series, &source_text)
+            }
         };
 
         if tokens.is_empty() {
