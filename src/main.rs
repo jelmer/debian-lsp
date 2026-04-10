@@ -29,6 +29,7 @@ mod distros;
 mod lintian_overrides;
 mod maintainers;
 mod package_cache;
+mod patches_series;
 mod popcon;
 mod position;
 mod rdeps;
@@ -87,6 +88,8 @@ enum FileType {
     Rules,
     /// lintian overrides file (debian/source/lintian-overrides or debian/*.lintian-overrides)
     LintianOverrides,
+    /// debian/patches/series file
+    PatchesSeries,
 }
 
 impl FileType {
@@ -112,6 +115,8 @@ impl FileType {
             Some(Self::Rules)
         } else if lintian_overrides::is_lintian_overrides_file(uri) {
             Some(Self::LintianOverrides)
+        } else if patches_series::is_patches_series_file(uri) {
+            Some(Self::PatchesSeries)
         } else {
             None
         }
@@ -164,7 +169,8 @@ impl Backend {
             | FileType::SourceOptions
             | FileType::UpstreamMetadata
             | FileType::Rules
-            | FileType::LintianOverrides => None,
+            | FileType::LintianOverrides
+            | FileType::PatchesSeries => None,
         }
     }
 
@@ -693,6 +699,12 @@ impl LanguageServer for Backend {
                 let makefile = parsed.tree();
                 rules::get_completions(&makefile, &source_text, position)
             }
+            Some((FileType::PatchesSeries, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_patches_series(source_file);
+                patches_series::get_completions(&uri, &parsed, &source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -1072,6 +1084,7 @@ impl LanguageServer for Backend {
                     Err(_) => vec![],
                 }
             }
+            FileType::PatchesSeries => vec![],
         };
 
         if tokens.is_empty() {

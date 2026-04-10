@@ -86,6 +86,14 @@ language-servers = ["debian-lsp"]
 comment-tokens = "#"
 
 [[language]]
+name = "debseries"
+scope = "text.debian.series"
+file-types = [{ glob = "debian/patches/series"}]
+language-servers = ["debian-lsp"]
+comment-tokens = "#"
+
+
+[[language]]
 name = "debian"
 language-servers = ["debian-lsp"]
 ```

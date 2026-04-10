@@ -88,6 +88,15 @@ pub fn parse_upstream_metadata(
     yaml_edit::YamlFile::parse(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_patches_series(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
+    let text = file.text(db);
+    patchkit::edit::series::parse(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -285,6 +294,13 @@ impl Workspace {
         file: SourceFile,
     ) -> debian_changelog::Parse<debian_changelog::ChangeLog> {
         parse_changelog(self, file)
+    }
+
+    pub fn get_parsed_patches_series(
+        &self,
+        file: SourceFile,
+    ) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
+        parse_patches_series(self, file)
     }
 
     /// Find UNRELEASED entries in the given range that can be marked for upload

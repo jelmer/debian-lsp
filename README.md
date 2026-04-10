@@ -17,6 +17,7 @@ Language Server Protocol implementation for Debian packaging files.
 - `debian/tests/control` - Autopkgtest control files (basic support)
 - `debian/upstream/metadata` - DEP-12 upstream metadata files
 - `debian/rules` - Package build rules (Makefile)
+- `debian/patches/series` - List of patches applied by dpkg-source
 
 ## Features
 
@@ -55,6 +56,11 @@ Language Server Protocol implementation for Debian packaging files.
 - Target name completions for standard Debian Policy targets (clean, build, binary, etc.) and debhelper override/execute targets
 - Variable name completions for common build variables (DEB_BUILD_OPTIONS, DEB_HOST_MULTIARCH, etc.)
 - Excludes already-defined targets from completions
+
+**debian/patches/series:**
+- Patch name completions based on files present in the `debian/patches/` directory
+- Package name completions for patch entries, excluding already listed patches
+- Option value completions for patch application flags (`-p0`, `-p1`, `-p2`, etc.)
 
 ### Diagnostics
 
@@ -170,7 +176,7 @@ function! s:config_debian_lsp()
       autocmd User lsp_setup call lsp#register_server({
         \ 'name': 'debian-lsp',
         \ 'cmd': {server_info -> ['debian-lsp']},
-        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest', 'debrules'],
+        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest', 'debrules', 'debpatches'],
         \ 'blocklist': [],
         \ 'enabled': 1,
         \ })
@@ -193,6 +199,7 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/watch setfiletype debwatch
   autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
   autocmd BufNewFile,BufRead */debian/rules setfiletype debrules
+  autocmd BufNewFile,BufRead */debian/patches/series setfiletype debpatches
 augroup END
 ```
 
@@ -246,6 +253,7 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
     '*/debian/tests/control',
     '*/debian/upstream/metadata',
     '*/debian/rules',
+    '*/debian/patches/series',
   },
   callback = function()
     vim.lsp.start({

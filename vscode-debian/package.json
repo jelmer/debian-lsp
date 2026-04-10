@@ -37,7 +37,8 @@
     "onLanguage:debsourceformat",
     "onLanguage:debsourceoptions",
     "onLanguage:debupstreammetadata",
-    "onLanguage:debrules"
+    "onLanguage:debrules",
+    "onLanguage:debpatches"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -143,6 +144,16 @@
         "filenamePatterns": [
           "**/debian/rules"
         ]
+      },
+      {
+        "id": "debpatches",
+        "aliases": [
+          "Debian Patches Series",
+          "debpatches"
+        ],
+        "filenamePatterns": [
+          "**/debian/patches/series"
+        ]
       }
     ],
     "configurationDefaults": {
@@ -177,6 +188,9 @@
         "editor.formatOnType": true
       },
       "[debrules]": {
+        "editor.colorDecorators": false
+      },
+      "[debpatches]": {
         "editor.colorDecorators": false
       }
     },
@@ -350,6 +364,13 @@
           "changelogTimestamp": ["string"],
           "changelogMetadataValue": ["string"],
           "changelogBugReference": ["markup.underline.link"]
+        }
+      },
+      {
+        "language": "debpatches",
+        "scopes": {
+          "debianValue": ["string"],
+          "debianComment": ["comment"]
         }
       }
     ]

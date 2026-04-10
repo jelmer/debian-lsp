@@ -1,7 +1,7 @@
 {
   "name": "coc-debian",
   "version": "0.1.7",
-  "description": "Debian language server support for coc.nvim (control, copyright, watch, changelog, tests/control, source/format, source/options, upstream/metadata, rules)",
+  "description": "Debian language server support for coc.nvim (control, copyright, watch, changelog, tests/control, source/format, source/options, upstream/metadata, rules, patches/series)",
   "main": "lib/index.js",
   "engines": {
     "coc": "^0.0.80"

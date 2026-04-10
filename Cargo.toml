@@ -40,6 +40,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 salsa = ">=0.23, <0.27"
 text-size = "1.1"
+patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 
 [dev-dependencies]

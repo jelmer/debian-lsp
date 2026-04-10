@@ -61,6 +61,7 @@ Add the following configuration:
 (define-derived-mode debsources-mode       fundamental-mode "debsources")
 (define-derived-mode debsourceoptions-mode fundamental-mode "debsourceoptions")
 (define-derived-mode debupstream-mode      fundamental-mode "debupstream")
+(define-derived-mode debpatches-mode       fundamental-mode "debpatches")
 (define-derived-mode autopkgtest-mode      fundamental-mode "autopkgtest")
 
 ;; Associate Debian packaging files with their modes
@@ -74,6 +75,7 @@ Add the following configuration:
 (add-to-list 'auto-mode-alist '("debian/source/options\\'"       . debsourceoptions-mode))
 (add-to-list 'auto-mode-alist '("debian/source/local-options\\'" . debsourceoptions-mode))
 (add-to-list 'auto-mode-alist '("debian/upstream/metadata\\'"    . debupstream-mode))
+(add-to-list 'auto-mode-alist '("debian/patches/series\\'"      . debpatches-mode))
 (add-to-list 'auto-mode-alist '("debian/tests/control\\'"        . autopkgtest-mode))
 
 ;; Register debian-lsp and enable company for all Debian modes
@@ -85,6 +87,7 @@ Add the following configuration:
                 debsources-mode
                 debsourceoptions-mode
                 debupstream-mode
+                debpatches-mode
                 autopkgtest-mode))
   (add-to-list 'eglot-server-programs
                `(,mode . ("debian-lsp")))
