@@ -13,6 +13,7 @@ categories = ["development-tools", "text-editors"]
 [features]
 default = ["launchpad"]
 launchpad = ["dep:launchpadlib"]
+openssl-vendored = ["dep:openssl"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
@@ -30,7 +31,7 @@ deb822-fast = "0.2"
 lintian-overrides = "0.1.0"
 deb822-lossless = { version = "0.5.12" }
 yaml-edit = { version = "0.2.0" }
-upstream-ontologist = { version = "0.3", default-features = false, features = ["cargo", "debian"] }
+upstream-ontologist = { version = "0.3.17", default-features = false, features = ["cargo", "debian"] }
 futures = "0.3"
 tower-lsp-server = "0.23"
 tokio = { version = "1", features = ["full"] }
@@ -42,6 +43,7 @@ salsa = ">=0.23, <0.27"
 text-size = "1.1"
 patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
+openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

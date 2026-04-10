@@ -39,7 +39,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test ${{ matrix.os == 'windows-latest' && '--features openssl-vendored' || '' }} --verbose
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build ${{ matrix.os == 'windows-latest' && '--features openssl-vendored' || '' }} --verbose
