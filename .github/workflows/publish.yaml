@@ -93,7 +93,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y base-files
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --verbose
+        run: cargo build --release --target ${{ matrix.target }} --features openssl-vendored --verbose
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           PYO3_CROSS_PYTHON_VERSION: "3.12"
