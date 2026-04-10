@@ -61,6 +61,7 @@ function setupFiletypeDetection(context: ExtensionContext): void {
     ['*/debian/source/local-options', 'debsourceoptions'],
     ['*/debian/upstream/metadata', 'debupstream'],
     ['*/debian/rules', 'debrules'],
+    ['*/debian/patches/series', 'debpatches'],
   ];
 
   for (const [pattern, filetype] of filetypeMap) {
@@ -106,6 +107,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       { language: 'debsourceoptions' },
       { language: 'debupstream' },
       { language: 'debrules' },
+      { language: 'debpatches' },
       { scheme: 'file', pattern: '**/debian/control' },
       { scheme: 'file', pattern: '**/debian/copyright' },
       { scheme: 'file', pattern: '**/debian/watch' },
@@ -117,12 +119,13 @@ export async function activate(context: ExtensionContext): Promise<void> {
       { scheme: 'file', pattern: '**/debian/source/local-options' },
       { scheme: 'file', pattern: '**/debian/upstream/metadata' },
       { scheme: 'file', pattern: '**/debian/rules' },
+      { scheme: 'file', pattern: '**/debian/patches/series' },
     ],
     initializationOptions: {
       upstreamOntologistNetAccess: config.get<boolean>('upstreamOntologistNetAccess', false),
     },
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,changelog.dch,tests/control,source/format,source/options,source/local-options,upstream/metadata,rules}')
+      fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,changelog.dch,tests/control,source/format,source/options,source/local-options,upstream/metadata,rules,patches/series}')
     }
   };
 
