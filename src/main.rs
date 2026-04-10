@@ -701,8 +701,9 @@ impl LanguageServer for Backend {
             }
             Some((FileType::PatchesSeries, source_file)) => {
                 let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_patches_series(source_file);
-                patches_series::get_completions(&uri, &parsed)
+                patches_series::get_completions(&uri, &parsed, &source_text, position)
             }
             None => Vec::new(),
         };
