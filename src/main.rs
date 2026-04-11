@@ -9,6 +9,8 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
+use clap::{Parser, Subcommand};
+
 /// Server settings received from the client via initializationOptions.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1763,57 +1765,166 @@ impl LanguageServer for Backend {
     }
 }
 
+/// Command-line interface for debian-lsp.
+#[derive(Parser, Debug)]
+#[command(name = "debian-lsp", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Subcommands for debian-lsp.
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Check Debian files and report diagnostics to stdout.
+    ///
+    /// Output is in gcc-style format: filename:line: severity: message
+    Check {
+        /// Files to check. If none are given, reads from stdin (for LSP mode).
+        files: Vec<std::path::PathBuf>,
+    },
+}
+
+/// Severity level for a diagnostic, used in gcc-style output.
+fn severity_label(severity: Option<DiagnosticSeverity>) -> &'static str {
+    match severity {
+        Some(DiagnosticSeverity::ERROR) => "error",
+        Some(DiagnosticSeverity::WARNING) => "warning",
+        Some(DiagnosticSeverity::INFORMATION) => "note",
+        Some(DiagnosticSeverity::HINT) => "note",
+        _ => "error",
+    }
+}
+
+/// Run one-off diagnostics on the given files, printing gcc-style output.
+///
+/// Returns the number of errors found (for the exit code).
+fn run_check(files: &[std::path::PathBuf]) -> i32 {
+    let mut workspace = Workspace::new();
+    let mut error_count: i32 = 0;
+
+    for path in files {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{}: error: {}", path.display(), e);
+                error_count += 1;
+                continue;
+            }
+        };
+
+        let abs_path = match std::fs::canonicalize(path) {
+            Ok(p) => p,
+            Err(_) => path.to_path_buf(),
+        };
+
+        let uri = match Uri::from_file_path(&abs_path) {
+            Some(u) => u,
+            None => {
+                eprintln!("{}: error: could not convert path to URI", path.display());
+                error_count += 1;
+                continue;
+            }
+        };
+
+        let file_type = match FileType::detect(&uri) {
+            Some(ft) => ft,
+            None => {
+                eprintln!(
+                    "{}: warning: unrecognized Debian file type, skipping",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let source_file = workspace.update_file(uri, content.clone());
+
+        let diagnostics = match Backend::collect_diagnostics(source_file, file_type, &workspace) {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let display_path = path.display();
+        for diag in &diagnostics {
+            let line = diag.range.start.line + 1; // LSP lines are 0-based
+            let col = diag.range.start.character + 1;
+            let severity = severity_label(diag.severity);
+            println!(
+                "{}:{}:{}: {}: {}",
+                display_path, line, col, severity, diag.message
+            );
+            if severity == "error" {
+                error_count += 1;
+            }
+        }
+    }
+
+    error_count
+}
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+    let cli = Cli::parse();
 
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
+    match cli.command {
+        Some(Command::Check { files }) => {
+            let errors = run_check(&files);
+            std::process::exit(if errors > 0 { 1 } else { 0 });
+        }
+        None => {
+            // Default: run as LSP server
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .init();
 
-    // Load package cache in background
-    let package_cache = package_cache::new_shared_cache();
-    let cache_for_loading = package_cache.clone();
-    tokio::spawn(async move {
-        package_cache::stream_packages_into(&cache_for_loading).await;
-    });
+            let stdin = tokio::io::stdin();
+            let stdout = tokio::io::stdout();
 
-    // Load architecture list in background
-    let architecture_list = architecture::new_shared_list();
-    let arch_for_loading = architecture_list.clone();
-    tokio::spawn(async move {
-        architecture::stream_into(&arch_for_loading).await;
-    });
+            // Load package cache in background
+            let package_cache = package_cache::new_shared_cache();
+            let cache_for_loading = package_cache.clone();
+            tokio::spawn(async move {
+                package_cache::stream_packages_into(&cache_for_loading).await;
+            });
 
-    let udd_pool = udd::shared_pool();
-    let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
-    let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
-    let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
-    let maintainer_cache = maintainers::new_shared_maintainer_cache(udd_pool.clone());
-    let rdeps_cache = rdeps::new_shared_rdeps_cache(udd_pool);
+            // Load architecture list in background
+            let architecture_list = architecture::new_shared_list();
+            let arch_for_loading = architecture_list.clone();
+            tokio::spawn(async move {
+                architecture::stream_into(&arch_for_loading).await;
+            });
 
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
-        workspace: Arc::new(Mutex::new(Workspace::new())),
-        files: Arc::new(Mutex::new(HashMap::new())),
-        package_cache: package_cache.clone(),
-        architecture_list: architecture_list.clone(),
-        bug_cache: bug_cache.clone(),
-        maintainer_cache: maintainer_cache.clone(),
-        vcswatch_cache: vcswatch_cache.clone(),
-        popcon_cache: popcon_cache.clone(),
-        rdeps_cache: rdeps_cache.clone(),
-        git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
-        lintian_tag_cache: Arc::new(tokio::sync::RwLock::new(
-            lintian_overrides::LintianTagCache::new(),
-        )),
-        upstream_cache: upstream_metadata::upstream_cache::new_shared(),
-        settings: Arc::new(Mutex::new(Settings::default())),
-    });
+            let udd_pool = udd::shared_pool();
+            let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
+            let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
+            let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
+            let maintainer_cache = maintainers::new_shared_maintainer_cache(udd_pool.clone());
+            let rdeps_cache = rdeps::new_shared_rdeps_cache(udd_pool);
 
-    Server::new(stdin, stdout, socket).serve(service).await;
+            let (service, socket) = LspService::new(|client| Backend {
+                client,
+                workspace: Arc::new(Mutex::new(Workspace::new())),
+                files: Arc::new(Mutex::new(HashMap::new())),
+                package_cache: package_cache.clone(),
+                architecture_list: architecture_list.clone(),
+                bug_cache: bug_cache.clone(),
+                maintainer_cache: maintainer_cache.clone(),
+                vcswatch_cache: vcswatch_cache.clone(),
+                popcon_cache: popcon_cache.clone(),
+                rdeps_cache: rdeps_cache.clone(),
+                git_file_cache: copyright::code_lens::new_shared_git_file_cache(),
+                lintian_tag_cache: Arc::new(tokio::sync::RwLock::new(
+                    lintian_overrides::LintianTagCache::new(),
+                )),
+                upstream_cache: upstream_metadata::upstream_cache::new_shared(),
+                settings: Arc::new(Mutex::new(Settings::default())),
+            });
+
+            Server::new(stdin, stdout, socket).serve(service).await;
+        }
+    }
 }
 
 #[cfg(test)]
