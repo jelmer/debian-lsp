@@ -1778,10 +1778,12 @@ struct Cli {
 enum Command {
     /// Check Debian files and report diagnostics to stdout.
     ///
-    /// Output is in gcc-style format: filename:line: severity: message
+    /// Output is in gcc-style format: filename:line: severity: message.
+    /// Paths can be files or directories; directories are walked recursively
+    /// and any recognized Debian files are checked.
     Check {
-        /// Files to check. If none are given, reads from stdin (for LSP mode).
-        files: Vec<std::path::PathBuf>,
+        /// Files or directories to check.
+        paths: Vec<std::path::PathBuf>,
     },
 }
 
@@ -1796,14 +1798,51 @@ fn severity_label(severity: Option<DiagnosticSeverity>) -> &'static str {
     }
 }
 
-/// Run one-off diagnostics on the given files, printing gcc-style output.
+/// Collect all regular files under `dir` recursively.
+fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{}: error: {}", dir.display(), e);
+            return files;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_files_recursive(&path));
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Run one-off diagnostics on the given paths, printing gcc-style output.
+///
+/// Paths can be files or directories. Directories are walked recursively
+/// and any recognized Debian files found within are checked.
 ///
 /// Returns the number of errors found (for the exit code).
-fn run_check(files: &[std::path::PathBuf]) -> i32 {
+fn run_check(paths: &[std::path::PathBuf]) -> i32 {
     let mut workspace = Workspace::new();
     let mut error_count: i32 = 0;
 
-    for path in files {
+    // Expand directories into individual files, tracking which were explicit.
+    let explicit_paths: std::collections::HashSet<std::path::PathBuf> =
+        paths.iter().filter(|p| !p.is_dir()).cloned().collect();
+    let mut files = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            files.extend(collect_files_recursive(path));
+        } else {
+            files.push(path.clone());
+        }
+    }
+
+    for path in &files {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -1830,10 +1869,14 @@ fn run_check(files: &[std::path::PathBuf]) -> i32 {
         let file_type = match FileType::detect(&uri) {
             Some(ft) => ft,
             None => {
-                eprintln!(
-                    "{}: warning: unrecognized Debian file type, skipping",
-                    path.display()
-                );
+                // Only warn for paths the user specified explicitly, not files
+                // discovered by walking a directory.
+                if explicit_paths.contains(path) {
+                    eprintln!(
+                        "{}: warning: unrecognized Debian file type, skipping",
+                        path.display()
+                    );
+                }
                 continue;
             }
         };
@@ -1868,8 +1911,8 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Check { files }) => {
-            let errors = run_check(&files);
+        Some(Command::Check { paths }) => {
+            let errors = run_check(&paths);
             std::process::exit(if errors > 0 { 1 } else { 0 });
         }
         None => {
