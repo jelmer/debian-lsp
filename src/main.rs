@@ -1798,7 +1798,10 @@ fn severity_label(severity: Option<DiagnosticSeverity>) -> &'static str {
     }
 }
 
-/// Collect all regular files under `dir` recursively.
+/// Directory names to skip when walking recursively.
+const SKIP_DIRS: &[&str] = &[".git", ".hg", ".svn", ".bzr", "__pycache__", ".tox"];
+
+/// Collect all regular files under `dir` recursively, skipping VCS directories.
 fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let entries = match std::fs::read_dir(dir) {
@@ -1811,6 +1814,11 @@ fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if SKIP_DIRS.contains(&name) {
+                    continue;
+                }
+            }
             files.extend(collect_files_recursive(&path));
         } else if path.is_file() {
             files.push(path);
@@ -1843,15 +1851,8 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
     }
 
     for path in &files {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("{}: error: {}", path.display(), e);
-                error_count += 1;
-                continue;
-            }
-        };
-
+        // Determine the file type before reading, so we skip non-Debian files
+        // without trying to read them (they may be binary, etc.).
         let abs_path = match std::fs::canonicalize(path) {
             Ok(p) => p,
             Err(_) => path.to_path_buf(),
@@ -1860,8 +1861,10 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
         let uri = match Uri::from_file_path(&abs_path) {
             Some(u) => u,
             None => {
-                eprintln!("{}: error: could not convert path to URI", path.display());
-                error_count += 1;
+                if explicit_paths.contains(path) {
+                    eprintln!("{}: error: could not convert path to URI", path.display());
+                    error_count += 1;
+                }
                 continue;
             }
         };
@@ -1877,6 +1880,15 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
                         path.display()
                     );
                 }
+                continue;
+            }
+        };
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{}: error: {}", path.display(), e);
+                error_count += 1;
                 continue;
             }
         };
