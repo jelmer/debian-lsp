@@ -55,3 +55,7 @@ tower-service = "0.3"
 [[bin]]
 name = "debian-lsp"
 test = true
+
+[patch.crates-io]
+deb822-lossless = { git = "https://github.com/lucasly-ba/deb822-rs", branch = "fix-error" }
+

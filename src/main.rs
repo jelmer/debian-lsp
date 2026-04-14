@@ -164,6 +164,14 @@ impl Backend {
                 Some(control::diagnostics::get_diagnostics(&source_text, &parsed))
             }
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
+            FileType::PatchesSeries => {
+                let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_patches_series(source_file);
+                Some(patches_series::diagnostics::get_diagnostics(
+                    &source_text,
+                    &parsed,
+                ))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::Changelog
@@ -171,8 +179,7 @@ impl Backend {
             | FileType::SourceOptions
             | FileType::UpstreamMetadata
             | FileType::Rules
-            | FileType::LintianOverrides
-            | FileType::PatchesSeries => None,
+            | FileType::LintianOverrides => None,
         }
     }
 
