@@ -2,6 +2,7 @@
 
 pub mod completion;
 pub mod detection;
+pub mod diagnostics;
 
 pub use completion::*;
 pub use detection::is_patches_series_file;
