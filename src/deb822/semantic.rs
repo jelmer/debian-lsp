@@ -8,7 +8,7 @@ use deb822_lossless::{Deb822, SyntaxKind};
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::SemanticToken;
 
-use crate::position::offset_to_position;
+use crate::position::LineIndex;
 
 /// Semantic token types reported by the server.
 ///
@@ -100,12 +100,19 @@ impl Default for SemanticTokensBuilder {
     }
 }
 
-/// Generate semantic tokens for a deb822 file
+/// Generate semantic tokens for a deb822 file.
+///
+/// Builds a [`LineIndex`] once up front so the per-token offset →
+/// position conversions inside the loop are O(log N) rather than
+/// O(N). Without that the cost of generating tokens for a big
+/// changelog is dominated by repeated linear scans of the buffer
+/// from the start.
 pub fn generate_tokens<V: FieldValidator>(
     deb822: &Deb822,
     source_text: &str,
     validator: &V,
 ) -> Vec<SemanticToken> {
+    let idx = LineIndex::new(source_text);
     let mut builder = SemanticTokensBuilder::new();
 
     // Single pass through the syntax tree
@@ -114,7 +121,7 @@ pub fn generate_tokens<V: FieldValidator>(
             match token.kind() {
                 SyntaxKind::COMMENT => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = idx.offset_to_position(source_text, range.start());
                     let length = crate::position::utf16_len(token.text());
 
                     builder.push(
@@ -127,7 +134,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 }
                 SyntaxKind::KEY => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = idx.offset_to_position(source_text, range.start());
                     let key = token.text();
                     let length = crate::position::utf16_len(key);
 
@@ -148,7 +155,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 }
                 SyntaxKind::VALUE => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = idx.offset_to_position(source_text, range.start());
                     let length = crate::position::utf16_len(token.text());
 
                     if length > 0 {
