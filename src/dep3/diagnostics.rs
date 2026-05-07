@@ -7,21 +7,17 @@ use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString}
 
 use crate::position::text_range_to_lsp_range;
 
-/// Generate diagnostics for the DEP-3 header at the top of `source_text`.
+/// Generate diagnostics for a DEP-3 header. `header` is the parsed
+/// deb822 tree of the header portion only (everything before the
+/// first `---` / `diff ` / `Index:` line); `source_text` is the
+/// whole patch buffer, needed to map rowan byte ranges back to LSP
+/// `Position`s.
+///
 /// Currently surfaces field-name casing issues (e.g. `description` →
-/// `Description`). Returns an empty vector if there is no header to
-/// inspect.
-pub fn get_diagnostics(source_text: &str) -> Vec<Diagnostic> {
-    let header_end = dep3::lossless::header_end(source_text);
-    if header_end == 0 {
-        return Vec::new();
-    }
-    let header_text = &source_text[..header_end];
-    let parsed = deb822_lossless::Deb822::parse(header_text);
-    let deb822 = parsed.tree();
-
+/// `Description`). Returns an empty vector if the header is empty.
+pub fn get_diagnostics(header: &deb822_lossless::Deb822, source_text: &str) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for paragraph in deb822.paragraphs() {
+    for paragraph in header.paragraphs() {
         for entry in paragraph.entries() {
             let Some(key) = entry.key() else {
                 continue;
@@ -60,10 +56,18 @@ pub fn get_diagnostics(source_text: &str) -> Vec<Diagnostic> {
 mod tests {
     use super::*;
 
+    /// Test helper: parse the DEP-3 header out of `text` and call
+    /// `get_diagnostics` with it.
+    fn run(text: &str) -> Vec<Diagnostic> {
+        let header_end = dep3::lossless::header_end(text);
+        let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
+        get_diagnostics(&parsed.tree(), text)
+    }
+
     #[test]
     fn lowercase_field_flagged() {
         let text = "author: alice\ndescription: bla\n";
-        let diags = get_diagnostics(text);
+        let diags = run(text);
         assert_eq!(diags.len(), 2);
         assert_eq!(diags[0].message, "Field name 'author' should be 'Author'");
         assert_eq!(
@@ -74,38 +78,34 @@ mod tests {
 
     #[test]
     fn canonical_field_not_flagged() {
-        let text = "Author: alice\nDescription: bla\n";
-        assert_eq!(get_diagnostics(text).len(), 0);
+        assert_eq!(run("Author: alice\nDescription: bla\n").len(), 0);
     }
 
     #[test]
     fn unknown_field_not_flagged() {
-        let text = "Author: alice\nX-Custom: y\n";
-        assert_eq!(get_diagnostics(text).len(), 0);
+        assert_eq!(run("Author: alice\nX-Custom: y\n").len(), 0);
     }
 
     #[test]
     fn bug_vendor_field_not_flagged() {
-        let text = "Author: alice\nBug-Debian: https://bugs.debian.org/1\n";
-        assert_eq!(get_diagnostics(text).len(), 0);
+        assert_eq!(
+            run("Author: alice\nBug-Debian: https://bugs.debian.org/1\n").len(),
+            0
+        );
     }
 
     #[test]
     fn diff_body_not_inspected() {
-        let text = "wrong-case: alice\n---\nthis-would-also-be-wrong: x\n";
-        let diags = get_diagnostics(text);
         // First field is in header — well, "wrong-case" is unknown so
         // not flagged. The point is: the diff line below is never
         // looked at.
-        assert!(diags.is_empty());
+        assert!(run("wrong-case: alice\n---\nthis-would-also-be-wrong: x\n").is_empty());
     }
 
     #[test]
     fn diff_body_after_known_field_not_inspected() {
-        let text = "author: alice\n---\nfoo: bar\n";
-        let diags = get_diagnostics(text);
         // `author` should be flagged once; `foo:` in the diff body is
         // not a field at all and must not appear.
-        assert_eq!(diags.len(), 1);
+        assert_eq!(run("author: alice\n---\nfoo: bar\n").len(), 1);
     }
 }

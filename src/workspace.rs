@@ -97,6 +97,21 @@ pub fn parse_patches_series(
     patchkit::edit::series::parse(&text)
 }
 
+/// Salsa-tracked parse of just the DEP-3 header at the top of a
+/// quilt patch file under debian/patches/. Returns the parsed
+/// deb822 along with the byte offset where the diff body starts —
+/// the diff body is left to diff-lsp.
+#[salsa::tracked]
+pub fn parse_dep3_header(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> (deb822_lossless::Parse<deb822_lossless::Deb822>, usize) {
+    let text = file.text(db);
+    let header_end = dep3::lossless::header_end(&text);
+    let parse = deb822_lossless::Deb822::parse(&text[..header_end]);
+    (parse, header_end)
+}
+
 #[salsa::tracked]
 pub fn parse_lintian_overrides(
     db: &dyn salsa::Database,
@@ -311,6 +326,16 @@ impl Workspace {
         file: SourceFile,
     ) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
         parse_patches_series(self, file)
+    }
+
+    /// Salsa-cached deb822 parse of a quilt patch's DEP-3 header.
+    /// Returns the parse and the byte offset where the diff body
+    /// starts. See [`parse_dep3_header`] for details.
+    pub fn get_parsed_dep3_header(
+        &self,
+        file: SourceFile,
+    ) -> (deb822_lossless::Parse<deb822_lossless::Deb822>, usize) {
+        parse_dep3_header(self, file)
     }
 
     /// Salsa-cached parse of a `debian/source/lintian-overrides` or

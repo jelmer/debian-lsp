@@ -8,21 +8,19 @@ use tower_lsp_server::ls_types::{DocumentSymbol, SymbolKind};
 
 use crate::position::text_range_to_lsp_range;
 
-/// Generate document symbols for the DEP-3 header at the top of
-/// `source_text`. One symbol per field; the field name is the symbol
-/// name and the field value is its `detail` (truncated for multi-line
+/// Generate document symbols for a DEP-3 header. `header` is the
+/// parsed deb822 of the header portion only; `source_text` is the
+/// whole patch buffer, used to map rowan byte ranges back to LSP
+/// `Range`s. One symbol per field; the field name is the symbol name
+/// and the field value is its `detail` (truncated for multi-line
 /// values).
 #[allow(deprecated)] // DocumentSymbol::deprecated is required by the LSP type
-pub fn generate_document_symbols(source_text: &str) -> Vec<DocumentSymbol> {
-    let header_end = dep3::lossless::header_end(source_text);
-    if header_end == 0 {
-        return Vec::new();
-    }
-    let header_text = &source_text[..header_end];
-    let parsed = deb822_lossless::Deb822::parse(header_text);
-    let deb822 = parsed.tree();
+pub fn generate_document_symbols(
+    header: &deb822_lossless::Deb822,
+    source_text: &str,
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
-    let Some(paragraph) = deb822.paragraphs().next() else {
+    let Some(paragraph) = header.paragraphs().next() else {
         return symbols;
     };
     for entry in paragraph.entries() {
@@ -64,25 +62,28 @@ fn first_line_truncated(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    fn run(text: &str) -> Vec<DocumentSymbol> {
+        let header_end = dep3::lossless::header_end(text);
+        let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
+        generate_document_symbols(&parsed.tree(), text)
+    }
+
     #[test]
     fn one_symbol_per_field() {
-        let text = "Author: alice\nDescription: bla\nForwarded: not-needed\n";
-        let symbols = generate_document_symbols(text);
+        let symbols = run("Author: alice\nDescription: bla\nForwarded: not-needed\n");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["Author", "Description", "Forwarded"]);
     }
 
     #[test]
     fn detail_carries_first_line_of_value() {
-        let text = "Description: short synopsis\n long body line\n more\n";
-        let symbols = generate_document_symbols(text);
+        let symbols = run("Description: short synopsis\n long body line\n more\n");
         assert_eq!(symbols[0].detail.as_deref(), Some("short synopsis"));
     }
 
     #[test]
     fn diff_body_not_inspected() {
-        let text = "Author: alice\n---\n@@ -1 +1 @@\n-x\n+y\n";
-        let symbols = generate_document_symbols(text);
+        let symbols = run("Author: alice\n---\n@@ -1 +1 @@\n-x\n+y\n");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["Author"]);
     }
@@ -90,7 +91,6 @@ mod tests {
     #[test]
     fn empty_header_returns_no_symbols() {
         // File starts with a diff marker — no header at all.
-        let text = "---\n@@ -1 +1 @@\n";
-        assert!(generate_document_symbols(text).is_empty());
+        assert!(run("---\n@@ -1 +1 @@\n").is_empty());
     }
 }

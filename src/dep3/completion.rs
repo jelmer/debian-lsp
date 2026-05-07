@@ -7,19 +7,22 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use super::fields::DEP3_FIELDS;
 
-/// Get completion items for the DEP-3 header at `position`. Returns
-/// `Vec::new()` if the cursor is in the diff body or the file has no
-/// header at all.
-pub fn get_completions(source_text: &str, position: Position) -> Vec<CompletionItem> {
-    if !super::is_in_dep3_header(source_text, position) {
+/// Get completion items for a DEP-3 header at `position`. `header`
+/// is the parsed deb822 of the header portion only; `header_end` is
+/// the byte offset where the diff body begins. Returns `Vec::new()`
+/// if the cursor is in the diff body.
+pub fn get_completions(
+    header: &deb822_lossless::Deb822,
+    header_end: usize,
+    source_text: &str,
+    position: Position,
+) -> Vec<CompletionItem> {
+    if !super::is_in_dep3_header(source_text, header_end, position) {
         return Vec::new();
     }
-    let header_end = dep3::lossless::header_end(source_text);
     let header_text = &source_text[..header_end];
-    let parsed = deb822_lossless::Deb822::parse(header_text);
-    let deb822 = parsed.tree();
     crate::deb822::completion::get_completions(
-        &deb822,
+        header,
         header_text,
         position,
         DEP3_FIELDS,
@@ -76,11 +79,15 @@ fn value_completions(field_name: &str, value_prefix: &str) -> Vec<CompletionItem
 mod tests {
     use super::*;
 
+    fn run(text: &str, position: Position) -> Vec<CompletionItem> {
+        let header_end = dep3::lossless::header_end(text);
+        let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
+        get_completions(&parsed.tree(), header_end, text, position)
+    }
+
     #[test]
     fn field_name_completions_at_start_of_line_in_header() {
-        let text = "Author: alice\n\n";
-        let completions = get_completions(text, Position::new(1, 0));
-        // Should contain the canonical DEP-3 fields.
+        let completions = run("Author: alice\n\n", Position::new(1, 0));
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"Description"));
         assert!(labels.contains(&"Forwarded"));
@@ -89,16 +96,13 @@ mod tests {
 
     #[test]
     fn no_completions_in_diff_body() {
-        let text = "Author: alice\n---\n@@ -1 +1 @@\n";
-        let completions = get_completions(text, Position::new(2, 0));
-        assert!(completions.is_empty());
+        assert!(run("Author: alice\n---\n@@ -1 +1 @@\n", Position::new(2, 0)).is_empty());
     }
 
     #[test]
     fn forwarded_value_enum_completions() {
-        let text = "Forwarded: \n";
         // Cursor is right after "Forwarded: " on line 0.
-        let completions = get_completions(text, Position::new(0, 11));
+        let completions = run("Forwarded: \n", Position::new(0, 11));
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"yes"));
         assert!(labels.contains(&"no"));
@@ -107,8 +111,7 @@ mod tests {
 
     #[test]
     fn origin_category_enum_completions() {
-        let text = "Origin: \n";
-        let completions = get_completions(text, Position::new(0, 8));
+        let completions = run("Origin: \n", Position::new(0, 8));
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"upstream"));
         assert!(labels.contains(&"backport"));
