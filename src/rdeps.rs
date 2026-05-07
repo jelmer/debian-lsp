@@ -2,19 +2,25 @@
 //!
 //! Queries the `depends` table to count how many packages depend on a given package.
 
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use lru::LruCache;
 use tokio::sync::RwLock;
 
 /// Thread-safe shared cache for reverse dependency lookups.
 pub type SharedRdepsCache = Arc<RwLock<RdepsCache>>;
 
+/// Maximum number of distinct packages cached. Each rdeps lookup is
+/// expensive (LIKE scan over `all_packages`), so the cap is generous;
+/// the LRU exists to bound memory over very long sessions.
+const RDEPS_CACHE_CAPACITY: usize = 4096;
+
 /// Cached reverse dependency counts from UDD.
 pub struct RdepsCache {
     pool: crate::udd::SharedPool,
     /// Map from package name to reverse dependency count. `None` means "looked up, not found".
-    count_by_package: HashMap<String, Option<u32>>,
+    count_by_package: LruCache<String, Option<u32>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -27,7 +33,9 @@ impl RdepsCache {
     pub fn new(pool: crate::udd::SharedPool) -> Self {
         Self {
             pool,
-            count_by_package: HashMap::new(),
+            count_by_package: LruCache::new(
+                NonZeroUsize::new(RDEPS_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
         }
     }
 
@@ -35,22 +43,23 @@ impl RdepsCache {
     ///
     /// Returns `None` if the package is not found or the query fails.
     pub async fn get_rdeps_count(&mut self, package: &str) -> Option<u32> {
-        if !self.count_by_package.contains_key(package) {
+        if !self.count_by_package.contains(package) {
             self.fetch_rdeps_count(package).await;
         }
-        self.get_cached_rdeps_count(package)
+        self.count_by_package.get(package).and_then(|v| *v)
     }
 
     /// Look up the reverse dependency count from cache only, without fetching.
+    /// Does not promote the entry in the LRU.
     ///
     /// Returns `None` if the package has not been fetched yet or was not found.
     pub fn get_cached_rdeps_count(&self, package: &str) -> Option<u32> {
-        self.count_by_package.get(package)?.as_ref().copied()
+        self.count_by_package.peek(package).and_then(|v| *v)
     }
 
     /// Returns `true` if this package has been looked up (hit or miss).
     pub fn is_cached(&self, package: &str) -> bool {
-        self.count_by_package.contains_key(package)
+        self.count_by_package.contains(package)
     }
 
     async fn fetch_rdeps_count(&mut self, package: &str) {
@@ -72,10 +81,10 @@ impl RdepsCache {
         match row {
             Some(RdepsRow { count: Some(n) }) => {
                 self.count_by_package
-                    .insert(package.to_string(), u32::try_from(n).ok());
+                    .put(package.to_string(), u32::try_from(n).ok());
             }
             _ => {
-                self.count_by_package.insert(package.to_string(), None);
+                self.count_by_package.put(package.to_string(), None);
             }
         }
     }
@@ -83,14 +92,13 @@ impl RdepsCache {
     /// Insert a cached entry for testing purposes.
     #[cfg(test)]
     pub(crate) fn insert_cached(&mut self, package: &str, count: u32) {
-        self.count_by_package
-            .insert(package.to_string(), Some(count));
+        self.count_by_package.put(package.to_string(), Some(count));
     }
 
     /// Insert a cached "not found" entry for testing purposes.
     #[cfg(test)]
     pub(crate) fn insert_cached_missing(&mut self, package: &str) {
-        self.count_by_package.insert(package.to_string(), None);
+        self.count_by_package.put(package.to_string(), None);
     }
 }
 

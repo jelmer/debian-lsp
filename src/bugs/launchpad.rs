@@ -28,10 +28,10 @@ impl BugCache {
     /// Return a single Launchpad bug summary by ID, fetching directly from the
     /// Launchpad API if not already cached.
     pub async fn get_launchpad_bug_summary(&mut self, id: u32) -> Option<LaunchpadBugSummary> {
-        if !self.launchpad_bug_details_by_id.contains_key(&id) {
+        if !self.launchpad_bug_details_by_id.contains(&id) {
             self.fetch_launchpad_bug_by_id(id).await;
         }
-        if self.launchpad_bug_details_by_id.contains_key(&id) {
+        if self.launchpad_bug_details_by_id.contains(&id) {
             Some(self.make_launchpad_summary(id))
         } else {
             None
@@ -67,7 +67,7 @@ impl BugCache {
         } else {
             Some(bug.title.clone())
         };
-        self.launchpad_bug_details_by_id.insert(
+        self.launchpad_bug_details_by_id.put(
             id,
             CachedLaunchpadBugDetails {
                 title,
@@ -87,18 +87,27 @@ impl BugCache {
         self.fetch_launchpad_bugs_for_package(package).await;
 
         let normalized_prefix = prefix.trim();
-        let Some(ids) = self.launchpad_bug_ids_by_package.get(package) else {
-            return Vec::new();
+        // Snapshot matching IDs so the borrow on
+        // `launchpad_bug_ids_by_package` is released before each
+        // `make_launchpad_summary` call (which mutably borrows
+        // `launchpad_bug_details_by_id` via `LruCache::get`).
+        let matching_ids: Vec<u32> = match self.launchpad_bug_ids_by_package.get(package) {
+            Some(ids) => ids
+                .iter()
+                .copied()
+                .filter(|id| id.to_string().starts_with(normalized_prefix))
+                .collect(),
+            None => return Vec::new(),
         };
 
-        ids.iter()
-            .filter(|id| id.to_string().starts_with(normalized_prefix))
-            .map(|&id| self.make_launchpad_summary(id))
+        matching_ids
+            .into_iter()
+            .map(|id| self.make_launchpad_summary(id))
             .collect()
     }
 
     /// Build a Launchpad bug summary from cached details for `id`.
-    fn make_launchpad_summary(&self, id: u32) -> LaunchpadBugSummary {
+    fn make_launchpad_summary(&mut self, id: u32) -> LaunchpadBugSummary {
         match self.launchpad_bug_details_by_id.get(&id) {
             Some(details) => LaunchpadBugSummary {
                 id,
@@ -117,7 +126,7 @@ impl BugCache {
 
     /// Fetch Launchpad bug IDs and details for an Ubuntu source package.
     async fn fetch_launchpad_bugs_for_package(&mut self, package: &str) {
-        if self.launchpad_bug_ids_by_package.contains_key(package) {
+        if self.launchpad_bug_ids_by_package.contains(package) {
             return;
         }
 
@@ -158,10 +167,10 @@ impl BugCache {
         let mut ids: Vec<u32> = bug_details_by_id.keys().copied().collect();
         ids.sort_unstable();
         for (id, details) in bug_details_by_id {
-            self.launchpad_bug_details_by_id.insert(id, details);
+            self.launchpad_bug_details_by_id.put(id, details);
         }
         self.launchpad_bug_ids_by_package
-            .insert(package.to_string(), ids);
+            .put(package.to_string(), ids);
     }
 
     /// Query Launchpad bug tasks for a source package and index them by bug ID.
@@ -339,7 +348,7 @@ impl BugCache {
 
         for (id, title, status, done) in bugs {
             sorted_unique_ids.insert(id);
-            self.launchpad_bug_details_by_id.insert(
+            self.launchpad_bug_details_by_id.put(
                 id,
                 CachedLaunchpadBugDetails {
                     title: title.map(ToString::to_string),
@@ -350,7 +359,7 @@ impl BugCache {
         }
 
         self.launchpad_bug_ids_by_package
-            .insert(package.to_string(), sorted_unique_ids.into_iter().collect());
+            .put(package.to_string(), sorted_unique_ids.into_iter().collect());
     }
 }
 
