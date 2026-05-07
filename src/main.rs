@@ -260,25 +260,18 @@ impl Backend {
         workspace: &Workspace,
         open_files: &HashMap<Uri, FileInfo>,
     ) -> Option<Vec<Diagnostic>> {
-        match file_type {
+        // Per-file-type built-in diagnostics. Returns None for file
+        // types we have no built-in handler for *and* that the
+        // lintian-brush translator can't target either — those file
+        // types should leave previously-published diagnostics in place
+        // (None) rather than clearing them with an empty publish.
+        let builtin: Option<Vec<Diagnostic>> = match file_type {
             FileType::Control => {
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(source_file);
-                #[allow(unused_mut)]
-                let mut diags = control::diagnostics::get_diagnostics(src, &parsed);
-                // With the lintian-brush feature on, also surface every
-                // detector hit as a diagnostic. The same detectors back the
-                // code-action path in `run_control_fixers_for_uri`, so the
-                // diagnostic and the quick-fix carry matching `code` values
-                // and the editor pairs them up.
-                #[cfg(feature = "lintian-brush")]
-                diags.extend(lintian_brush::fixers::run_control_diagnostics_for_uri(
-                    uri, workspace, open_files,
-                ));
-                let _ = (uri, open_files);
-                Some(diags)
+                Some(control::diagnostics::get_diagnostics(src, &parsed))
             }
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
             FileType::Patch => {
@@ -298,6 +291,41 @@ impl Backend {
             | FileType::LintianOverrides
             | FileType::PatchesSeries
             | FileType::DebcargoToml => None,
+        };
+
+        // With the lintian-brush feature on, surface detector hits as
+        // diagnostics on any file the translator knows how to anchor
+        // on. The same detectors back the code-action path in
+        // `run_fixers_for_uri`, so the diagnostic and the quick-fix
+        // carry matching `code` values and the editor pairs them up.
+        #[cfg(feature = "lintian-brush")]
+        let lb: Option<Vec<Diagnostic>> = if matches!(
+            file_type,
+            FileType::Control
+                | FileType::Copyright
+                | FileType::Changelog
+                | FileType::Watch
+                | FileType::UpstreamMetadata
+                | FileType::TestsControl
+        ) {
+            Some(lintian_brush::fixers::run_diagnostics_for_uri(
+                uri, workspace, open_files,
+            ))
+        } else {
+            None
+        };
+        #[cfg(not(feature = "lintian-brush"))]
+        let lb: Option<Vec<Diagnostic>> = None;
+        let _ = (uri, open_files);
+
+        match (builtin, lb) {
+            (None, None) => None,
+            (Some(b), None) => Some(b),
+            (None, Some(l)) => Some(l),
+            (Some(mut b), Some(l)) => {
+                b.extend(l);
+                Some(b)
+            }
         }
     }
 
@@ -948,9 +976,18 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        // Only control, copyright, and changelog files support code actions for now
+        // Code actions surface from two sources: built-in handlers
+        // (wrap-and-sort, field-casing fixes, "Add new changelog entry",
+        // …) for control/copyright/changelog, and lintian-brush
+        // detector quick-fixes for any file the translator can target.
+        // Bail out only for file types neither path covers.
         match file_info.file_type {
-            FileType::Control | FileType::Copyright | FileType::Changelog => {}
+            FileType::Control
+            | FileType::Copyright
+            | FileType::Changelog
+            | FileType::Watch
+            | FileType::UpstreamMetadata
+            | FileType::TestsControl => {}
             _ => return Ok(None),
         }
 
@@ -1025,14 +1062,6 @@ impl LanguageServer for Backend {
                     }
                 }
                 actions.extend(casing_actions);
-
-                #[cfg(feature = "lintian-brush")]
-                actions.extend(lintian_brush::fixers::run_control_fixers_for_uri(
-                    &params.text_document.uri,
-                    &workspace,
-                    &files,
-                    &params.context.diagnostics,
-                ));
             }
             FileType::Copyright => {
                 let Some(text_range) = text_range else {
@@ -1122,8 +1151,23 @@ impl LanguageServer for Backend {
                     }
                 }
             }
+            FileType::Watch | FileType::UpstreamMetadata | FileType::TestsControl => {
+                // No built-in code actions; lintian-brush detectors
+                // below are the only source.
+            }
             _ => unreachable!(),
         }
+
+        // Surface lintian-brush detector quick-fixes against any file
+        // the translator can target. Anchored on `uri`; built-in
+        // handlers above keep producing actions on their own URIs too.
+        #[cfg(feature = "lintian-brush")]
+        actions.extend(lintian_brush::fixers::run_fixers_for_uri(
+            &params.text_document.uri,
+            &workspace,
+            &files,
+            &params.context.diagnostics,
+        ));
 
         // Filter actions based on client's requested kinds
         if let Some(requested_kinds) = requested_kinds {

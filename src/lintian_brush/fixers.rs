@@ -32,18 +32,21 @@ use crate::position;
 use crate::workspace::{SourceFile, Workspace};
 use crate::FileInfo;
 
-/// Run every registered lintian-brush detector against the open
-/// `debian/control` URI and return the resulting code actions.
+/// Run every registered lintian-brush detector against the package
+/// rooted by `uri` and return the resulting code actions. `uri` may
+/// point at any file inside the package's `debian/` tree; the package
+/// root is derived from it, and any code action whose plan we can
+/// translate is surfaced (regardless of which file it edits).
 ///
 /// Detectors that return `Err(_)` (including `NoChanges`) are silently
 /// skipped, matching the existing wrap-and-sort / field-casing behaviour.
-pub fn run_control_fixers_for_uri(
-    control_uri: &Uri,
+pub fn run_fixers_for_uri(
+    uri: &Uri,
     workspace: &Workspace,
     open_files: &HashMap<Uri, FileInfo>,
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeActionOrCommand> {
-    let Some(base_path) = base_path_for_control(control_uri) else {
+    let Some(base_path) = base_path_for_debian_file(uri) else {
         return Vec::new();
     };
 
@@ -111,19 +114,24 @@ pub fn run_control_fixers_for_uri(
 }
 
 /// Run every registered lintian-brush detector and surface the resulting
-/// diagnostics as LSP [`Diagnostic`]s on the given control URI.
+/// diagnostics as LSP [`Diagnostic`]s on `uri`. Only diagnostics whose
+/// plan touches `uri` are surfaced — a control-only detector fires
+/// silently when the user is editing `debian/copyright`.
 ///
 /// Each `Diagnostic` from a detector becomes one LSP diagnostic with
 /// `code` set to the lintian tag, `source` = "lintian-brush". The range
-/// is derived from the first action's target field if possible (falling
-/// back to the paragraph, then the whole document) so the squiggle lands
-/// on something meaningful rather than the file as a whole.
-pub fn run_control_diagnostics_for_uri(
-    control_uri: &Uri,
+/// is derived from the action that targets `uri`, anchoring on the
+/// specific field/paragraph/entry where possible and falling back to a
+/// whole-document range otherwise.
+pub fn run_diagnostics_for_uri(
+    uri: &Uri,
     workspace: &Workspace,
     open_files: &HashMap<Uri, FileInfo>,
 ) -> Vec<Diagnostic> {
-    let Some(base_path) = base_path_for_control(control_uri) else {
+    let Some(base_path) = base_path_for_debian_file(uri) else {
+        return Vec::new();
+    };
+    let Some(rel) = package_relative_path(&base_path, uri) else {
         return Vec::new();
     };
     let (package, version) = match resolve_package_version(&base_path, workspace, open_files) {
@@ -142,8 +150,7 @@ pub fn run_control_diagnostics_for_uri(
         version,
         relevant_open_files(open_files),
     );
-    let control_rel = Path::new("debian/control");
-    let original = ws.current_text(control_rel).unwrap_or_default();
+    let original = ws.current_text(&rel).unwrap_or_default();
 
     let mut out = Vec::new();
     for detector in iter_detectors() {
@@ -153,7 +160,7 @@ pub fn run_control_diagnostics_for_uri(
         };
         for diag in diags {
             // Honour lintian overrides — same filter used in
-            // `run_control_fixers_for_uri`. A user who suppressed the tag
+            // `run_fixers_for_uri`. A user who suppressed the tag
             // shouldn't see a squiggle for it.
             if let Some(issue) = &diag.issue {
                 use ::lintian_brush::workspace::FixerWorkspace as _;
@@ -161,10 +168,17 @@ pub fn run_control_diagnostics_for_uri(
                     continue;
                 }
             }
+            // Only surface diagnostics whose plan touches the current
+            // file. A control-only detector firing while the user edits
+            // copyright would otherwise produce a useless whole-document
+            // squiggle on the wrong file.
+            if !diag_touches_file(&diag, &rel) {
+                continue;
+            }
             let Some(tag) = diag.issue.as_ref().and_then(|i| i.tag.clone()) else {
                 continue;
             };
-            let range = diagnostic_range(&diag, &ws, control_rel, &original);
+            let range = diagnostic_range(&diag, &ws, &rel, &original);
             out.push(Diagnostic {
                 range,
                 severity: Some(tower_lsp_server::ls_types::DiagnosticSeverity::INFORMATION),
@@ -185,23 +199,35 @@ pub fn run_control_diagnostics_for_uri(
     out
 }
 
+/// Return true if any plan on `diag` has an action targeting `rel`.
+fn diag_touches_file(diag: &LbDiagnostic, rel: &Path) -> bool {
+    diag.plans.iter().any(|plan| {
+        plan.actions
+            .iter()
+            .any(|action| action_file(action) == Some(rel))
+    })
+}
+
 /// Pick the LSP `Range` to attach to a detector-produced diagnostic.
 ///
-/// We anchor the squiggle on the diagnosed file (the control file in this
-/// caller). If the first action targets a different file, we have nothing
-/// to highlight there and fall back to a whole-document range.
+/// We anchor the squiggle on `anchor_rel` (the file the user is
+/// currently editing). Walk every action across every plan looking for
+/// one that targets `anchor_rel` and produces a precise source range;
+/// fall back to a whole-document range if nothing more specific is
+/// available.
 fn diagnostic_range(
     diag: &LbDiagnostic,
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
     anchor_text: &str,
 ) -> Range {
-    if let Some(plan) = diag.plans.first() {
-        if let Some(action) = plan.actions.first() {
-            if action_file(action) == Some(anchor_rel) {
-                if let Some(range) = locate_action_target(action, ws, anchor_text) {
-                    return range;
-                }
+    for plan in &diag.plans {
+        for action in &plan.actions {
+            if action_file(action) != Some(anchor_rel) {
+                continue;
+            }
+            if let Some(range) = locate_action_target(action, ws, anchor_text) {
+                return range;
             }
         }
     }
@@ -2647,15 +2673,26 @@ fn full_document_range(text: &str) -> Range {
     }
 }
 
-/// Look up the debian package root for a `debian/control` URI.
-fn base_path_for_control(uri: &Uri) -> Option<PathBuf> {
+/// Look up the debian package root for any URI inside a `debian/`
+/// directory. Walks up until a parent named `debian` is found and
+/// returns its parent. Works for `debian/control`, `debian/copyright`,
+/// `debian/upstream/metadata`, `debian/patches/foo.patch`, etc.
+fn base_path_for_debian_file(uri: &Uri) -> Option<PathBuf> {
     let path = uri.to_file_path()?;
-    let debian_dir = path.parent()?;
-    let root = debian_dir.parent()?;
-    if debian_dir.file_name().and_then(|n| n.to_str()) != Some("debian") {
-        return None;
+    let mut current = path.parent()?;
+    loop {
+        if current.file_name().and_then(|n| n.to_str()) == Some("debian") {
+            return current.parent().map(Path::to_path_buf);
+        }
+        current = current.parent()?;
     }
-    Some(root.to_path_buf())
+}
+
+/// Compute the package-relative path (e.g. `debian/copyright`) for a URI
+/// inside a package's `debian/` tree.
+fn package_relative_path(base_path: &Path, uri: &Uri) -> Option<PathBuf> {
+    let abs = uri.to_file_path()?;
+    abs.strip_prefix(base_path).ok().map(Path::to_path_buf)
 }
 
 fn resolve_package_version(
@@ -2755,7 +2792,7 @@ mod tests {
             },
         );
 
-        let actions = run_control_fixers_for_uri(&control_uri, &workspace, &open_files, &[]);
+        let actions = run_fixers_for_uri(&control_uri, &workspace, &open_files, &[]);
 
         let qa_action = actions
             .iter()
@@ -2847,7 +2884,7 @@ mod tests {
             },
         );
 
-        let diagnostics = run_control_diagnostics_for_uri(&control_uri, &workspace, &open_files);
+        let diagnostics = run_diagnostics_for_uri(&control_uri, &workspace, &open_files);
         let qa = diagnostics
             .iter()
             .find(|d| matches!(&d.code, Some(NumberOrString::String(s)) if s == "faulty-debian-qa-group-phrase"))
@@ -3086,7 +3123,7 @@ mod tests {
             },
         );
 
-        let actions = run_control_fixers_for_uri(&control_uri, &workspace, &open_files, &[]);
+        let actions = run_fixers_for_uri(&control_uri, &workspace, &open_files, &[]);
 
         let pycompat_uri = Uri::from_file_path(debian.join("pycompat")).unwrap();
         let action = actions
