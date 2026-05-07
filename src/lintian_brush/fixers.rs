@@ -67,9 +67,22 @@ fn phase_allow_net(phase: RunPhase) -> bool {
     matches!(phase, RunPhase::Explicit)
 }
 
+/// Pre-computed change context, built once per detector-running
+/// call so each detector's triggers can be checked without re-walking
+/// the rowan tree.
+struct ChangeContext<'a> {
+    /// Set of (paragraph_key, field) pairs whose entries overlap any
+    /// changed range. `None` means we don't have field-level info —
+    /// triggers fall back to file-level match (whole-file scope).
+    deb822: Option<Deb822ChangeIndex>,
+    changelog: Option<&'a ChangeLog>,
+    yaml: Option<&'a yaml_edit::YamlFile>,
+    watch: Option<&'a debian_watch::parse::ParsedWatchFile>,
+    changed_ranges: Option<&'a [rowan::TextRange]>,
+}
+
 /// Decide whether a detector with the given `triggers` should run
-/// for an edit on `rel` whose changed text spans `changed_ranges`
-/// (or `None` if the entire file is in scope, e.g. on file-open).
+/// for an edit on `rel`.
 ///
 /// Takes the static triggers slice off `DetectorRegistration` so we
 /// can decide *before* instantiating the detector — keeps us from
@@ -80,38 +93,18 @@ fn phase_allow_net(phase: RunPhase) -> bool {
 /// always runs, and a detector with at least one trigger that *might*
 /// match runs even if other triggers definitely don't. We never block
 /// a detector that the registry hasn't told us is irrelevant.
-fn triggers_match(
-    triggers: &'static [Trigger],
-    rel: &Path,
-    deb822: Option<&deb822_lossless::Deb822>,
-    changelog: Option<&ChangeLog>,
-    yaml: Option<&yaml_edit::YamlFile>,
-    watch: Option<&debian_watch::parse::ParsedWatchFile>,
-    changed_ranges: Option<&[rowan::TextRange]>,
-) -> bool {
+fn triggers_match(triggers: &'static [Trigger], rel: &Path, ctx: &ChangeContext<'_>) -> bool {
     if triggers.is_empty() {
         // No declared triggers — be conservative and run it.
         return true;
     }
-    triggers
-        .iter()
-        .any(|t| trigger_matches(t, rel, deb822, changelog, yaml, watch, changed_ranges))
+    triggers.iter().any(|t| trigger_matches(t, rel, ctx))
 }
 
-/// Does `trigger` match an edit on `rel` whose changed ranges are
-/// `changed_ranges`? `deb822` / `changelog` / `yaml` are the cached
-/// parses for this file, used for field-level filtering. When any of
-/// them is `None` we fall back to the file-level match (over-trigger
-/// rather than miss).
-fn trigger_matches(
-    trigger: &Trigger,
-    rel: &Path,
-    deb822: Option<&deb822_lossless::Deb822>,
-    changelog: Option<&ChangeLog>,
-    yaml: Option<&yaml_edit::YamlFile>,
-    watch: Option<&debian_watch::parse::ParsedWatchFile>,
-    changed_ranges: Option<&[rowan::TextRange]>,
-) -> bool {
+/// Does `trigger` match an edit on `rel`, given the pre-built
+/// `ChangeContext`?  When the relevant parse is `None` we fall back
+/// to the file-level match (over-trigger rather than miss).
+fn trigger_matches(trigger: &Trigger, rel: &Path, ctx: &ChangeContext<'_>) -> bool {
     match trigger {
         Trigger::File(p) => Path::new(p) == rel,
         Trigger::Glob(g) => glob_matches(g, rel),
@@ -123,27 +116,21 @@ fn trigger_matches(
             if Path::new(file) != rel {
                 return false;
             }
-            let Some(deb822) = deb822 else {
-                // We don't have a parse to narrow against; assume
-                // possible match.
+            let Some(index) = &ctx.deb822 else {
+                // No index built — either no parse, or no changed-range
+                // info to narrow on. Assume possible match.
                 return true;
             };
-            let Some(ranges) = changed_ranges else {
-                // No range info — assume any field could be touched.
-                return true;
-            };
-            ranges
-                .iter()
-                .any(|r| deb822_range_touches_field(deb822, *r, paragraph_key, field))
+            index.matches(paragraph_key, field)
         }
         Trigger::Watch(aspect) => {
             if rel != Path::new("debian/watch") {
                 return false;
             }
-            let Some(watch) = watch else {
+            let Some(watch) = ctx.watch else {
                 return true;
             };
-            let Some(ranges) = changed_ranges else {
+            let Some(ranges) = ctx.changed_ranges else {
                 return true;
             };
             ranges
@@ -154,10 +141,10 @@ fn trigger_matches(
             if rel != Path::new("debian/changelog") {
                 return false;
             }
-            let Some(changelog) = changelog else {
+            let Some(changelog) = ctx.changelog else {
                 return true;
             };
-            let Some(ranges) = changed_ranges else {
+            let Some(ranges) = ctx.changed_ranges else {
                 return true;
             };
             ranges
@@ -168,10 +155,10 @@ fn trigger_matches(
             if rel != Path::new("debian/upstream/metadata") {
                 return false;
             }
-            let Some(yaml) = yaml else {
+            let Some(yaml) = ctx.yaml else {
                 return true;
             };
-            let Some(ranges) = changed_ranges else {
+            let Some(ranges) = ctx.changed_ranges else {
                 return true;
             };
             ranges
@@ -241,35 +228,60 @@ fn glob_matches_inner(pat: &[u8], mut pi: usize, txt: &[u8], mut ti: usize) -> b
     ti == txt.len()
 }
 
-/// Does `range` overlap with any entry whose key matches `field` in a
-/// paragraph that contains a key matching `paragraph_key`? Both `field`
-/// and `paragraph_key` follow Trigger's wildcard rules: trailing `*` is
-/// a prefix wildcard, bare `*` matches anything.
-fn deb822_range_touches_field(
-    deb822: &deb822_lossless::Deb822,
-    range: rowan::TextRange,
-    paragraph_key: &str,
-    field: &str,
-) -> bool {
-    for paragraph in deb822.paragraphs_in_range(range) {
-        // Does this paragraph contain a key matching `paragraph_key`?
-        let has_key = paragraph
-            .entries()
-            .filter_map(|e| e.key())
-            .any(|k| name_matches(paragraph_key, &k));
-        if !has_key {
-            continue;
-        }
-        for entry in paragraph.entries_in_range(range) {
-            let Some(key) = entry.key() else {
-                continue;
-            };
-            if name_matches(field, &key) {
-                return true;
+/// All `(paragraph_key, field_name)` pairs whose entries overlap any
+/// of the changed ranges in a deb822 file. Built once per
+/// detector-running call so each detector's `Trigger::Deb822Field`
+/// triggers can be checked against a pre-walked set instead of
+/// re-walking the rowan tree per trigger.
+///
+/// The cardinality is bounded by the number of (paragraph,
+/// field) entries actually touched — for a single keystroke this is
+/// typically 1, almost never more than a handful. Stores the
+/// *identifying* keys present in each touched paragraph (so a
+/// `Trigger::Deb822Field { paragraph_key: "Source", .. }` matches
+/// any paragraph whose touched entries include `Source`).
+#[derive(Default)]
+struct Deb822ChangeIndex {
+    /// Pairs of (paragraph-identifying-key, touched-field-name).
+    /// Both come from actual entry keys in the deb822 file, so they
+    /// can be matched against trigger patterns (which support `*`
+    /// wildcards) by walking this set once per trigger.
+    entries: Vec<(String, String)>,
+}
+
+impl Deb822ChangeIndex {
+    fn build(deb822: &deb822_lossless::Deb822, ranges: &[rowan::TextRange]) -> Self {
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for &range in ranges {
+            for paragraph in deb822.paragraphs_in_range(range) {
+                // Snapshot every key in the paragraph — these are the
+                // candidate `paragraph_key` values that select this
+                // paragraph as the trigger scope.
+                let para_keys: Vec<String> = paragraph.entries().filter_map(|e| e.key()).collect();
+                if para_keys.is_empty() {
+                    continue;
+                }
+                for entry in paragraph.entries_in_range(range) {
+                    let Some(touched_field) = entry.key() else {
+                        continue;
+                    };
+                    for para_key in &para_keys {
+                        let pair = (para_key.clone(), touched_field.clone());
+                        if !entries.contains(&pair) {
+                            entries.push(pair);
+                        }
+                    }
+                }
             }
         }
+        Deb822ChangeIndex { entries }
     }
-    false
+
+    fn matches(&self, paragraph_key: &str, field: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|(pk, f)| name_matches(paragraph_key, pk) && name_matches(field, f))
+    }
 }
 
 /// Does the changed `range` touch any part of a changelog entry that
@@ -545,20 +557,27 @@ pub fn run_diagnostics_for_uri(
     let watch_parse = parse_for_trigger_filtering_watch(&ws, &rel);
     let max_cost = phase_max_cost(phase);
 
+    // Build the deb822 (paragraph_key, field) index once. With ~200
+    // Trigger::Deb822Field across the registry, this turns 200×O(P+E)
+    // tree walks per call into a single walk + 200 set lookups.
+    let deb822_index = match (deb822_parse.as_ref(), changed_ranges) {
+        (Some(deb822), Some(ranges)) => Some(Deb822ChangeIndex::build(deb822, ranges)),
+        _ => None,
+    };
+    let ctx = ChangeContext {
+        deb822: deb822_index,
+        changelog: changelog_parse.as_ref(),
+        yaml: yaml_parse.as_ref(),
+        watch: watch_parse.as_ref(),
+        changed_ranges,
+    };
+
     let mut out = Vec::new();
     for reg in iter_detector_registrations() {
         if reg.cost > max_cost {
             continue;
         }
-        if !triggers_match(
-            reg.triggers,
-            &rel,
-            deb822_parse.as_ref(),
-            changelog_parse.as_ref(),
-            yaml_parse.as_ref(),
-            watch_parse.as_ref(),
-            changed_ranges,
-        ) {
+        if !triggers_match(reg.triggers, &rel, &ctx) {
             continue;
         }
         // Only instantiate the detector once we've decided to run it.
