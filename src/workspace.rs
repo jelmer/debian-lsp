@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rowan::ast::AstNode;
 use salsa::Setter;
@@ -24,7 +25,11 @@ pub struct UnreleasedUploadInfo {
 #[derive(Debug)]
 pub struct SourceFile {
     pub url: Uri,
-    pub text: String,
+    /// Stored as `Arc<str>` so `Workspace::source_text` is a cheap
+    /// `Arc::clone` instead of an O(N) string clone — relevant for
+    /// large changelogs / copyright files where every detector run
+    /// would otherwise duplicate the whole buffer.
+    pub text: Arc<str>,
 }
 
 // Store the Parse type directly - it's thread-safe now!
@@ -97,6 +102,30 @@ pub fn parse_patches_series(
     patchkit::edit::series::parse(&text)
 }
 
+/// Salsa-tracked parse of just the DEP-3 header at the top of a
+/// quilt patch file under debian/patches/. Returns the parsed
+/// deb822 along with the byte offset where the diff body starts —
+/// the diff body is left to diff-lsp.
+#[salsa::tracked]
+pub fn parse_dep3_header(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> (deb822_lossless::Parse<deb822_lossless::Deb822>, usize) {
+    let text = file.text(db);
+    let header_end = dep3::lossless::header_end(&text);
+    let parse = deb822_lossless::Deb822::parse(&text[..header_end]);
+    (parse, header_end)
+}
+
+#[salsa::tracked]
+pub fn parse_lintian_overrides(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
+    let text = file.text(db);
+    lintian_overrides::LintianOverrides::parse(&text)
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -113,11 +142,12 @@ impl Workspace {
     }
 
     pub fn update_file(&mut self, url: Uri, text: String) -> SourceFile {
+        let arc: Arc<str> = Arc::from(text);
         if let Some(&existing) = self.files.get(&url) {
-            existing.set_text(self).to(text);
+            existing.set_text(self).to(arc);
             existing
         } else {
-            let sf = SourceFile::new(self, url.clone(), text);
+            let sf = SourceFile::new(self, url.clone(), arc);
             self.files.insert(url, sf);
             sf
         }
@@ -130,7 +160,11 @@ impl Workspace {
         parse_control(self, file)
     }
 
-    pub fn source_text(&self, file: SourceFile) -> String {
+    /// Return the buffer text of `file`. Cheap — clones an `Arc`,
+    /// not the underlying string. Callers that need an owned `String`
+    /// (e.g. to splice in incremental edits) should call
+    /// `.to_string()` on the result.
+    pub fn source_text(&self, file: SourceFile) -> Arc<str> {
         file.text(self).clone()
     }
 
@@ -301,6 +335,28 @@ impl Workspace {
         file: SourceFile,
     ) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
         parse_patches_series(self, file)
+    }
+
+    /// Salsa-cached deb822 parse of a quilt patch's DEP-3 header.
+    /// Returns the parse and the byte offset where the diff body
+    /// starts. See [`parse_dep3_header`] for details.
+    pub fn get_parsed_dep3_header(
+        &self,
+        file: SourceFile,
+    ) -> (deb822_lossless::Parse<deb822_lossless::Deb822>, usize) {
+        parse_dep3_header(self, file)
+    }
+
+    /// Salsa-cached parse of a `debian/source/lintian-overrides` or
+    /// `debian/<pkg>.lintian-overrides` file. The parser is
+    /// error-resilient — `parse.tree()` returns a usable tree even on
+    /// malformed input, so consumers should walk it directly instead
+    /// of dropping the document on `ok()`.
+    pub fn get_parsed_lintian_overrides(
+        &self,
+        file: SourceFile,
+    ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
+        parse_lintian_overrides(self, file)
     }
 
     /// Find UNRELEASED entries in the given range that can be marked for upload

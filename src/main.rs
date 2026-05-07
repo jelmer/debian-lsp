@@ -172,7 +172,8 @@ impl Backend {
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
             FileType::Patch => {
                 let source_text = workspace.source_text(source_file);
-                Some(dep3::get_diagnostics(&source_text))
+                let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
+                Some(dep3::get_diagnostics(&parsed.tree(), &source_text))
             }
             FileType::Watch
             | FileType::TestsControl
@@ -522,8 +523,10 @@ impl LanguageServer for Backend {
 
         // Apply incremental content changes to the current text
         let mut workspace = self.workspace.lock().await;
-        let mut text = file_info
-            .map(|info| workspace.source_text(info.source_file))
+        // Owned String here because we splice content_changes into it
+        // before handing back to salsa via update_file.
+        let mut text: String = file_info
+            .map(|info| workspace.source_text(info.source_file).to_string())
             .unwrap_or_default();
 
         for change in &params.content_changes {
@@ -680,10 +683,11 @@ impl LanguageServer for Backend {
             Some((FileType::LintianOverrides, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 drop(workspace);
                 let mut tag_cache = self.lintian_tag_cache.write().await;
                 let tags = tag_cache.get_tags().await;
-                lintian_overrides::get_completions(&source_text, position, tags)
+                lintian_overrides::get_completions(&parsed, &source_text, position, tags)
             }
             Some((FileType::SourceOptions, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -722,7 +726,8 @@ impl LanguageServer for Backend {
             Some((FileType::Patch, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
-                dep3::get_completions(&source_text, position)
+                let (parsed, header_end) = workspace.get_parsed_dep3_header(source_file);
+                dep3::get_completions(&parsed.tree(), header_end, &source_text, position)
             }
             None => Vec::new(),
         };
@@ -1001,9 +1006,12 @@ impl LanguageServer for Backend {
                     // Try to use the open file from the workspace first
                     let tests_control_uri = Uri::from_file_path(&tests_control_path);
                     let tests_text = if let Some(ref tc_uri) = tests_control_uri {
-                        files
-                            .get(tc_uri)
-                            .map(|info| (tc_uri.clone(), workspace.source_text(info.source_file)))
+                        files.get(tc_uri).map(|info| {
+                            (
+                                tc_uri.clone(),
+                                workspace.source_text(info.source_file).to_string(),
+                            )
+                        })
                     } else {
                         None
                     };
@@ -1095,13 +1103,14 @@ impl LanguageServer for Backend {
             FileType::SourceFormat => vec![],
             FileType::SourceOptions => source_options::generate_semantic_tokens(&source_text),
             FileType::LintianOverrides => {
-                let parsed = lintian_overrides::LintianOverrides::parse(&source_text);
-                match parsed.ok() {
-                    Ok(overrides) => {
-                        lintian_overrides::generate_semantic_tokens(&overrides, &source_text)
-                    }
-                    Err(_) => vec![],
-                }
+                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                // Walk the resilient tree even if there were parse
+                // errors — lintian-overrides always produces a usable
+                // green tree, and dropping it would mean an editor
+                // sees no token highlights while the user is typing
+                // a malformed line.
+                let overrides = parsed.tree();
+                lintian_overrides::generate_semantic_tokens(&overrides, &source_text)
             }
             FileType::PatchesSeries => {
                 let parsed = workspace.get_parsed_patches_series(file.source_file);
@@ -1111,7 +1120,10 @@ impl LanguageServer for Backend {
             // Semantic tokens cover the DEP-3 header at the top of
             // the patch only — the unified-diff body is left to
             // diff-lsp.
-            FileType::Patch => dep3::generate_semantic_tokens(&source_text),
+            FileType::Patch => {
+                let (parsed, _) = workspace.get_parsed_dep3_header(file.source_file);
+                dep3::generate_semantic_tokens(&parsed.tree(), &source_text)
+            }
         };
 
         if tokens.is_empty() {
@@ -1153,7 +1165,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_control(file.source_file);
                 control::generate_document_symbols(&parsed, &source_text)
             }
-            FileType::Patch => dep3::generate_document_symbols(&source_text),
+            FileType::Patch => {
+                let (parsed, _) = workspace.get_parsed_dep3_header(file.source_file);
+                dep3::generate_document_symbols(&parsed.tree(), &source_text)
+            }
             _ => return Ok(None),
         };
 
@@ -1398,7 +1413,7 @@ impl LanguageServer for Backend {
                         let formatted = deb822
                             .wrap_and_sort(None, Some(&wrap_paragraph))
                             .to_string();
-                        if formatted == source_text {
+                        if formatted.as_str() == &*source_text {
                             return Ok(None);
                         }
                         let full_range = text_range_to_lsp_range(
@@ -1428,7 +1443,7 @@ impl LanguageServer for Backend {
                 let formatted = deb822
                     .wrap_and_sort(None, Some(&wrap_paragraph))
                     .to_string();
-                if formatted == source_text {
+                if formatted.as_str() == &*source_text {
                     return Ok(None);
                 }
                 let full_range = text_range_to_lsp_range(
@@ -1672,7 +1687,15 @@ impl LanguageServer for Backend {
                     None => Ok(None),
                 }
             }
-            FileType::Patch => Ok(dep3::get_hover(&source_text, position)),
+            FileType::Patch => {
+                let (parsed, header_end) = workspace.get_parsed_dep3_header(file.source_file);
+                Ok(dep3::get_hover(
+                    &parsed.tree(),
+                    header_end,
+                    &source_text,
+                    position,
+                ))
+            }
             _ => Ok(None),
         }
     }
@@ -2206,7 +2229,7 @@ mod main_tests {
         // Should reuse the same SourceFile input
         assert_eq!(file1, file2);
         // Text should be updated
-        assert_eq!(workspace.source_text(file2), "Source: b\n");
+        assert_eq!(&*workspace.source_text(file2), "Source: b\n");
     }
 
     #[test]

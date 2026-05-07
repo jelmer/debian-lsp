@@ -1,10 +1,13 @@
-use lintian_overrides::{LintianOverrides, SyntaxKind};
+use lintian_overrides::{LintianOverrides, Parse, SyntaxKind};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::position::try_position_to_offset;
 
-/// Get completion items for a lintian overrides file.
+/// Get completion items for a lintian overrides file. `parsed` is
+/// the salsa-cached parse — its tree is always usable even on
+/// malformed input, so we don't bail on parse errors.
 pub fn get_completions(
+    parsed: &Parse<LintianOverrides>,
     source_text: &str,
     position: Position,
     tags: &[(String, String)],
@@ -14,7 +17,6 @@ pub fn get_completions(
         None => return Vec::new(),
     };
 
-    let parsed = LintianOverrides::parse(source_text);
     let root = parsed.syntax();
 
     // Find the token at the cursor position
@@ -50,21 +52,24 @@ pub fn get_completions(
 mod tests {
     use super::*;
 
+    fn run(text: &str, position: Position, tags: &[(String, String)]) -> Vec<CompletionItem> {
+        let parsed = LintianOverrides::parse(text);
+        get_completions(&parsed, text, position, tags)
+    }
+
     #[test]
     fn test_completions_empty_file() {
-        let completions = get_completions("", Position::new(0, 0), &[]);
-        assert!(completions.is_empty());
+        assert!(run("", Position::new(0, 0), &[]).is_empty());
     }
 
     #[test]
     fn test_completions_on_tag() {
-        let text = "some-tag\n";
         let tags = vec![
             ("some-tag".to_string(), "A test tag".to_string()),
             ("other-tag".to_string(), "Another tag".to_string()),
         ];
         // Position at start of line, on the tag token
-        let completions = get_completions(text, Position::new(0, 0), &tags);
+        let completions = run("some-tag\n", Position::new(0, 0), &tags);
         assert_eq!(completions.len(), 2);
         assert!(completions.iter().any(|c| c.label == "some-tag"));
         assert!(completions.iter().any(|c| c.label == "other-tag"));
@@ -72,8 +77,6 @@ mod tests {
 
     #[test]
     fn test_completions_no_tags_available() {
-        let text = "some-tag\n";
-        let completions = get_completions(text, Position::new(0, 0), &[]);
-        assert!(completions.is_empty());
+        assert!(run("some-tag\n", Position::new(0, 0), &[]).is_empty());
     }
 }

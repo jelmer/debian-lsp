@@ -43,25 +43,17 @@ fn intern(name: &str) -> &'static str {
     leaked
 }
 
-/// Generate semantic tokens for the DEP-3 header portion of a patch
-/// file. Returns an empty vector if the header is empty or fails to
-/// parse as deb822. Tokens are emitted only for the header — diff
-/// lines are left untouched for diff-lsp.
-pub fn generate_semantic_tokens(source_text: &str) -> Vec<SemanticToken> {
-    let header_end = dep3::lossless::header_end(source_text);
-    if header_end == 0 {
-        return Vec::new();
-    }
-    let header_text = &source_text[..header_end];
-    let parsed = deb822_lossless::Deb822::parse(header_text);
-    let deb822 = parsed.tree();
-    // The shared helper expects the source text to match the parsed
-    // tree's offsets. We pass the header substring (not the full file)
-    // and the resulting tokens' line/column deltas line up with the
-    // editor's view because the header substring shares a 0-offset
-    // with the buffer.
+/// Generate semantic tokens for a DEP-3 header. `header` is the
+/// parsed deb822 of the header portion only; `source_text` is the
+/// whole patch buffer, used by the underlying token generator for
+/// position math. Tokens are emitted only for the header — the diff
+/// body is left for diff-lsp.
+pub fn generate_semantic_tokens(
+    header: &deb822_lossless::Deb822,
+    source_text: &str,
+) -> Vec<SemanticToken> {
     let validator = Dep3FieldValidator;
-    generate_tokens(&deb822, source_text, &validator)
+    generate_tokens(header, source_text, &validator)
 }
 
 #[cfg(test)]
@@ -69,10 +61,15 @@ mod tests {
     use super::*;
     use crate::deb822::semantic::TokenType;
 
+    fn run(text: &str) -> Vec<SemanticToken> {
+        let header_end = dep3::lossless::header_end(text);
+        let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
+        generate_semantic_tokens(&parsed.tree(), text)
+    }
+
     #[test]
     fn known_field_emits_field_token() {
-        let text = "Author: alice\nDescription: bla\n";
-        let tokens = generate_semantic_tokens(text);
+        let tokens = run("Author: alice\nDescription: bla\n");
         assert!(!tokens.is_empty());
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
         assert_eq!(tokens[0].length, 6);
@@ -80,16 +77,14 @@ mod tests {
 
     #[test]
     fn unknown_field_emits_unknown_token() {
-        let text = "Author: alice\nX-Custom: x\n";
-        let tokens = generate_semantic_tokens(text);
+        let tokens = run("Author: alice\nX-Custom: x\n");
         let kinds: Vec<u32> = tokens.iter().map(|t| t.token_type).collect();
         assert!(kinds.contains(&(TokenType::UnknownField as u32)));
     }
 
     #[test]
     fn vendor_bug_field_treated_as_known() {
-        let text = "Author: alice\nBug-Debian: https://bugs.debian.org/123\n";
-        let tokens = generate_semantic_tokens(text);
+        let tokens = run("Author: alice\nBug-Debian: https://bugs.debian.org/123\n");
         let field_tokens: Vec<&SemanticToken> = tokens
             .iter()
             .filter(|t| t.token_type == TokenType::Field as u32)
@@ -99,8 +94,7 @@ mod tests {
 
     #[test]
     fn diff_body_does_not_emit_tokens() {
-        let text = "Author: alice\n---\n+++ b/foo\n+@@ -1 +1 @@\n";
-        let tokens = generate_semantic_tokens(text);
+        let tokens = run("Author: alice\n---\n+++ b/foo\n+@@ -1 +1 @@\n");
         let field_tokens: Vec<&SemanticToken> = tokens
             .iter()
             .filter(|t| t.token_type == TokenType::Field as u32)
