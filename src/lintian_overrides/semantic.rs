@@ -1,8 +1,7 @@
+use crate::position::Source;
 use lintian_overrides::{AstNode as _, LintianOverrides, SyntaxKind};
 use text_size::TextSize;
 use tower_lsp_server::ls_types::SemanticToken;
-
-use crate::position::offset_to_position;
 
 /// Semantic token type indices matching the legend in main.rs:
 /// 0 = debianField, 1 = debianUnknownField, 2 = debianValue,
@@ -14,7 +13,7 @@ const TOKEN_TYPE_VALUE: u32 = 2;
 /// Generate semantic tokens for a lintian overrides file.
 pub fn generate_semantic_tokens(
     overrides: &LintianOverrides,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let mut prev_line = 0u32;
@@ -36,7 +35,7 @@ pub fn generate_semantic_tokens(
 
         let start_offset: TextSize = token.text_range().start();
         let length = token.text_range().len();
-        let pos = offset_to_position(source_text, start_offset);
+        let pos = src.offset_to_position(start_offset);
 
         let delta_line = pos.line - prev_line;
         let delta_start = if delta_line == 0 {
@@ -69,7 +68,8 @@ mod tests {
         let text = "# This is a comment\n";
         let parsed = LintianOverrides::parse(text);
         let overrides = parsed.ok().unwrap();
-        let tokens = generate_semantic_tokens(&overrides, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&overrides, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].token_type, TOKEN_TYPE_COMMENT);
@@ -80,7 +80,8 @@ mod tests {
         let text = "some-tag\n";
         let parsed = LintianOverrides::parse(text);
         let overrides = parsed.ok().unwrap();
-        let tokens = generate_semantic_tokens(&overrides, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&overrides, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].token_type, TOKEN_TYPE_FIELD);
@@ -91,7 +92,8 @@ mod tests {
         let text = "mypackage: some-tag extra info\n";
         let parsed = LintianOverrides::parse(text);
         let overrides = parsed.ok().unwrap();
-        let tokens = generate_semantic_tokens(&overrides, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&overrides, Source::new(text, &idx));
 
         // Should have tokens for: package name, tag, info
         assert!(tokens.len() >= 3);

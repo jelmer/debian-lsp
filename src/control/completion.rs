@@ -10,6 +10,7 @@ use super::relation_completion;
 use crate::architecture::SharedArchitectureList;
 use crate::maintainers::SharedMaintainerCache;
 use crate::package_cache::SharedPackageCache;
+use crate::position::Source;
 
 /// Get completions for a control file at the given cursor position.
 ///
@@ -20,29 +21,27 @@ use crate::package_cache::SharedPackageCache;
 /// use [`get_async_field_value_completions`] for those.
 pub fn get_completions(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: tower_lsp_server::ls_types::Position,
 ) -> Vec<CompletionItem> {
     let mut completions = crate::deb822::completion::get_completions(
         deb822,
-        source_text,
+        src,
         position,
         CONTROL_FIELDS,
         get_field_value_completions,
     );
 
-    let context = crate::deb822::completion::get_cursor_context(deb822, source_text, position);
+    let context = crate::deb822::completion::get_cursor_context(deb822, src, position);
     match context {
         Some(crate::deb822::completion::CursorContext::StartOfLine) => {
-            if source_text.trim().is_empty() {
+            if src.text.trim().is_empty() {
                 completions.extend(get_snippet_completions());
             } else {
                 completions.extend(get_paragraph_snippet_completions());
             }
         }
-        Some(crate::deb822::completion::CursorContext::FieldKey)
-            if source_text.trim().is_empty() =>
-        {
+        Some(crate::deb822::completion::CursorContext::FieldKey) if src.text.trim().is_empty() => {
             completions.extend(get_snippet_completions());
         }
         _ => {}
@@ -448,7 +447,8 @@ mod tests {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let completions = get_completions(&deb822, text, Position::new(1, 3));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(1, 3));
 
         // Should have field completions only
         assert!(completions
@@ -461,7 +461,8 @@ mod tests {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let completions = get_completions(&deb822, text, Position::new(1, 11));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(1, 11));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"python"));
@@ -472,7 +473,8 @@ mod tests {
         let text = "Source: test\nPriority: op\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let completions = get_completions(&deb822, text, Position::new(1, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(1, 12));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["optional"]);
@@ -638,7 +640,8 @@ mod tests {
         let text = "Source: test\nEssential: y\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let completions = get_completions(&deb822, text, Position::new(1, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(1, 12));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["yes"]);
@@ -746,9 +749,10 @@ mod tests {
     async fn test_end_to_end_build_depends_empty_value() {
         let text = "Build-Depends: \n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
         let ctx = crate::deb822::completion::get_cursor_context(
             &deb822,
-            text,
+            crate::position::Source::new(text, &idx),
             tower_lsp_server::ls_types::Position::new(0, 15),
         )
         .expect("Should have context");
@@ -782,9 +786,10 @@ mod tests {
     async fn test_end_to_end_build_depends_partial_name() {
         let text = "Build-Depends: dh\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
         let ctx = crate::deb822::completion::get_cursor_context(
             &deb822,
-            text,
+            crate::position::Source::new(text, &idx),
             tower_lsp_server::ls_types::Position::new(0, 17),
         )
         .expect("Should have context");
@@ -820,8 +825,13 @@ mod tests {
         let text = "Depends: gpg,${misc:\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
         let position = Position::new(0, 20);
-        let ctx = crate::deb822::completion::get_cursor_context(&deb822, text, position)
-            .expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+        let ctx = crate::deb822::completion::get_cursor_context(
+            &deb822,
+            crate::position::Source::new(text, &idx),
+            position,
+        )
+        .expect("Should have context");
 
         match ctx {
             crate::deb822::completion::CursorContext::FieldValue {
@@ -1018,7 +1028,8 @@ mod tests {
     fn test_snippet_completions_on_empty_file() {
         let text = "";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let completions = get_completions(&deb822, text, Position::new(0, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(0, 0));
 
         let mut snippet_labels: Vec<_> = completions
             .iter()
@@ -1042,7 +1053,8 @@ mod tests {
     fn test_paragraph_snippets_on_non_empty_file() {
         let text = "Source: test\nSection: misc\n\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let completions = get_completions(&deb822, text, Position::new(2, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(2, 0));
 
         let snippet_labels: Vec<_> = completions
             .iter()
@@ -1057,7 +1069,8 @@ mod tests {
     fn test_no_snippets_on_field_value() {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
-        let completions = get_completions(&deb822, text, Position::new(0, 10));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(0, 10));
 
         let snippet_count = completions
             .iter()

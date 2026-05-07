@@ -284,12 +284,13 @@ impl Workspace {
 
     pub fn get_copyright_diagnostics(&self, file: SourceFile) -> Vec<Diagnostic> {
         let source_text = self.source_text(file);
+        let idx = self.get_line_index(file);
+        let src = crate::position::Source::new(&source_text, &idx);
         let mut diagnostics = Vec::new();
 
         // Add field casing diagnostics
         for issue in self.find_copyright_field_casing_issues(file, None) {
-            let lsp_range =
-                crate::position::text_range_to_lsp_range(&source_text, issue.field_range);
+            let lsp_range = src.text_range_to_lsp_range(issue.field_range);
 
             diagnostics.push(Diagnostic {
                 range: lsp_range,

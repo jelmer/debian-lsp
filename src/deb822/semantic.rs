@@ -8,7 +8,7 @@ use deb822_lossless::{Deb822, SyntaxKind};
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::SemanticToken;
 
-use crate::position::LineIndex;
+use crate::position::Source;
 
 /// Semantic token types reported by the server.
 ///
@@ -102,17 +102,14 @@ impl Default for SemanticTokensBuilder {
 
 /// Generate semantic tokens for a deb822 file.
 ///
-/// Builds a [`LineIndex`] once up front so the per-token offset →
-/// position conversions inside the loop are O(log N) rather than
-/// O(N). Without that the cost of generating tokens for a big
-/// changelog is dominated by repeated linear scans of the buffer
-/// from the start.
+/// `src` carries the buffer plus its salsa-cached line index so the
+/// per-token offset → position conversions inside the loop are
+/// O(log N) rather than O(N).
 pub fn generate_tokens<V: FieldValidator>(
     deb822: &Deb822,
-    source_text: &str,
+    src: Source<'_>,
     validator: &V,
 ) -> Vec<SemanticToken> {
-    let idx = LineIndex::new(source_text);
     let mut builder = SemanticTokensBuilder::new();
 
     // Single pass through the syntax tree
@@ -121,7 +118,7 @@ pub fn generate_tokens<V: FieldValidator>(
             match token.kind() {
                 SyntaxKind::COMMENT => {
                     let range = token.text_range();
-                    let start_pos = idx.offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let length = crate::position::utf16_len(token.text());
 
                     builder.push(
@@ -134,7 +131,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 }
                 SyntaxKind::KEY => {
                     let range = token.text_range();
-                    let start_pos = idx.offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let key = token.text();
                     let length = crate::position::utf16_len(key);
 
@@ -155,7 +152,7 @@ pub fn generate_tokens<V: FieldValidator>(
                 }
                 SyntaxKind::VALUE => {
                     let range = token.text_range();
-                    let start_pos = idx.offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let length = crate::position::utf16_len(token.text());
 
                     if length > 0 {
@@ -199,7 +196,8 @@ mod tests {
         let parsed = deb822_lossless::Deb822::parse(text);
         let deb822 = parsed.tree();
         let validator = TestValidator;
-        let tokens = generate_tokens(&deb822, text, &validator);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_tokens(&deb822, Source::new(text, &idx), &validator);
 
         // Source (known field), value, X-Custom (unknown field), value
         assert_eq!(tokens.len(), 4);
@@ -217,7 +215,8 @@ mod tests {
         let parsed = deb822_lossless::Deb822::parse(text);
         let deb822 = parsed.tree();
         let validator = TestValidator;
-        let tokens = generate_tokens(&deb822, text, &validator);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_tokens(&deb822, Source::new(text, &idx), &validator);
 
         assert_eq!(tokens[0].token_type, TokenType::Comment as u32);
         assert_eq!(tokens[1].token_type, TokenType::Field as u32);
@@ -229,7 +228,8 @@ mod tests {
         let parsed = deb822_lossless::Deb822::parse(text);
         let deb822 = parsed.tree();
         let validator = TestValidator;
-        let tokens = generate_tokens(&deb822, text, &validator);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_tokens(&deb822, Source::new(text, &idx), &validator);
 
         // Source, value, Package, value
         assert_eq!(tokens.len(), 4);
@@ -245,7 +245,8 @@ mod tests {
         let parsed = deb822_lossless::Deb822::parse(text);
         let deb822 = parsed.tree();
         let validator = TestValidator;
-        let tokens = generate_tokens(&deb822, text, &validator);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_tokens(&deb822, Source::new(text, &idx), &validator);
 
         assert_eq!(tokens.len(), 0);
     }
@@ -256,7 +257,8 @@ mod tests {
         let parsed = deb822_lossless::Deb822::parse(text);
         let deb822 = parsed.tree();
         let validator = TestValidator;
-        let tokens = generate_tokens(&deb822, text, &validator);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_tokens(&deb822, Source::new(text, &idx), &validator);
 
         // Field tokens should have DECLARATION modifier
         assert_eq!(

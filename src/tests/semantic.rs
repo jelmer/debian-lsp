@@ -3,6 +3,7 @@
 use tower_lsp_server::ls_types::SemanticToken;
 
 use crate::deb822::semantic::{generate_tokens, FieldValidator};
+use crate::position::Source;
 
 /// Known field names for debian/tests/control (autopkgtest)
 const TESTS_CONTROL_FIELDS: &[&str] = &[
@@ -32,11 +33,11 @@ impl FieldValidator for TestsControlFieldValidator {
 /// Generate semantic tokens for a debian/tests/control file
 pub fn generate_semantic_tokens(
     deb822_parse: &deb822_lossless::Parse<deb822_lossless::Deb822>,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<SemanticToken> {
     let deb822 = deb822_parse.tree();
     let validator = TestsControlFieldValidator;
-    generate_tokens(&deb822, source_text, &validator)
+    generate_tokens(&deb822, src, &validator)
 }
 
 #[cfg(test)]
@@ -48,7 +49,8 @@ mod tests {
     fn test_known_fields() {
         let text = "Tests: my-test\nDepends: @\nRestrictions: needs-root\n";
         let parsed = deb822_lossless::Deb822::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 6);
 
@@ -66,7 +68,8 @@ mod tests {
     fn test_unknown_field() {
         let text = "Tests: my-test\nX-Custom: value\n";
         let parsed = deb822_lossless::Deb822::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         assert_eq!(tokens[2].token_type, TokenType::UnknownField as u32);
         assert_eq!(tokens[2].length, 8); // "X-Custom"
@@ -76,7 +79,8 @@ mod tests {
     fn test_case_insensitive() {
         let text = "tests: my-test\n";
         let parsed = deb822_lossless::Deb822::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
     }

@@ -7,6 +7,7 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentati
 
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
 use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
+use crate::position::Source;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CursorContext {
@@ -34,7 +35,7 @@ enum CursorContext {
 /// changelog bug numbers in `Closes: #...` and `LP: #...` detail contexts.
 pub fn get_completions(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Vec<CompletionItem> {
     // Use syntax_node() + cast so completion keeps working on syntactically
@@ -43,7 +44,7 @@ pub fn get_completions(
         return Vec::new();
     };
 
-    match get_cursor_context(&changelog, source_text, position) {
+    match get_cursor_context(&changelog, src, position) {
         Some(CursorContext::Package { value_prefix }) => {
             get_package_completions(&changelog, &value_prefix)
         }
@@ -70,7 +71,7 @@ pub fn get_completions(
 /// Returns `None` when the cursor is not in bug-number context.
 pub async fn get_async_bug_completions(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     bug_cache: &SharedBugCache,
 ) -> Option<Vec<CompletionItem>> {
@@ -83,7 +84,7 @@ pub async fn get_async_bug_completions(
             tracker,
             package_name,
             value_prefix,
-        } = get_cursor_context(&changelog, source_text, position)?
+        } = get_cursor_context(&changelog, src, position)?
         else {
             return None;
         };
@@ -140,10 +141,10 @@ pub async fn get_async_bug_completions(
 
 fn get_cursor_context(
     changelog: &debian_changelog::ChangeLog,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Option<CursorContext> {
-    let offset = crate::position::try_position_to_offset(source_text, position)?;
+    let offset = src.try_position_to_offset(position)?;
     let entry = changelog.entry_at_offset(offset)?;
 
     if let Some(header) = entry.header() {
@@ -644,7 +645,8 @@ mod tests {
     }
 
     fn position_at(text: &str, byte_offset: usize) -> Position {
-        crate::position::offset_to_position(text, TextSize::try_from(byte_offset).unwrap())
+        let idx = crate::position::LineIndex::new(text);
+        idx.offset_to_position(text, TextSize::try_from(byte_offset).unwrap())
     }
 
     #[test]
@@ -652,7 +654,9 @@ mod tests {
         let text = "foo (1.0-1) un; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("un;").unwrap() + 2;
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
 
         assert!(!completions.is_empty());
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -665,7 +669,9 @@ mod tests {
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("foo (").unwrap() + 2;
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
 
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["foo"]);
@@ -680,7 +686,9 @@ mod tests {
         let text = "foo (1.0-1) ; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find(" ;").unwrap() + 1;
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
 
         assert!(!completions.is_empty());
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -692,7 +700,9 @@ mod tests {
         let text = "foo (1.0-1) unstable; urgency=me\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("urgency=me").unwrap() + "urgency=me".len();
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
 
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["medium"]);
@@ -716,7 +726,9 @@ foo (1.0-1) unstable; urgency=medium
 ";
         let parsed = parse_for(text);
         let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"#123456"));
     }
@@ -738,7 +750,9 @@ foo (1.0-1) unstable; urgency=medium
 ";
         let parsed = parse_for(text);
         let offset = text.find("LP: #12").unwrap() + "LP: #12".len();
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"#123456"));
     }
@@ -748,7 +762,9 @@ foo (1.0-1) unstable; urgency=medium
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Ref #123456 without closes tag.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("#123456").unwrap() + 4;
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
         assert!(completions.is_empty());
     }
 
@@ -757,7 +773,9 @@ foo (1.0-1) unstable; urgency=medium
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Ref LP #123456 without colon.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("#123456").unwrap() + 4;
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
         assert!(completions.is_empty());
     }
 
@@ -766,7 +784,9 @@ foo (1.0-1) unstable; urgency=medium
         let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = parse_for(text);
         let offset = text.find("Initial").unwrap() + 2;
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
         assert!(completions.is_empty());
     }
 
@@ -776,11 +796,13 @@ foo (1.0-1) unstable; urgency=medium
         let parsed = parse_for(text);
 
         // Invalid character on an existing line.
-        let completions = get_completions(&parsed, text, Position::new(0, 5000));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 5000));
         assert!(completions.is_empty());
 
         // Invalid line beyond the end of file.
-        let completions = get_completions(&parsed, text, Position::new(5000, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(5000, 0));
         assert!(completions.is_empty());
     }
 
@@ -791,12 +813,15 @@ foo (1.0-1) unstable; urgency=medium
         assert!(!parsed.ok(), "test setup expects parse errors");
 
         let offset = text.find("urgency=").unwrap() + "urgency=".len();
-        let completions = get_completions(&parsed, text, position_at(text, offset));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_completions(&parsed, Source::new(text, &idx), position_at(text, offset));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"medium"));
 
         // Invalid line beyond the end of file.
-        let completions = get_completions(&parsed, text, Position::new(5000, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(5000, 0));
         assert!(completions.is_empty());
     }
 
@@ -867,10 +892,15 @@ foo (1.0-1) unstable; urgency=medium
         }
 
         let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
-        let completions =
-            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
-                .await
-                .expect("bug context should return Some");
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_async_bug_completions(
+            &parsed,
+            Source::new(text, &idx),
+            position_at(text, offset),
+            &bug_cache,
+        )
+        .await
+        .expect("bug context should return Some");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));
@@ -929,10 +959,15 @@ foo (1.0-1) unstable; urgency=medium
         }
 
         let offset = text.find("LP: #12").unwrap() + "LP: #12".len();
-        let completions =
-            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
-                .await
-                .expect("bug context should return Some");
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_async_bug_completions(
+            &parsed,
+            Source::new(text, &idx),
+            position_at(text, offset),
+            &bug_cache,
+        )
+        .await
+        .expect("bug context should return Some");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));
@@ -973,10 +1008,15 @@ foo (1.0-1) unstable; urgency=medium
         let parsed = parse_for(text);
         let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
         let offset = text.find("Closes: #\n").unwrap() + "Closes: #".len();
-        let completions =
-            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache)
-                .await
-                .expect("bug context should return Some");
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_async_bug_completions(
+            &parsed,
+            Source::new(text, &idx),
+            position_at(text, offset),
+            &bug_cache,
+        )
+        .await
+        .expect("bug context should return Some");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"#654321"),
@@ -992,8 +1032,14 @@ foo (1.0-1) unstable; urgency=medium
         let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
         let offset = text.find("Initial").unwrap() + 2;
 
-        let completions =
-            get_async_bug_completions(&parsed, text, position_at(text, offset), &bug_cache).await;
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_async_bug_completions(
+            &parsed,
+            Source::new(text, &idx),
+            position_at(text, offset),
+            &bug_cache,
+        )
+        .await;
         assert!(completions.is_none());
     }
 }

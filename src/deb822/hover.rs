@@ -1,6 +1,7 @@
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use super::completion::{get_cursor_context, CursorContext, FieldInfo};
+use crate::position::Source;
 
 /// Look up the description for a field name (case-insensitive).
 fn get_field_description(
@@ -20,14 +21,14 @@ fn get_field_description(
 /// is on a known field name.
 pub fn get_hover(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     fields: &[FieldInfo],
 ) -> Option<Hover> {
-    let ctx = get_cursor_context(deb822, source_text, position)?;
+    let ctx = get_cursor_context(deb822, src, position)?;
 
     match ctx {
-        CursorContext::FieldKey => get_field_hover_at(deb822, source_text, position, fields),
+        CursorContext::FieldKey => get_field_hover_at(deb822, src, position, fields),
         CursorContext::FieldValue { field_name, .. } => get_field_description(fields, &field_name)
             .map(|(canonical, description)| make_hover(canonical, description)),
         CursorContext::StartOfLine => None,
@@ -37,11 +38,11 @@ pub fn get_hover(
 /// Find the field name at the cursor position and return hover info.
 fn get_field_hover_at(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     fields: &[FieldInfo],
 ) -> Option<Hover> {
-    let offset = crate::position::try_position_to_offset(source_text, position)?;
+    let offset = src.try_position_to_offset(position)?;
 
     let entry = deb822
         .paragraphs()
@@ -81,7 +82,13 @@ mod tests {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(0, 2), TEST_FIELDS);
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(0, 2),
+            TEST_FIELDS,
+        );
         assert!(hover.is_some());
         let hover = hover.unwrap();
         match hover.contents {
@@ -98,7 +105,13 @@ mod tests {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(0, 10), TEST_FIELDS);
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(0, 10),
+            TEST_FIELDS,
+        );
         assert!(hover.is_some());
         let hover = hover.unwrap();
         match hover.contents {
@@ -114,7 +127,13 @@ mod tests {
         let text = "Unknown: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(0, 2), TEST_FIELDS);
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(0, 2),
+            TEST_FIELDS,
+        );
         assert!(hover.is_none());
     }
 
@@ -123,7 +142,13 @@ mod tests {
         let text = "source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(0, 2), TEST_FIELDS);
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(0, 2),
+            TEST_FIELDS,
+        );
         assert!(hover.is_some());
         let hover = hover.unwrap();
         match hover.contents {
@@ -140,7 +165,13 @@ mod tests {
         let text = "Source: test\n\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(1, 0), TEST_FIELDS);
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(1, 0),
+            TEST_FIELDS,
+        );
         assert!(hover.is_none());
     }
 
@@ -149,7 +180,13 @@ mod tests {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(1, 0), TEST_FIELDS);
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(1, 0),
+            TEST_FIELDS,
+        );
         assert!(hover.is_none());
     }
 }

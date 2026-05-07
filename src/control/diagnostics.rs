@@ -1,6 +1,7 @@
 use text_size::TextRange;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
+use crate::position::Source;
 use crate::workspace::FieldCasingIssue;
 
 /// All types of diagnostic issues that can be found in a control file
@@ -78,11 +79,11 @@ pub fn find_all_issues(
 }
 
 /// Convert a DiagnosticIssue to an LSP Diagnostic
-pub fn issue_to_diagnostic(issue: DiagnosticIssue, source_text: &str) -> Diagnostic {
+pub fn issue_to_diagnostic(issue: DiagnosticIssue, src: Source<'_>) -> Diagnostic {
     match issue {
         DiagnosticIssue::ParseError { message, range } => {
             let lsp_range = if let Some(range) = range {
-                crate::position::text_range_to_lsp_range(source_text, range)
+                src.text_range_to_lsp_range(range)
             } else {
                 // Fallback to (0,0) if no range is available
                 Range {
@@ -105,8 +106,7 @@ pub fn issue_to_diagnostic(issue: DiagnosticIssue, source_text: &str) -> Diagnos
             }
         }
         DiagnosticIssue::FieldCasing(casing) => {
-            let lsp_range =
-                crate::position::text_range_to_lsp_range(source_text, casing.field_range);
+            let lsp_range = src.text_range_to_lsp_range(casing.field_range);
 
             Diagnostic {
                 range: lsp_range,
@@ -139,12 +139,12 @@ pub fn find_field_casing_issues(
 
 /// Get all LSP diagnostics for a control file
 pub fn get_diagnostics(
-    source_text: &str,
+    src: Source<'_>,
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
 ) -> Vec<Diagnostic> {
     find_all_issues(parsed, None)
         .into_iter()
-        .map(|issue| issue_to_diagnostic(issue, source_text))
+        .map(|issue| issue_to_diagnostic(issue, src))
         .collect()
 }
 

@@ -6,10 +6,10 @@ use tower_lsp_server::ls_types::SemanticToken;
 
 use super::fields::is_known_target;
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
-use crate::position::{offset_to_position, utf16_len};
-
+use crate::position::utf16_len;
+use crate::position::Source;
 /// Generate semantic tokens for a debian/rules file.
-pub fn generate_semantic_tokens(makefile: &Makefile, source_text: &str) -> Vec<SemanticToken> {
+pub fn generate_semantic_tokens(makefile: &Makefile, src: Source<'_>) -> Vec<SemanticToken> {
     let mut builder = SemanticTokensBuilder::new();
 
     for element in makefile.syntax().descendants_with_tokens() {
@@ -17,7 +17,7 @@ pub fn generate_semantic_tokens(makefile: &Makefile, source_text: &str) -> Vec<S
             match token.kind() {
                 SyntaxKind::COMMENT => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let length = utf16_len(token.text());
                     builder.push(
                         start_pos.line,
@@ -31,7 +31,7 @@ pub fn generate_semantic_tokens(makefile: &Makefile, source_text: &str) -> Vec<S
                     // Check parent node to determine context
                     if let Some(parent) = token.parent() {
                         let range = token.text_range();
-                        let start_pos = offset_to_position(source_text, range.start());
+                        let start_pos = src.offset_to_position(range.start());
                         let length = utf16_len(token.text());
                         let text = token.text();
 
@@ -80,7 +80,8 @@ mod tests {
         let text = "clean:\n\trm -rf build\n";
         let parsed = Makefile::parse(text);
         let makefile = parsed.tree();
-        let tokens = generate_semantic_tokens(&makefile, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&makefile, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         // "clean" is a known target
@@ -92,7 +93,8 @@ mod tests {
         let text = "my-custom-target:\n\techo hello\n";
         let parsed = Makefile::parse(text);
         let makefile = parsed.tree();
-        let tokens = generate_semantic_tokens(&makefile, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&makefile, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         // "my-custom-target" is not a known target
@@ -104,7 +106,8 @@ mod tests {
         let text = "PYTHON = python3\n";
         let parsed = Makefile::parse(text);
         let makefile = parsed.tree();
-        let tokens = generate_semantic_tokens(&makefile, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&makefile, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
@@ -119,7 +122,8 @@ mod tests {
         let text = "# This is a comment\nclean:\n\trm -rf build\n";
         let parsed = Makefile::parse(text);
         let makefile = parsed.tree();
-        let tokens = generate_semantic_tokens(&makefile, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&makefile, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         assert_eq!(tokens[0].token_type, TokenType::Comment as u32);
@@ -130,7 +134,8 @@ mod tests {
         let text = "";
         let parsed = Makefile::parse(text);
         let makefile = parsed.tree();
-        let tokens = generate_semantic_tokens(&makefile, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&makefile, Source::new(text, &idx));
         assert!(tokens.is_empty());
     }
 
@@ -139,7 +144,8 @@ mod tests {
         let text = "override_dh_auto_build:\n\tdh_auto_build -- --verbose\n";
         let parsed = Makefile::parse(text);
         let makefile = parsed.tree();
-        let tokens = generate_semantic_tokens(&makefile, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&makefile, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         // override_dh_auto_build is a known target

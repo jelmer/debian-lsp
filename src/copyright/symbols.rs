@@ -1,10 +1,9 @@
 //! Document symbol generation for Debian copyright files.
 
+use crate::position::Source;
 use debian_copyright::lossless::Parse;
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{DocumentSymbol, SymbolKind};
-
-use crate::position::text_range_to_lsp_range;
 
 /// Generate document symbols for a copyright file.
 ///
@@ -12,13 +11,13 @@ use crate::position::text_range_to_lsp_range;
 /// standalone License paragraph becomes a symbol, giving breadcrumb and
 /// outline navigation.
 #[allow(deprecated)] // DocumentSymbol::deprecated field
-pub fn generate_document_symbols(parse: &Parse, source_text: &str) -> Vec<DocumentSymbol> {
+pub fn generate_document_symbols(parse: &Parse, src: Source<'_>) -> Vec<DocumentSymbol> {
     let copyright = parse.tree();
     let mut symbols = Vec::new();
 
     if let Some(header) = copyright.header() {
         let para = header.as_deb822();
-        let range = text_range_to_lsp_range(source_text, para.syntax().text_range());
+        let range = src.text_range_to_lsp_range(para.syntax().text_range());
         let name = "Header".to_string();
 
         symbols.push(DocumentSymbol {
@@ -35,7 +34,7 @@ pub fn generate_document_symbols(parse: &Parse, source_text: &str) -> Vec<Docume
 
     for files_para in copyright.iter_files() {
         let para = files_para.as_deb822();
-        let range = text_range_to_lsp_range(source_text, para.syntax().text_range());
+        let range = src.text_range_to_lsp_range(para.syntax().text_range());
         let files = files_para.files();
         let name = format!("Files: {}", files.join(", "));
 
@@ -57,7 +56,7 @@ pub fn generate_document_symbols(parse: &Parse, source_text: &str) -> Vec<Docume
 
     for license_para in copyright.iter_licenses() {
         let para = license_para.as_deb822();
-        let range = text_range_to_lsp_range(source_text, para.syntax().text_range());
+        let range = src.text_range_to_lsp_range(para.syntax().text_range());
         let name = match license_para.name() {
             Some(n) => format!("License: {n}"),
             None => "License".to_string(),
@@ -90,7 +89,8 @@ mod tests {
     fn test_header_only() {
         let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\nUpstream-Name: foo\n";
         let parsed = parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Header");
@@ -105,7 +105,8 @@ mod tests {
     fn test_header_without_upstream_name() {
         let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n";
         let parsed = parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Header");
@@ -125,7 +126,8 @@ Copyright: 2024 Bob
 License: GPL-2+
 ";
         let parsed = parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 3);
         assert_eq!(symbols[0].name, "Header");
@@ -151,7 +153,8 @@ License: MIT
  Permission is hereby granted...
 ";
         let parsed = parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 3);
         assert_eq!(symbols[2].name, "License: MIT");
@@ -168,7 +171,8 @@ Copyright: 2024 Test
 License: Apache-2.0
 ";
         let parsed = parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols[1].name, "Files: src/*, lib/*, include/*");
     }
@@ -177,7 +181,8 @@ License: Apache-2.0
     fn test_empty_file() {
         let text = "";
         let parsed = parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 0);
     }

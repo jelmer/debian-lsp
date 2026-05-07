@@ -2,7 +2,7 @@
 
 use tower_lsp_server::ls_types::Position;
 
-use crate::position::try_position_to_offset;
+use crate::position::Source;
 
 /// Return true if `position` falls inside the DEP-3 header portion of
 /// the buffer — i.e. before the first `---` / `diff ` / `Index:` line.
@@ -12,8 +12,8 @@ use crate::position::try_position_to_offset;
 /// `header_end` is the byte offset where the diff body starts; supply
 /// the salsa-cached value (from `Workspace::get_parsed_dep3_header`)
 /// when the file is open so we don't recompute it on every call.
-pub fn is_in_dep3_header(text: &str, header_end: usize, position: Position) -> bool {
-    let Some(offset) = try_position_to_offset(text, position) else {
+pub fn is_in_dep3_header(src: Source<'_>, header_end: usize, position: Position) -> bool {
+    let Some(offset) = src.try_position_to_offset(position) else {
         return false;
     };
     let offset: usize = offset.into();
@@ -23,10 +23,12 @@ pub fn is_in_dep3_header(text: &str, header_end: usize, position: Position) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::position::LineIndex;
 
     fn check(text: &str, position: Position) -> bool {
         let header_end = dep3::lossless::header_end(text);
-        is_in_dep3_header(text, header_end, position)
+        let idx = LineIndex::new(text);
+        is_in_dep3_header(Source::new(text, &idx), header_end, position)
     }
 
     #[test]

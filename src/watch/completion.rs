@@ -1,11 +1,11 @@
 use crate::deb822::completion::FieldInfo;
-use crate::position::try_position_to_offset;
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, Documentation, Position, Uri,
 };
 
 use super::detection::is_watch_file;
 use super::fields::{OptionValueType, WATCH_FIELDS, WATCH_LINEBASED_VERSIONS, WATCH_VERSIONS};
+use crate::position::Source;
 
 /// Build a `FieldInfo` slice for deb822 (v5) field name completions.
 fn deb822_field_infos() -> Vec<FieldInfo> {
@@ -19,14 +19,14 @@ fn deb822_field_infos() -> Vec<FieldInfo> {
 pub fn get_linebased_completions(
     uri: &Uri,
     wf: &debian_watch::linebased::WatchFile,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Vec<CompletionItem> {
     if !is_watch_file(uri) {
         return Vec::new();
     }
 
-    let Some(offset) = try_position_to_offset(source_text, position) else {
+    let Some(offset) = src.try_position_to_offset(position) else {
         return Vec::new();
     };
 
@@ -127,13 +127,13 @@ fn get_linebased_option_completions_with_prefix(prefix: &str) -> Vec<CompletionI
 /// Get completion items for a v5 (deb822) watch file, using position-aware completions.
 pub fn get_completions_deb822(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Vec<CompletionItem> {
     let field_infos = deb822_field_infos();
     crate::deb822::completion::get_completions(
         deb822,
-        source_text,
+        src,
         position,
         &field_infos,
         |field_name, prefix| {
@@ -213,7 +213,9 @@ mod tests {
         let text = "version=4\n";
         let wf = parse_linebased(text);
 
-        let completions = get_linebased_completions(&uri, &wf, text, Position::new(0, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_linebased_completions(&uri, &wf, Source::new(text, &idx), Position::new(0, 0));
         assert!(!completions.is_empty());
 
         let option_count = completions
@@ -235,7 +237,9 @@ mod tests {
         let text = "version=4\n";
         let wf = parse_linebased(text);
 
-        let completions = get_linebased_completions(&uri, &wf, text, Position::new(0, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_linebased_completions(&uri, &wf, Source::new(text, &idx), Position::new(0, 0));
         assert!(completions.is_empty());
     }
 
@@ -246,7 +250,9 @@ mod tests {
         let wf = parse_linebased(text);
 
         // Cursor right after the comma — should offer option names
-        let completions = get_linebased_completions(&uri, &wf, text, Position::new(1, 14));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_linebased_completions(&uri, &wf, Source::new(text, &idx), Position::new(1, 14));
         assert!(!completions.is_empty());
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"pgpmode"));
@@ -259,7 +265,9 @@ mod tests {
         let wf = parse_linebased(text);
 
         // Cursor on the value "git" — should offer mode values
-        let completions = get_linebased_completions(&uri, &wf, text, Position::new(1, 13));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_linebased_completions(&uri, &wf, Source::new(text, &idx), Position::new(1, 13));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"git"));
         assert!(labels.contains(&"lwp"));
@@ -273,7 +281,9 @@ mod tests {
         let wf = parse_linebased(text);
 
         // Cursor on the version number after '='
-        let completions = get_linebased_completions(&uri, &wf, text, Position::new(0, 9));
+        let idx = crate::position::LineIndex::new(text);
+        let completions =
+            get_linebased_completions(&uri, &wf, Source::new(text, &idx), Position::new(0, 9));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, vec!["1", "2", "3", "4"]);
         assert!(completions
@@ -285,8 +295,10 @@ mod tests {
     fn test_get_completions_deb822_on_field_key() {
         let text = "Version: 5\n\nSource: https://example.com\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 3));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 3));
 
         let field_count = completions
             .iter()
@@ -304,9 +316,11 @@ mod tests {
     fn test_get_completions_deb822_on_string_value() {
         let text = "Version: 5\n\nSource: https://example.com\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
         // Source is a string field, no value completions
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 15));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 15));
         assert!(completions.is_empty());
     }
 
@@ -314,8 +328,10 @@ mod tests {
     fn test_get_completions_deb822_on_boolean_value() {
         let text = "Version: 5\n\nBare: \n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 6));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 6));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["yes", "no"]);
@@ -325,8 +341,10 @@ mod tests {
     fn test_get_completions_deb822_on_enum_value() {
         let text = "Version: 5\n\nMode: \n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 6));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 6));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["lwp", "git", "svn"]);
@@ -336,8 +354,10 @@ mod tests {
     fn test_get_completions_deb822_on_enum_value_with_prefix() {
         let text = "Version: 5\n\nMode: g\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 7));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 7));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["git"]);
@@ -347,8 +367,10 @@ mod tests {
     fn test_get_completions_deb822_on_template_value() {
         let text = "Version: 5\n\nTemplate: \n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 10));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 10));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(
@@ -361,8 +383,10 @@ mod tests {
     fn test_get_completions_deb822_on_template_value_with_prefix() {
         let text = "Version: 5\n\nTemplate: g\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(2, 11));
+        let completions = get_completions_deb822(&deb822, src, Position::new(2, 11));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["github", "gitlab"]);
@@ -372,8 +396,10 @@ mod tests {
     fn test_get_completions_deb822_on_empty() {
         let text = "";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = get_completions_deb822(&deb822, text, Position::new(0, 0));
+        let completions = get_completions_deb822(&deb822, src, Position::new(0, 0));
 
         let field_count = completions
             .iter()

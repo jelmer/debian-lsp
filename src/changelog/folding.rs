@@ -2,22 +2,21 @@
 //!
 //! Each changelog entry becomes a foldable region.
 
+use crate::position::Source;
 use debian_changelog::{ChangeLog, Parse};
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{FoldingRange, FoldingRangeKind};
 
-use crate::position::text_range_to_lsp_range;
-
 /// Generate folding ranges for a changelog file.
 ///
 /// Each entry that spans more than one line produces a `Region` folding range.
-pub fn generate_folding_ranges(parse: &Parse<ChangeLog>, source_text: &str) -> Vec<FoldingRange> {
+pub fn generate_folding_ranges(parse: &Parse<ChangeLog>, src: Source<'_>) -> Vec<FoldingRange> {
     let changelog = parse.tree();
 
     changelog
         .iter()
         .filter_map(|entry| {
-            let range = text_range_to_lsp_range(source_text, entry.syntax().text_range());
+            let range = src.text_range_to_lsp_range(entry.syntax().text_range());
             let end_line = if range.end.character == 0 && range.end.line > range.start.line {
                 range.end.line - 1
             } else {
@@ -46,7 +45,8 @@ mod tests {
     fn test_single_entry() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = ChangeLog::parse(text);
-        let ranges = generate_folding_ranges(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&parsed, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].start_line, 0);
@@ -69,7 +69,8 @@ pkg (1.0-1) experimental; urgency=low
  -- B <b@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = ChangeLog::parse(text);
-        let ranges = generate_folding_ranges(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&parsed, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0].start_line, 0);
@@ -82,7 +83,8 @@ pkg (1.0-1) experimental; urgency=low
     fn test_empty_changelog() {
         let text = "";
         let parsed = ChangeLog::parse(text);
-        let ranges = generate_folding_ranges(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&parsed, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 0);
     }
@@ -103,7 +105,8 @@ pkg (1.0-1) unstable; urgency=low
  -- B <b@b.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = ChangeLog::parse(text);
-        let ranges = generate_folding_ranges(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&parsed, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 2);
         assert!(ranges[0].end_line < ranges[1].start_line);
@@ -113,7 +116,8 @@ pkg (1.0-1) unstable; urgency=low
     fn test_folding_kind_is_region() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = ChangeLog::parse(text);
-        let ranges = generate_folding_ranges(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&parsed, Source::new(text, &idx));
 
         assert_eq!(ranges[0].kind, Some(FoldingRangeKind::Region));
     }

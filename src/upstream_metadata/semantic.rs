@@ -5,9 +5,10 @@ use yaml_edit::{Document, Mapping, YamlNode};
 
 use super::fields::get_standard_field_name;
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
+use crate::position::Source;
 
 /// Generate semantic tokens for a debian/upstream/metadata file.
-pub fn generate_semantic_tokens(doc: &Document, source_text: &str) -> Vec<SemanticToken> {
+pub fn generate_semantic_tokens(doc: &Document, src: Source<'_>) -> Vec<SemanticToken> {
     let mapping = match doc.as_mapping() {
         Some(m) => m,
         None => return vec![],
@@ -15,7 +16,7 @@ pub fn generate_semantic_tokens(doc: &Document, source_text: &str) -> Vec<Semant
 
     let mut builder = SemanticTokensBuilder::new();
 
-    emit_mapping_tokens(&mapping, source_text, &mut builder, true);
+    emit_mapping_tokens(&mapping, src, &mut builder, true);
 
     builder.build()
 }
@@ -27,7 +28,7 @@ pub fn generate_semantic_tokens(doc: &Document, source_text: &str) -> Vec<Semant
 /// emitted as plain fields.
 fn emit_mapping_tokens(
     mapping: &Mapping,
-    source_text: &str,
+    src: Source<'_>,
     builder: &mut SemanticTokensBuilder,
     top_level: bool,
 ) {
@@ -35,7 +36,7 @@ fn emit_mapping_tokens(
         // Emit token for the key
         if let Some(YamlNode::Scalar(key_scalar)) = entry.key_node() {
             let key_text = key_scalar.as_string();
-            let pos = key_scalar.start_position(source_text);
+            let pos = key_scalar.start_position(src.text);
             let range = key_scalar.byte_range();
             let len = range.end - range.start;
 
@@ -64,16 +65,16 @@ fn emit_mapping_tokens(
 
         // Emit tokens for the value, recursing into nested structures
         if let Some(value_node) = entry.value_node() {
-            emit_node_tokens(&value_node, source_text, builder);
+            emit_node_tokens(&value_node, src, builder);
         }
     }
 }
 
 /// Emit semantic tokens for a YAML node, recursing into mappings and sequences.
-fn emit_node_tokens(node: &YamlNode, source_text: &str, builder: &mut SemanticTokensBuilder) {
+fn emit_node_tokens(node: &YamlNode, src: Source<'_>, builder: &mut SemanticTokensBuilder) {
     match node {
         YamlNode::Scalar(scalar) => {
-            let pos = scalar.start_position(source_text);
+            let pos = scalar.start_position(src.text);
             let range = scalar.byte_range();
             let len = range.end - range.start;
 
@@ -85,11 +86,11 @@ fn emit_node_tokens(node: &YamlNode, source_text: &str, builder: &mut SemanticTo
             }
         }
         YamlNode::Mapping(mapping) => {
-            emit_mapping_tokens(mapping, source_text, builder, false);
+            emit_mapping_tokens(mapping, src, builder, false);
         }
         YamlNode::Sequence(sequence) => {
             for item in sequence.values() {
-                emit_node_tokens(&item, source_text, builder);
+                emit_node_tokens(&item, src, builder);
             }
         }
         _ => {}
@@ -108,7 +109,8 @@ mod tests {
     fn test_known_fields() {
         let text = "Repository: https://github.com/example/project\nBug-Database: https://github.com/example/project/issues\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 4);
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
@@ -123,7 +125,8 @@ mod tests {
     fn test_unknown_field() {
         let text = "Repository: https://example.com\nX-Custom: value\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 4);
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
@@ -136,7 +139,8 @@ mod tests {
         // A YAML document that is a sequence, not a mapping
         let text = "- item1\n- item2\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
         assert_eq!(tokens.len(), 0);
     }
 
@@ -145,7 +149,8 @@ mod tests {
         // Registry has a sequence of mappings — all keys and values should get tokens
         let text = "Registry:\n  - Name: PyPI\n    Entry: example\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
 
         // Registry (key) + Name (key) + PyPI (value) + Entry (key) + example (value)
         assert_eq!(tokens.len(), 5);
@@ -165,7 +170,8 @@ mod tests {
     fn test_sequence_of_scalars() {
         let text = "Other-References:\n  - https://example.com\n  - https://example.org\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
 
         // Other-References (key) + 2 scalar values
         assert_eq!(tokens.len(), 3);
@@ -178,7 +184,8 @@ mod tests {
     fn test_declaration_modifier_on_keys() {
         let text = "Repository: https://example.com\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 2);
         // Key should have DECLARATION modifier
@@ -194,7 +201,8 @@ mod tests {
     fn test_delta_positions() {
         let text = "Repository: https://example.com\nBug-Database: https://bugs.example.com\n";
         let doc = parse_doc(text);
-        let tokens = generate_semantic_tokens(&doc, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&doc, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 4);
         // First key at line 0

@@ -1,18 +1,17 @@
+use crate::position::Source;
 use lintian_overrides::{LintianOverrides, Parse, SyntaxKind};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
-
-use crate::position::try_position_to_offset;
 
 /// Get completion items for a lintian overrides file. `parsed` is
 /// the salsa-cached parse — its tree is always usable even on
 /// malformed input, so we don't bail on parse errors.
 pub fn get_completions(
     parsed: &Parse<LintianOverrides>,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     tags: &[(String, String)],
 ) -> Vec<CompletionItem> {
-    let offset = match try_position_to_offset(source_text, position) {
+    let offset = match src.try_position_to_offset(position) {
         Some(o) => o,
         None => return Vec::new(),
     };
@@ -54,7 +53,8 @@ mod tests {
 
     fn run(text: &str, position: Position, tags: &[(String, String)]) -> Vec<CompletionItem> {
         let parsed = LintianOverrides::parse(text);
-        get_completions(&parsed, text, position, tags)
+        let idx = crate::position::LineIndex::new(text);
+        get_completions(&parsed, Source::new(text, &idx), position, tags)
     }
 
     #[test]

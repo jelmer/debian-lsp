@@ -6,21 +6,20 @@
 //! 3. Entire paragraph
 //! 4. Complete file
 
+use crate::position::Source;
 use deb822_lossless::Deb822;
 use text_size::TextSize;
 use tower_lsp_server::ls_types::{Position, Range, SelectionRange};
 
-use crate::position::{offset_to_position, text_range_to_lsp_range, try_position_to_offset};
-
 /// Generate selection ranges for the given positions in a deb822 document.
 pub fn generate_selection_ranges(
     deb822: &Deb822,
-    source_text: &str,
+    src: Source<'_>,
     positions: &[Position],
 ) -> Vec<SelectionRange> {
     let file_range = Range::new(
         Position::new(0, 0),
-        offset_to_position(source_text, TextSize::try_from(source_text.len()).unwrap()),
+        src.offset_to_position(TextSize::try_from(src.text.len()).unwrap()),
     );
 
     positions
@@ -31,7 +30,7 @@ pub fn generate_selection_ranges(
                 parent: None,
             };
 
-            let Some(offset) = try_position_to_offset(source_text, *pos) else {
+            let Some(offset) = src.try_position_to_offset(*pos) else {
                 return file_sel;
             };
             let offset = TextSize::from(u32::from(offset));
@@ -40,7 +39,7 @@ pub fn generate_selection_ranges(
                 return file_sel;
             };
 
-            let para_range = text_range_to_lsp_range(source_text, para.text_range());
+            let para_range = src.text_range_to_lsp_range(para.text_range());
             let para_sel = SelectionRange {
                 range: para_range,
                 parent: Some(Box::new(file_sel)),
@@ -50,14 +49,14 @@ pub fn generate_selection_ranges(
                 return para_sel;
             };
 
-            let entry_range = text_range_to_lsp_range(source_text, entry.text_range());
+            let entry_range = src.text_range_to_lsp_range(entry.text_range());
             let entry_sel = SelectionRange {
                 range: entry_range,
                 parent: Some(Box::new(para_sel)),
             };
 
             if let Some(value_range) = entry.value_range() {
-                let value_lsp_range = text_range_to_lsp_range(source_text, value_range);
+                let value_lsp_range = src.text_range_to_lsp_range(value_range);
                 if value_range.contains(offset) {
                     return SelectionRange {
                         range: value_lsp_range,
@@ -67,7 +66,7 @@ pub fn generate_selection_ranges(
             }
 
             if let Some(key_range) = entry.key_range() {
-                let key_lsp_range = text_range_to_lsp_range(source_text, key_range);
+                let key_lsp_range = src.text_range_to_lsp_range(key_range);
                 if key_range.contains(offset) {
                     return SelectionRange {
                         range: key_lsp_range,
@@ -90,9 +89,11 @@ mod tests {
         let text = "Source: foo\nMaintainer: Test <test@example.com>\n";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
         // Position in the value "foo" on line 0, col 8
-        let ranges = generate_selection_ranges(&deb822, text, &[Position::new(0, 8)]);
+        let ranges = generate_selection_ranges(&deb822, src, &[Position::new(0, 8)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -121,9 +122,11 @@ mod tests {
         let text = "Source: foo\n";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
         // Position in "Source" at col 2
-        let ranges = generate_selection_ranges(&deb822, text, &[Position::new(0, 2)]);
+        let ranges = generate_selection_ranges(&deb822, src, &[Position::new(0, 2)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -150,9 +153,11 @@ Architecture: any
 ";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
         // Position in second paragraph, "Architecture" value "any"
-        let ranges = generate_selection_ranges(&deb822, text, &[Position::new(4, 15)]);
+        let ranges = generate_selection_ranges(&deb822, src, &[Position::new(4, 15)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -177,9 +182,11 @@ Architecture: any
         let text = "Source: foo\nMaintainer: Test <test@example.com>\n";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
         let ranges =
-            generate_selection_ranges(&deb822, text, &[Position::new(0, 8), Position::new(1, 13)]);
+            generate_selection_ranges(&deb822, src, &[Position::new(0, 8), Position::new(1, 13)]);
         assert_eq!(ranges.len(), 2);
     }
 
@@ -188,8 +195,10 @@ Architecture: any
         let text = "";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let ranges = generate_selection_ranges(&deb822, text, &[Position::new(0, 0)]);
+        let ranges = generate_selection_ranges(&deb822, src, &[Position::new(0, 0)]);
         assert_eq!(ranges.len(), 1);
         // Should return file range
         assert!(ranges[0].parent.is_none());

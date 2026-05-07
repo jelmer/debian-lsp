@@ -5,23 +5,22 @@
 //! 2. Entire changelog entry
 //! 3. Complete file
 
+use crate::position::Source;
 use debian_changelog::{ChangeLog, Parse};
 use rowan::ast::AstNode;
 use text_size::TextSize;
 use tower_lsp_server::ls_types::{Position, Range, SelectionRange};
 
-use crate::position::{offset_to_position, text_range_to_lsp_range, try_position_to_offset};
-
 /// Generate selection ranges for the given positions in a changelog file.
 pub fn generate_selection_ranges(
     parse: &Parse<ChangeLog>,
-    source_text: &str,
+    src: Source<'_>,
     positions: &[Position],
 ) -> Vec<SelectionRange> {
     let changelog = parse.tree();
     let file_range = Range::new(
         Position::new(0, 0),
-        offset_to_position(source_text, TextSize::from(source_text.len() as u32)),
+        src.offset_to_position(TextSize::from(src.text.len() as u32)),
     );
 
     positions
@@ -32,7 +31,7 @@ pub fn generate_selection_ranges(
                 parent: None,
             };
 
-            let Some(offset) = try_position_to_offset(source_text, *pos) else {
+            let Some(offset) = src.try_position_to_offset(*pos) else {
                 return file_sel;
             };
 
@@ -44,7 +43,7 @@ pub fn generate_selection_ranges(
                 return file_sel;
             };
 
-            let entry_range = text_range_to_lsp_range(source_text, entry.syntax().text_range());
+            let entry_range = src.text_range_to_lsp_range(entry.syntax().text_range());
             let entry_sel = SelectionRange {
                 range: entry_range,
                 parent: Some(Box::new(file_sel)),
@@ -55,7 +54,7 @@ pub fn generate_selection_ranges(
                 let r = header.syntax().text_range();
                 if r.contains(offset) || r.end() == offset {
                     return SelectionRange {
-                        range: text_range_to_lsp_range(source_text, r),
+                        range: src.text_range_to_lsp_range(r),
                         parent: Some(Box::new(entry_sel)),
                     };
                 }
@@ -65,7 +64,7 @@ pub fn generate_selection_ranges(
                 let r = body.syntax().text_range();
                 if r.contains(offset) || r.end() == offset {
                     return SelectionRange {
-                        range: text_range_to_lsp_range(source_text, r),
+                        range: src.text_range_to_lsp_range(r),
                         parent: Some(Box::new(entry_sel)),
                     };
                 }
@@ -75,7 +74,7 @@ pub fn generate_selection_ranges(
                 let r = footer.syntax().text_range();
                 if r.contains(offset) || r.end() == offset {
                     return SelectionRange {
-                        range: text_range_to_lsp_range(source_text, r),
+                        range: src.text_range_to_lsp_range(r),
                         parent: Some(Box::new(entry_sel)),
                     };
                 }
@@ -96,7 +95,9 @@ mod tests {
     #[test]
     fn test_selection_in_header() {
         let parsed = ChangeLog::parse(ENTRY);
-        let ranges = generate_selection_ranges(&parsed, ENTRY, &[Position::new(0, 5)]);
+        let idx = crate::position::LineIndex::new(ENTRY);
+        let src = Source::new(ENTRY, &idx);
+        let ranges = generate_selection_ranges(&parsed, src, &[Position::new(0, 5)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -114,8 +115,10 @@ mod tests {
     #[test]
     fn test_selection_in_body() {
         let parsed = ChangeLog::parse(ENTRY);
+        let idx = crate::position::LineIndex::new(ENTRY);
+        let src = Source::new(ENTRY, &idx);
         // Line 2: "  * Change."
-        let ranges = generate_selection_ranges(&parsed, ENTRY, &[Position::new(2, 4)]);
+        let ranges = generate_selection_ranges(&parsed, src, &[Position::new(2, 4)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -130,8 +133,10 @@ mod tests {
     #[test]
     fn test_selection_in_footer() {
         let parsed = ChangeLog::parse(ENTRY);
+        let idx = crate::position::LineIndex::new(ENTRY);
+        let src = Source::new(ENTRY, &idx);
         // Line 4: " -- T <t@t.com>  ..."
-        let ranges = generate_selection_ranges(&parsed, ENTRY, &[Position::new(4, 5)]);
+        let ranges = generate_selection_ranges(&parsed, src, &[Position::new(4, 5)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -159,9 +164,11 @@ pkg (1.0-1) experimental; urgency=low
  -- B <b@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = ChangeLog::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
         // Position in the second entry header
-        let ranges = generate_selection_ranges(&parsed, text, &[Position::new(6, 3)]);
+        let ranges = generate_selection_ranges(&parsed, src, &[Position::new(6, 3)]);
         assert_eq!(ranges.len(), 1);
 
         let sel = &ranges[0];
@@ -182,7 +189,9 @@ pkg (1.0-1) experimental; urgency=low
     fn test_empty_changelog() {
         let text = "";
         let parsed = ChangeLog::parse(text);
-        let ranges = generate_selection_ranges(&parsed, text, &[Position::new(0, 0)]);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let ranges = generate_selection_ranges(&parsed, src, &[Position::new(0, 0)]);
         assert_eq!(ranges.len(), 1);
         assert!(ranges[0].parent.is_none());
     }

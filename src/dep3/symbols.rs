@@ -6,18 +6,18 @@
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{DocumentSymbol, SymbolKind};
 
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 
 /// Generate document symbols for a DEP-3 header. `header` is the
-/// parsed deb822 of the header portion only; `source_text` is the
-/// whole patch buffer, used to map rowan byte ranges back to LSP
-/// `Range`s. One symbol per field; the field name is the symbol name
-/// and the field value is its `detail` (truncated for multi-line
-/// values).
+/// parsed deb822 of the header portion only; `src` carries the whole
+/// patch buffer plus its line index, used to map rowan byte ranges
+/// back to LSP `Range`s. One symbol per field; the field name is
+/// the symbol name and the field value is its `detail` (truncated
+/// for multi-line values).
 #[allow(deprecated)] // DocumentSymbol::deprecated is required by the LSP type
 pub fn generate_document_symbols(
     header: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     let Some(paragraph) = header.paragraphs().next() else {
@@ -28,7 +28,7 @@ pub fn generate_document_symbols(
             continue;
         };
         let entry_range = entry.syntax().text_range();
-        let range = text_range_to_lsp_range(source_text, entry_range);
+        let range = src.text_range_to_lsp_range(entry_range);
         let detail = entry.value().as_str().to_string();
         let detail = first_line_truncated(&detail, 80);
         symbols.push(DocumentSymbol {
@@ -65,7 +65,8 @@ mod tests {
     fn run(text: &str) -> Vec<DocumentSymbol> {
         let header_end = dep3::lossless::header_end(text);
         let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
-        generate_document_symbols(&parsed.tree(), text)
+        let idx = crate::position::LineIndex::new(text);
+        generate_document_symbols(&parsed.tree(), Source::new(text, &idx))
     }
 
     #[test]

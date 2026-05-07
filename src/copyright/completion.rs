@@ -4,6 +4,7 @@ use debian_copyright::LicenseExpr;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use super::fields::{get_common_licenses, COPYRIGHT_FIELDS};
+use crate::position::Source;
 
 /// Get completions for a copyright file at the given cursor position.
 ///
@@ -11,7 +12,7 @@ use super::fields::{get_common_licenses, COPYRIGHT_FIELDS};
 /// completions for the current field; otherwise returns field name completions.
 pub fn get_completions(
     parsed: &debian_copyright::lossless::Parse,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Vec<CompletionItem> {
     let copyright = parsed.tree();
@@ -37,25 +38,23 @@ pub fn get_completions(
     }
     let mut completions = crate::deb822::completion::get_completions(
         deb822,
-        source_text,
+        src,
         position,
         COPYRIGHT_FIELDS,
         |field_name, prefix| get_field_value_completions(field_name, prefix, &file_licenses),
     );
 
     // Offer snippet completions at positions where new paragraphs can be started
-    let context = crate::deb822::completion::get_cursor_context(deb822, source_text, position);
+    let context = crate::deb822::completion::get_cursor_context(deb822, src, position);
     match context {
         Some(crate::deb822::completion::CursorContext::StartOfLine) => {
-            if source_text.trim().is_empty() {
+            if src.text.trim().is_empty() {
                 completions.extend(get_snippet_completions());
             } else {
                 completions.extend(get_paragraph_snippet_completions());
             }
         }
-        Some(crate::deb822::completion::CursorContext::FieldKey)
-            if source_text.trim().is_empty() =>
-        {
+        Some(crate::deb822::completion::CursorContext::FieldKey) if src.text.trim().is_empty() => {
             completions.extend(get_snippet_completions());
         }
         _ => {}
@@ -299,7 +298,8 @@ mod tests {
         let parsed = parse(text);
 
         // Cursor on field key -> field completions only (no license names mixed in)
-        let completions = get_completions(&parsed, text, Position::new(0, 3));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 3));
 
         assert!(completions
             .iter()
@@ -316,7 +316,8 @@ mod tests {
     fn test_field_completions_have_correct_properties() {
         let text = "";
         let parsed = parse(text);
-        let completions = get_completions(&parsed, text, Position::new(0, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 0));
 
         let field_completions: Vec<_> = completions
             .iter()
@@ -356,7 +357,8 @@ mod tests {
         let parsed = parse(text);
 
         // Cursor on License field value -> license name completions
-        let completions = get_completions(&parsed, text, Position::new(0, 9));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 9));
         assert!(!completions.is_empty());
 
         for completion in &completions {
@@ -382,7 +384,8 @@ mod tests {
         let text = "License: GPL\n";
         let parsed = parse(text);
 
-        let completions = get_completions(&parsed, text, Position::new(0, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 12));
 
         // All results should match the GPL prefix
         for completion in &completions {
@@ -399,7 +402,8 @@ mod tests {
         let text = "Format: \n";
         let parsed = parse(text);
 
-        let completions = get_completions(&parsed, text, Position::new(0, 8));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 8));
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].label, DEP5_FORMAT_URL);
         assert_eq!(completions[0].kind, Some(CompletionItemKind::VALUE));
@@ -410,7 +414,8 @@ mod tests {
         let text = "Format: something-else\n";
         let parsed = parse(text);
 
-        let completions = get_completions(&parsed, text, Position::new(0, 22));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 22));
         assert!(completions.is_empty());
     }
 
@@ -419,7 +424,8 @@ mod tests {
         let text = "Comment: \n";
         let parsed = parse(text);
 
-        let completions = get_completions(&parsed, text, Position::new(0, 9));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 9));
         assert!(completions.is_empty());
     }
 
@@ -437,7 +443,8 @@ Copyright: 2024 Bob
 License: \n";
         let parsed = parse(text);
 
-        let completions = get_completions(&parsed, text, Position::new(8, 9));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(8, 9));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"CustomLicense-1.0"),
@@ -457,7 +464,8 @@ License: MIT \n";
         let parsed = parse(text);
 
         // Cursor after "MIT " — should offer "or" and "and"
-        let completions = get_completions(&parsed, text, Position::new(4, 13));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(4, 13));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"or"),
@@ -486,7 +494,8 @@ License: MIT or \n";
         let parsed = parse(text);
 
         // Cursor after "MIT or " — should offer license names
-        let completions = get_completions(&parsed, text, Position::new(4, 16));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(4, 16));
         assert!(!completions.is_empty());
 
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -512,7 +521,8 @@ License: GPL-2+ or MI\n";
         let parsed = parse(text);
 
         // Cursor after "GPL-2+ or MI" — should offer MIT from file
-        let completions = get_completions(&parsed, text, Position::new(8, 21));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(8, 21));
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"MIT"),
@@ -537,7 +547,12 @@ Files: lib/*
 Copyright: 2024 Bob
 License: \n";
         let parsed2 = parse(text_with_empty);
-        let completions = get_completions(&parsed2, text_with_empty, Position::new(8, 9));
+        let idx = crate::position::LineIndex::new(text_with_empty);
+        let completions = get_completions(
+            &parsed2,
+            Source::new(text_with_empty, &idx),
+            Position::new(8, 9),
+        );
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"GPL-2+"),
@@ -587,7 +602,8 @@ License: \n";
     fn test_snippet_completions_on_empty_file() {
         let text = "";
         let parsed = parse(text);
-        let completions = get_completions(&parsed, text, Position::new(0, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 0));
 
         let mut snippet_labels: Vec<_> = completions
             .iter()
@@ -619,7 +635,8 @@ License: \n";
     fn test_snippet_completions_on_whitespace_only_file() {
         let text = "  \n\n";
         let parsed = parse(text);
-        let completions = get_completions(&parsed, text, Position::new(2, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(2, 0));
 
         let mut snippet_labels: Vec<_> = completions
             .iter()
@@ -644,7 +661,8 @@ License: \n";
         let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\n";
         let parsed = parse(text);
         // Cursor at start of blank line after header paragraph
-        let completions = get_completions(&parsed, text, Position::new(1, 0));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(1, 0));
 
         let mut snippet_labels: Vec<_> = completions
             .iter()
@@ -660,7 +678,8 @@ License: \n";
     fn test_no_snippets_on_field_value() {
         let text = "Format: \n";
         let parsed = parse(text);
-        let completions = get_completions(&parsed, text, Position::new(0, 8));
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&parsed, Source::new(text, &idx), Position::new(0, 8));
 
         let snippet_count = completions
             .iter()

@@ -10,14 +10,14 @@ use debian_control::lossless::relations::Relations;
 use text_size::TextSize;
 use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel};
 
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 
 /// Create an inlay hint at the given source offset with the given label.
 ///
 /// Converts the offset to an LSP position and constructs the hint with
 /// standard padding and kind settings.
-fn make_hint(source_text: &str, offset: TextSize, label: String) -> InlayHint {
-    let lsp_range = text_range_to_lsp_range(source_text, text_size::TextRange::new(offset, offset));
+fn make_hint(src: Source<'_>, offset: TextSize, label: String) -> InlayHint {
+    let lsp_range = src.text_range_to_lsp_range(text_size::TextRange::new(offset, offset));
     InlayHint {
         position: lsp_range.start,
         label: InlayHintLabel::String(label),
@@ -87,12 +87,12 @@ pub(super) fn joined_offset_to_source_offset(
 /// Collects relations and substvars from all paragraphs within the given range.
 fn extract_hint_data(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
+    src: Source<'_>,
     range: &tower_lsp_server::ls_types::Range,
 ) -> HintData {
     let control = parsed.tree();
 
-    let Some(text_range) = crate::position::try_lsp_range_to_text_range(source_text, range) else {
+    let Some(text_range) = src.try_lsp_range_to_text_range(range) else {
         return HintData {
             relations: Vec::new(),
             substvars: Vec::new(),
@@ -291,12 +291,12 @@ pub struct HintContext<'a> {
 /// `workspace/inlayHint/refresh` to the client.
 pub async fn generate_inlay_hints(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
+    src: Source<'_>,
     range: &tower_lsp_server::ls_types::Range,
     ctx: &HintContext<'_>,
 ) -> (Vec<InlayHint>, Vec<String>) {
     // Extract info synchronously (CST types are not Send)
-    let data = extract_hint_data(parsed, source_text, range);
+    let data = extract_hint_data(parsed, src, range);
 
     if data.relations.is_empty() && data.substvars.is_empty() {
         return (Vec::new(), Vec::new());
@@ -319,7 +319,7 @@ pub async fn generate_inlay_hints(
                 if !versions.is_empty() {
                     // Real package with version info — show archive versions
                     if let Some(label) = format_version_hint(versions) {
-                        hints.push(make_hint(source_text, rel.relation_end, label));
+                        hints.push(make_hint(src, rel.relation_end, label));
                     }
                 } else if let Some(providers) = cached_providers {
                     // Versions cached but empty = virtual package; show providers
@@ -327,7 +327,7 @@ pub async fn generate_inlay_hints(
                     if !providers.is_empty() {
                         let label =
                             format_provider_hint(providers, &*cache, &mut uncached_packages, 80);
-                        hints.push(make_hint(source_text, rel.relation_end, label));
+                        hints.push(make_hint(src, rel.relation_end, label));
                     }
                 }
                 // else: versions empty, no providers cached — will be loaded in background
@@ -346,11 +346,7 @@ pub async fn generate_inlay_hints(
     // Substvar hints
     for sv in &data.substvars {
         if let Some(value) = ctx.resolved_substvars.get(&sv.name) {
-            hints.push(make_hint(
-                source_text,
-                sv.substvar_end,
-                format!("[= {}]", value),
-            ));
+            hints.push(make_hint(src, sv.substvar_end, format!("[= {}]", value)));
         }
     }
 
@@ -400,9 +396,10 @@ Maintainer: Test <test@example.com>
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -450,9 +447,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -503,9 +501,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -554,9 +553,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -606,9 +606,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -647,9 +648,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -697,9 +699,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &HashMap::new()),
         )
@@ -742,9 +745,10 @@ Description: A test
             end: tower_lsp_server::ls_types::Position::new(5, 0),
         };
 
+        let idx = crate::position::LineIndex::new(content);
         let (hints, _uncached) = generate_inlay_hints(
             &parsed,
-            content,
+            Source::new(content, &idx),
             &range,
             &default_ctx(&shared_cache, &resolved),
         )

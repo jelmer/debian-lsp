@@ -4,10 +4,9 @@
 //! - debhelper-compat: shows compat level info from dh_assistant
 //! - Vcs-Git: shows packaged version from UDD vcswatch
 
+use crate::position::Source;
 use debian_control::relations::VersionConstraint;
 use tower_lsp_server::ls_types::{CodeLens, Command, Range};
-
-use crate::position::text_range_to_lsp_range;
 
 /// Command name for opening a URL via `window/showDocument`.
 pub const OPEN_URL_COMMAND: &str = "debian-lsp.openUrl";
@@ -156,7 +155,7 @@ struct LensData {
 /// Extract Standards-Version, debhelper-compat, and package fields from a parsed control file.
 fn extract_lens_data(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
+    src: Source<'_>,
 ) -> LensData {
     let control = parsed.tree();
     let mut standards_versions = Vec::new();
@@ -173,7 +172,7 @@ fn extract_lens_data(
             if field_name.eq_ignore_ascii_case("Source") {
                 let value = entry.value().trim().to_string();
                 if !value.is_empty() {
-                    let range = text_range_to_lsp_range(source_text, entry.text_range());
+                    let range = src.text_range_to_lsp_range(entry.text_range());
                     source_package = Some(SourcePackageField { name: value, range });
                 }
                 continue;
@@ -182,7 +181,7 @@ fn extract_lens_data(
             if field_name.eq_ignore_ascii_case("Package") {
                 let value = entry.value().trim().to_string();
                 if !value.is_empty() {
-                    let range = text_range_to_lsp_range(source_text, entry.text_range());
+                    let range = src.text_range_to_lsp_range(entry.text_range());
                     binary_packages.push(BinaryPackageField { name: value, range });
                 }
                 continue;
@@ -191,7 +190,7 @@ fn extract_lens_data(
             if field_name.eq_ignore_ascii_case("Standards-Version") {
                 let value = entry.value().trim().to_string();
                 if !value.is_empty() {
-                    let range = text_range_to_lsp_range(source_text, entry.text_range());
+                    let range = src.text_range_to_lsp_range(entry.text_range());
                     standards_versions.push(StandardsVersionField { value, range });
                 }
                 continue;
@@ -228,10 +227,9 @@ fn extract_lens_data(
                                     rel_start,
                                 )
                             {
-                                let range = text_range_to_lsp_range(
-                                    source_text,
-                                    text_size::TextRange::new(abs_start, abs_end),
-                                );
+                                let range = src.text_range_to_lsp_range(text_size::TextRange::new(
+                                    abs_start, abs_end,
+                                ));
                                 debhelper_compats.push(DebhelperCompatField { range });
                             }
                         }
@@ -252,7 +250,7 @@ fn extract_lens_data(
 /// Find the Vcs-Git field in a parsed control file and return its URL and range.
 fn find_vcs_git_field(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Option<(String, Range)> {
     let control = parsed.clone().to_result().ok()?;
     let source = control.source()?;
@@ -267,7 +265,7 @@ fn find_vcs_git_field(
         .find(|e| e.key().is_some_and(|k| k.eq_ignore_ascii_case("Vcs-Git")))?
         .text_range();
 
-    let range = text_range_to_lsp_range(source_text, entry_range);
+    let range = src.text_range_to_lsp_range(entry_range);
     Some((parsed_vcs.repo_url, range))
 }
 
@@ -315,10 +313,10 @@ impl UncachedLensData {
 /// and local, so it is always awaited inline.
 pub async fn generate_code_lenses(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-    source_text: &str,
+    src: Source<'_>,
     ctx: &LensContext<'_>,
 ) -> (Vec<CodeLens>, UncachedLensData) {
-    let data = extract_lens_data(parsed, source_text);
+    let data = extract_lens_data(parsed, src);
     let mut lenses = Vec::new();
     let mut uncached = UncachedLensData::default();
 
@@ -366,7 +364,7 @@ pub async fn generate_code_lenses(
     }
 
     // Vcs-Git lens (cache-only)
-    if let Some((url, range)) = find_vcs_git_field(parsed, source_text) {
+    if let Some((url, range)) = find_vcs_git_field(parsed, src) {
         let cache = ctx.vcswatch_cache.read().await;
         let version = cache
             .get_cached_version_for_url(&url)
@@ -522,7 +520,9 @@ mod tests {
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "latest: 4.7.3");
@@ -559,7 +559,9 @@ mod tests {
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 0);
     }
@@ -601,7 +603,9 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         let title = &lenses[0].command.as_ref().unwrap().title;
@@ -657,7 +661,9 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 2);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "latest: 4.7.3");
@@ -698,7 +704,9 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "git: 1.1.0-1");
@@ -731,7 +739,9 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "git: 2.0-1");
@@ -760,7 +770,9 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 0);
     }
@@ -800,7 +812,9 @@ Maintainer: Test <test@example.com>
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "3 open bugs");
@@ -849,7 +863,9 @@ Description: Foo library
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 2);
         assert_eq!(
@@ -908,7 +924,9 @@ Description: Foo library
             popcon_cache: &popcon_cache,
             rdeps_cache: &rdeps_cache,
         };
-        let (lenses, _uncached) = generate_code_lenses(&parsed, content, &ctx).await;
+        let idx = crate::position::LineIndex::new(content);
+        let (lenses, _uncached) =
+            generate_code_lenses(&parsed, Source::new(content, &idx), &ctx).await;
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "2 open bugs");
