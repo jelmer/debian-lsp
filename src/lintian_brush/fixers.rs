@@ -14,7 +14,9 @@ use ::lintian_brush::diagnostic::{
     Action, ActionPlan, ChangelogAction, Deb822Action, Dep3Action, Diagnostic as LbDiagnostic,
     FilesystemAction, IndentPattern, ParagraphSelector, WatchAction, YamlAction, YamlPathComponent,
 };
-use ::lintian_brush::workspace::{iter_detectors, ChangelogAspect, DetectorCost, Trigger};
+use ::lintian_brush::workspace::{
+    iter_detectors, ChangelogAspect, DetectorCost, Trigger, WatchAspect,
+};
 use ::lintian_brush::{FixerPreferences, Version};
 use debian_changelog::ChangeLog;
 use debian_control::lossless::Control;
@@ -79,6 +81,7 @@ fn detector_matches(
     deb822: Option<&deb822_lossless::Deb822>,
     changelog: Option<&ChangeLog>,
     yaml: Option<&yaml_edit::YamlFile>,
+    watch: Option<&debian_watch::parse::ParsedWatchFile>,
     changed_ranges: Option<&[rowan::TextRange]>,
 ) -> bool {
     let triggers = detector.triggers();
@@ -88,7 +91,7 @@ fn detector_matches(
     }
     triggers
         .iter()
-        .any(|t| trigger_matches(t, rel, deb822, changelog, yaml, changed_ranges))
+        .any(|t| trigger_matches(t, rel, deb822, changelog, yaml, watch, changed_ranges))
 }
 
 /// Does `trigger` match an edit on `rel` whose changed ranges are
@@ -102,6 +105,7 @@ fn trigger_matches(
     deb822: Option<&deb822_lossless::Deb822>,
     changelog: Option<&ChangeLog>,
     yaml: Option<&yaml_edit::YamlFile>,
+    watch: Option<&debian_watch::parse::ParsedWatchFile>,
     changed_ranges: Option<&[rowan::TextRange]>,
 ) -> bool {
     match trigger {
@@ -132,11 +136,15 @@ fn trigger_matches(
             if rel != Path::new("debian/watch") {
                 return false;
             }
-            // We don't currently narrow watch triggers by aspect — the
-            // line-based vs deb822 split makes that fiddly. Match any
-            // aspect if the file matches.
-            let _ = aspect;
-            true
+            let Some(watch) = watch else {
+                return true;
+            };
+            let Some(ranges) = changed_ranges else {
+                return true;
+            };
+            ranges
+                .iter()
+                .any(|r| watch_range_touches_aspect(watch, *r, *aspect))
         }
         Trigger::Changelog(aspect) => {
             if rel != Path::new("debian/changelog") {
@@ -299,6 +307,49 @@ fn changelog_range_touches_aspect(
         }
     }
     false
+}
+
+/// Does the changed `range` overlap any part of the watch file that
+/// corresponds to `aspect`? Conservative: when in doubt, return true.
+fn watch_range_touches_aspect(
+    watch: &debian_watch::parse::ParsedWatchFile,
+    range: rowan::TextRange,
+    aspect: WatchAspect,
+) -> bool {
+    match aspect {
+        WatchAspect::Version => watch
+            .version_range()
+            .map(|r| ranges_overlap(r, range))
+            .unwrap_or(false),
+        WatchAspect::Source => watch.entries().any(|e| {
+            e.url_range()
+                .map(|r| ranges_overlap(r, range))
+                .unwrap_or(false)
+        }),
+        WatchAspect::MatchingPattern => watch.entries().any(|e| {
+            e.matching_pattern_range()
+                .map(|r| ranges_overlap(r, range))
+                .unwrap_or(false)
+        }),
+        WatchAspect::Template(kind) => watch.entries().any(|e| {
+            let Some(template_range) = e.template_range() else {
+                return false;
+            };
+            if !ranges_overlap(template_range, range) {
+                return false;
+            }
+            // A bare "*" matches any kind.
+            if kind == "*" {
+                return true;
+            }
+            e.template_kind().as_deref() == Some(kind)
+        }),
+        WatchAspect::Option(name) => watch.entries().any(|e| {
+            e.option_range(name)
+                .map(|r| ranges_overlap(r, range))
+                .unwrap_or(false)
+        }),
+    }
 }
 
 /// Does the changed `range` touch a top-level mapping entry in `yaml`
@@ -483,6 +534,7 @@ pub fn run_diagnostics_for_uri(
     let deb822_parse = parse_for_trigger_filtering_deb822(&ws, &rel);
     let changelog_parse = parse_for_trigger_filtering_changelog(&ws, &rel);
     let yaml_parse = parse_for_trigger_filtering_yaml(&ws, &rel);
+    let watch_parse = parse_for_trigger_filtering_watch(&ws, &rel);
     let max_cost = phase_max_cost(phase);
 
     let mut out = Vec::new();
@@ -496,6 +548,7 @@ pub fn run_diagnostics_for_uri(
             deb822_parse.as_ref(),
             changelog_parse.as_ref(),
             yaml_parse.as_ref(),
+            watch_parse.as_ref(),
             changed_ranges,
         ) {
             continue;
@@ -577,6 +630,17 @@ fn parse_for_trigger_filtering_yaml(
 ) -> Option<yaml_edit::YamlFile> {
     if rel == Path::new("debian/upstream/metadata") {
         ws.parsed_yaml_for(rel)
+    } else {
+        None
+    }
+}
+
+fn parse_for_trigger_filtering_watch(
+    ws: &LspDebianWorkspace<'_>,
+    rel: &Path,
+) -> Option<debian_watch::parse::ParsedWatchFile> {
+    if rel == Path::new("debian/watch") {
+        ws.parsed_watch_for(rel)
     } else {
         None
     }
