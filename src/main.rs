@@ -158,6 +158,20 @@ struct Backend {
 }
 
 impl Backend {
+    /// Acquire a clone of the workspace under a brief Mutex lock.
+    ///
+    /// Salsa's `Storage` clones cheaply (Arc bump on the shared
+    /// ingredient cache); the only non-trivial part is the
+    /// `files: HashMap<Uri, SourceFile>` clone. Holding the lock
+    /// only long enough to clone lets other handlers (including
+    /// writers) acquire it for their own brief locks while this
+    /// handler runs the heavy work — parsing, diagnostics, code
+    /// actions — on its own clone. Salsa storage is shared, so the
+    /// clone always sees the latest set inputs.
+    async fn workspace_clone(&self) -> Workspace {
+        self.workspace.lock().await.clone()
+    }
+
     fn collect_diagnostics(
         source_file: workspace::SourceFile,
         file_type: FileType,
@@ -466,11 +480,17 @@ impl LanguageServer for Backend {
             return;
         };
 
-        let mut workspace = self.workspace.lock().await;
-        let source_file = workspace.update_file(
-            params.text_document.uri.clone(),
-            params.text_document.text.clone(),
-        );
+        // Hold the workspace lock only for the input update; clone
+        // the salsa Storage and run diagnostics on the clone so other
+        // requests can take the lock concurrently.
+        let (workspace, source_file) = {
+            let mut workspace = self.workspace.lock().await;
+            let source_file = workspace.update_file(
+                params.text_document.uri.clone(),
+                params.text_document.text.clone(),
+            );
+            (workspace.clone(), source_file)
+        };
 
         let mut files = self.files.lock().await;
         files.insert(
@@ -491,7 +511,6 @@ impl LanguageServer for Backend {
 
         let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
         drop(files);
-        drop(workspace);
 
         if let Some(diagnostics) = diagnostics {
             self.client
@@ -525,48 +544,56 @@ impl LanguageServer for Backend {
             return;
         }
 
-        // Apply incremental content changes to the current text
-        let mut workspace = self.workspace.lock().await;
-        // Owned String here because we splice content_changes into it
-        // before handing back to salsa via update_file.
-        let mut text: String = file_info
-            .map(|info| workspace.source_text(info.source_file).to_string())
-            .unwrap_or_default();
+        // Apply incremental content changes to the current text.
+        //
+        // The Mutex is held only for the splice + `update_file`. The
+        // diagnostics phase below runs on a Workspace clone so other
+        // requests can take the lock concurrently — a salsa `Storage`
+        // clone is a cheap Arc bump and shares the cache with the
+        // original.
+        let (workspace, source_file) = {
+            let mut workspace = self.workspace.lock().await;
+            // Owned String here because we splice content_changes into it
+            // before handing back to salsa via update_file.
+            let mut text: String = file_info
+                .map(|info| workspace.source_text(info.source_file).to_string())
+                .unwrap_or_default();
 
-        for change in &params.content_changes {
-            if let Some(range) = &change.range {
-                // The text mutates as we apply each change, so we
-                // build a fresh LineIndex per change. Avoiding this
-                // would mean tracking newline insertions/deletions
-                // through the splices — not worth the complexity for
-                // the rare case of multiple content changes per
-                // did_change.
-                let idx = LineIndex::new(&text);
-                if let Some(text_range) =
-                    Source::new(&text, &idx).try_lsp_range_to_text_range(range)
-                {
-                    let start: usize = text_range.start().into();
-                    let end: usize = text_range.end().into();
-                    text.replace_range(start..end, &change.text);
+            for change in &params.content_changes {
+                if let Some(range) = &change.range {
+                    // The text mutates as we apply each change, so we
+                    // build a fresh LineIndex per change. Avoiding this
+                    // would mean tracking newline insertions/deletions
+                    // through the splices — not worth the complexity for
+                    // the rare case of multiple content changes per
+                    // did_change.
+                    let idx = LineIndex::new(&text);
+                    if let Some(text_range) =
+                        Source::new(&text, &idx).try_lsp_range_to_text_range(range)
+                    {
+                        let start: usize = text_range.start().into();
+                        let end: usize = text_range.end().into();
+                        text.replace_range(start..end, &change.text);
+                    }
+                } else {
+                    // Full replacement
+                    text = change.text.clone();
                 }
-            } else {
-                // Full replacement
-                text = change.text.clone();
             }
-        }
 
-        let source_file = workspace.update_file(params.text_document.uri.clone(), text);
-        files.insert(
-            params.text_document.uri.clone(),
-            FileInfo {
-                source_file,
-                file_type,
-            },
-        );
+            let source_file = workspace.update_file(params.text_document.uri.clone(), text);
+            files.insert(
+                params.text_document.uri.clone(),
+                FileInfo {
+                    source_file,
+                    file_type,
+                },
+            );
+            (workspace.clone(), source_file)
+        };
 
         let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
         drop(files);
-        drop(workspace);
 
         if let Some(diagnostics) = diagnostics {
             self.client
@@ -593,7 +620,7 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file_info.source_file);
         let idx = workspace.get_line_index(file_info.source_file);
         let src = Source::new(&source_text, &idx);
@@ -617,7 +644,7 @@ impl LanguageServer for Backend {
 
         let completions = match file_info {
             Some((FileType::Control, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
@@ -657,7 +684,7 @@ impl LanguageServer for Backend {
                 }
             }
             Some((FileType::Copyright, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
@@ -665,7 +692,7 @@ impl LanguageServer for Backend {
                 copyright::get_completions(&parsed, src, position)
             }
             Some((FileType::Watch, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let parsed = workspace.get_parsed_watch(source_file);
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -682,7 +709,7 @@ impl LanguageServer for Backend {
             }
             Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
             Some((FileType::Changelog, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
@@ -699,7 +726,7 @@ impl LanguageServer for Backend {
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
@@ -710,12 +737,12 @@ impl LanguageServer for Backend {
                 lintian_overrides::get_completions(&parsed, src, position, tags)
             }
             Some((FileType::SourceOptions, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 source_options::get_completions(&uri, position, &source_text)
             }
             Some((FileType::UpstreamMetadata, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let project_root =
@@ -730,14 +757,14 @@ impl LanguageServer for Backend {
                 .await
             }
             Some((FileType::Rules, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_rules(source_file);
                 let makefile = parsed.tree();
                 rules::get_completions(&makefile, &source_text, position)
             }
             Some((FileType::PatchesSeries, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let parsed = workspace.get_parsed_patches_series(source_file);
                 patches_series::get_completions(&uri, &parsed, &source_text, position)
@@ -745,7 +772,7 @@ impl LanguageServer for Backend {
             // Patch completions cover the DEP-3 header at the top of
             // the file. The unified-diff body is left to diff-lsp.
             Some((FileType::Patch, source_file)) => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
@@ -767,7 +794,7 @@ impl LanguageServer for Backend {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let files = self.files.lock().await;
 
         let file_info = match files.get(&params.text_document.uri) {
@@ -940,7 +967,7 @@ impl LanguageServer for Backend {
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let files = self.files.lock().await;
 
         let file_info = match files.get(&params.text_document.uri) {
@@ -969,7 +996,7 @@ impl LanguageServer for Backend {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let files = self.files.lock().await;
 
         let uri = &params.text_document_position.text_document.uri;
@@ -1083,7 +1110,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let files = self.files.lock().await;
 
         let file = match files.get(uri) {
@@ -1181,7 +1208,7 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
         let idx = workspace.get_line_index(file.source_file);
         let src = Source::new(&source_text, &idx);
@@ -1223,7 +1250,7 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
         let idx = workspace.get_line_index(file.source_file);
         let src = Source::new(&source_text, &idx);
@@ -1275,7 +1302,7 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
         let idx = workspace.get_line_index(file.source_file);
         let src = Source::new(&source_text, &idx);
@@ -1343,7 +1370,7 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
 
         match file.file_type {
@@ -1420,7 +1447,7 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
         let idx = workspace.get_line_index(file.source_file);
         let src = Source::new(&source_text, &idx);
@@ -1511,7 +1538,7 @@ impl LanguageServer for Backend {
 
         match file.file_type {
             FileType::Control => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
                 let parsed = workspace.get_parsed_control(file.source_file);
@@ -1572,7 +1599,7 @@ impl LanguageServer for Backend {
                 }
             }
             FileType::Copyright => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
                 let parsed = workspace.get_parsed_copyright(file.source_file);
@@ -1616,7 +1643,7 @@ impl LanguageServer for Backend {
 
         match file.file_type {
             FileType::Changelog => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
                 let src = Source::new(&source_text, &idx);
@@ -1629,7 +1656,7 @@ impl LanguageServer for Backend {
                 }
             }
             FileType::Control => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
                 let parsed = workspace.get_parsed_control(file.source_file);
@@ -1690,7 +1717,7 @@ impl LanguageServer for Backend {
         };
         drop(files);
 
-        let workspace = self.workspace.lock().await;
+        let workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
         let idx = workspace.get_line_index(file.source_file);
         let src = Source::new(&source_text, &idx);
@@ -1748,7 +1775,7 @@ impl LanguageServer for Backend {
 
         match file.file_type {
             FileType::UpstreamMetadata => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
                 let yaml_file = parsed.tree();
@@ -1780,7 +1807,7 @@ impl LanguageServer for Backend {
 
         match file.file_type {
             FileType::Control => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
                 let src = Source::new(&source_text, &idx);
@@ -1806,7 +1833,7 @@ impl LanguageServer for Backend {
 
         match file.file_type {
             FileType::Control => {
-                let workspace = self.workspace.lock().await;
+                let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
                 let src = Source::new(&source_text, &idx);
