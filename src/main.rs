@@ -1328,7 +1328,7 @@ impl LanguageServer for Backend {
                 ))
             }
             FileType::TestsControl => {
-                let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                let deb822 = workspace.get_parsed_deb822(file.source_file).tree();
                 Ok(deb822::on_type_formatting::on_type_formatting(
                     &deb822,
                     &source_text,
@@ -1341,7 +1341,7 @@ impl LanguageServer for Backend {
                 let wf = parsed.to_watch_file();
                 match &wf {
                     debian_watch::parse::ParsedWatchFile::Deb822(_) => {
-                        let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                        let deb822 = workspace.get_parsed_deb822(file.source_file).tree();
                         Ok(deb822::on_type_formatting::on_type_formatting(
                             &deb822,
                             &source_text,
@@ -1399,7 +1399,7 @@ impl LanguageServer for Backend {
                 let wf = parsed.to_watch_file();
                 match &wf {
                     debian_watch::parse::ParsedWatchFile::Deb822(_) => {
-                        let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                        let deb822 = workspace.get_parsed_deb822(file.source_file).tree();
                         let wrap_paragraph =
                             |p: &deb822_lossless::Paragraph| -> deb822_lossless::Paragraph {
                                 p.wrap_and_sort(
@@ -1429,7 +1429,7 @@ impl LanguageServer for Backend {
                 }
             }
             FileType::TestsControl => {
-                let deb822 = deb822_lossless::Deb822::parse(&source_text).tree();
+                let deb822 = workspace.get_parsed_deb822(file.source_file).tree();
                 let wrap_paragraph =
                     |p: &deb822_lossless::Paragraph| -> deb822_lossless::Paragraph {
                         p.wrap_and_sort(
