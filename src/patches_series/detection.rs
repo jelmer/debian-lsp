@@ -9,6 +9,24 @@ pub fn is_patches_series_file(uri: &Uri) -> bool {
     path.ends_with("/debian/patches/series")
 }
 
+/// Check if a URI points at a quilt patch file under `debian/patches/`.
+/// Excludes the `series` file itself (which is line-listed, not a
+/// patch). Patches may live in subdirectories (e.g. `upstream/`) so we
+/// match any path containing `/debian/patches/` with at least one
+/// component after it, where the final component isn't `series`.
+pub fn is_patch_file(uri: &Uri) -> bool {
+    let path = uri.as_str();
+    let Some(after) = path.split("/debian/patches/").nth(1) else {
+        return false;
+    };
+    if after.is_empty() {
+        return false;
+    }
+    // Final component must not be `series`.
+    let last = after.rsplit('/').next().unwrap_or("");
+    last != "series"
+}
+
 // Get all files in a debian/patches folder
 pub fn list_patch_files(uri: &Uri) -> HashSet<String> {
     let Some(path) = uri.to_file_path() else {
@@ -76,6 +94,31 @@ mod tests {
                 "Should not detect as tests/patches/series file: {}",
                 path
             );
+        }
+    }
+
+    #[test]
+    fn test_is_patch_file() {
+        let patches = [
+            "file:///pkg/debian/patches/fix-arm.patch",
+            "file:///pkg/debian/patches/fix-mips.diff",
+            "file:///pkg/debian/patches/001-no-extension",
+            "file:///pkg/debian/patches/upstream/fix-leak.patch",
+        ];
+        let non_patches = [
+            "file:///pkg/debian/patches/series",
+            "file:///pkg/debian/patches/",
+            "file:///pkg/debian/control",
+            "file:///pkg/debian/patches",
+            "file:///pkg/patches/fix-arm.patch",
+        ];
+        for path in patches {
+            let uri = path.parse::<Uri>().unwrap();
+            assert!(is_patch_file(&uri), "expected patch: {}", path);
+        }
+        for path in non_patches {
+            let uri = path.parse::<Uri>().unwrap();
+            assert!(!is_patch_file(&uri), "expected not patch: {}", path);
         }
     }
 

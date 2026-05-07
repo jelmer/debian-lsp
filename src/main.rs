@@ -92,6 +92,9 @@ enum FileType {
     LintianOverrides,
     /// debian/patches/series file
     PatchesSeries,
+    /// A quilt patch file under debian/patches/ (e.g. *.patch / *.diff /
+    /// no-extension entries listed in series).
+    Patch,
 }
 
 impl FileType {
@@ -119,6 +122,8 @@ impl FileType {
             Some(Self::LintianOverrides)
         } else if patches_series::is_patches_series_file(uri) {
             Some(Self::PatchesSeries)
+        } else if patches_series::is_patch_file(uri) {
+            Some(Self::Patch)
         } else {
             None
         }
@@ -172,7 +177,8 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::PatchesSeries => None,
+            | FileType::PatchesSeries
+            | FileType::Patch => None,
         }
     }
 
@@ -707,6 +713,11 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_patches_series(source_file);
                 patches_series::get_completions(&uri, &parsed, &source_text, position)
             }
+            // No completions for patch files yet — they're unified
+            // diffs with optional DEP-3 headers. The DEP-3 header is
+            // the only structured part and gets its own completions
+            // once the dep3 module is wired in.
+            Some((FileType::Patch, _)) => Vec::new(),
             None => Vec::new(),
         };
 
@@ -1091,6 +1102,9 @@ impl LanguageServer for Backend {
                 let patches_series = parsed.tree();
                 patches_series::generate_semantic_tokens(&patches_series, &source_text)
             }
+            // No semantic tokens for patches yet — the DEP-3 header
+            // gets its own tokens once the dep3 module is wired in.
+            FileType::Patch => vec![],
         };
 
         if tokens.is_empty() {
