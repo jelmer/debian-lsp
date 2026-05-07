@@ -27,6 +27,7 @@ mod changelog;
 mod control;
 mod copyright;
 mod deb822;
+mod dep3;
 mod distros;
 mod lintian_overrides;
 mod maintainers;
@@ -92,6 +93,9 @@ enum FileType {
     LintianOverrides,
     /// debian/patches/series file
     PatchesSeries,
+    /// A quilt patch file under debian/patches/ (e.g. *.patch / *.diff /
+    /// no-extension entries listed in series).
+    Patch,
 }
 
 impl FileType {
@@ -119,6 +123,8 @@ impl FileType {
             Some(Self::LintianOverrides)
         } else if patches_series::is_patches_series_file(uri) {
             Some(Self::PatchesSeries)
+        } else if patches_series::is_patch_file(uri) {
+            Some(Self::Patch)
         } else {
             None
         }
@@ -164,6 +170,10 @@ impl Backend {
                 Some(control::diagnostics::get_diagnostics(&source_text, &parsed))
             }
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
+            FileType::Patch => {
+                let source_text = workspace.source_text(source_file);
+                Some(dep3::get_diagnostics(&source_text))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::Changelog
@@ -707,6 +717,13 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_patches_series(source_file);
                 patches_series::get_completions(&uri, &parsed, &source_text, position)
             }
+            // Patch completions cover the DEP-3 header at the top of
+            // the file. The unified-diff body is left to diff-lsp.
+            Some((FileType::Patch, source_file)) => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(source_file);
+                dep3::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -1091,6 +1108,10 @@ impl LanguageServer for Backend {
                 let patches_series = parsed.tree();
                 patches_series::generate_semantic_tokens(&patches_series, &source_text)
             }
+            // Semantic tokens cover the DEP-3 header at the top of
+            // the patch only — the unified-diff body is left to
+            // diff-lsp.
+            FileType::Patch => dep3::generate_semantic_tokens(&source_text),
         };
 
         if tokens.is_empty() {
@@ -1132,6 +1153,7 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_control(file.source_file);
                 control::generate_document_symbols(&parsed, &source_text)
             }
+            FileType::Patch => dep3::generate_document_symbols(&source_text),
             _ => return Ok(None),
         };
 
@@ -1650,6 +1672,7 @@ impl LanguageServer for Backend {
                     None => Ok(None),
                 }
             }
+            FileType::Patch => Ok(dep3::get_hover(&source_text, position)),
             _ => Ok(None),
         }
     }

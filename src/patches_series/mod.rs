@@ -4,7 +4,7 @@ pub mod completion;
 pub mod detection;
 
 pub use completion::*;
-pub use detection::is_patches_series_file;
+pub use detection::{is_patch_file, is_patches_series_file};
 
 pub mod semantic;
 pub use semantic::generate_semantic_tokens;

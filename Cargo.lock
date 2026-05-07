@@ -649,6 +649,7 @@ dependencies = [
  "debian-control",
  "debian-copyright",
  "debian-watch",
+ "dep3",
  "distro-info",
  "futures",
  "launchpadlib",
@@ -699,6 +700,18 @@ dependencies = [
  "lazy-regex",
  "num-bigint",
  "serde",
+]
+
+[[package]]
+name = "dep3"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "385da1b4c02ecd376ce7751ed555b8204e8e139c160f9c870e5a66920010d839"
+dependencies = [
+ "chrono",
+ "deb822-fast",
+ "deb822-lossless",
+ "url",
 ]
 
 [[package]]
