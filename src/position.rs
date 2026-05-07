@@ -117,6 +117,102 @@ impl LineIndex {
         let end = self.try_position_to_offset(text, range.end)?;
         Some(TextRange::new(start, end))
     }
+
+    /// Apply an in-place splice to the index without re-walking the
+    /// whole buffer.
+    ///
+    /// `byte_range` is the range in the *old* text being replaced; the
+    /// caller has already verified it falls on UTF-8 boundaries (e.g.
+    /// because it came from `try_lsp_range_to_text_range`).
+    /// `new_text` is the replacement string.
+    ///
+    /// Cost is O(L + N - i) where L is the number of newlines in
+    /// `new_text` (typically 0 for a single-character edit), N is the
+    /// total number of lines, and i is the line index of the edit.
+    /// For an edit near the start of a 100KB changelog this beats a
+    /// full rebuild (which has to scan all 100KB) substantially; for
+    /// an edit at the end the two are similar.
+    pub fn splice(&mut self, byte_range: std::ops::Range<usize>, new_text: &str) {
+        let start = TextSize::try_from(byte_range.start).unwrap();
+        let end = TextSize::try_from(byte_range.end).unwrap();
+        debug_assert!(start <= end, "splice range start past end");
+        debug_assert!(end <= self.text_len, "splice range past end of buffer");
+
+        // Lines fully before the edit are untouched. The first
+        // potentially-affected line is the one containing `start`,
+        // i.e. the largest `i` with `line_starts[i] <= start`.
+        let first_affected = match self.line_starts.binary_search(&start) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+
+        // Line starts that are strictly inside (start, end] are gone.
+        // A line that starts at exactly `start` is preserved (it's the
+        // line containing the edit). After the edit completes we
+        // re-check whether `start` itself is still a line start.
+        //
+        // We collect the surviving line_starts >= end, shifted by the
+        // delta, into a new vector built in place.
+        let after = self
+            .line_starts
+            .iter()
+            .position(|&s| s > end)
+            .unwrap_or(self.line_starts.len());
+
+        // delta = (new_text.len() - (end - start)), as a signed shift
+        // applied to every line_start at or after `after`.
+        let removed = u32::from(end - start) as i64;
+        let added = new_text.len() as i64;
+        let delta = added - removed;
+
+        // Compute the shifted tail first so we can reuse the existing
+        // allocation below.
+        let mut tail: Vec<TextSize> = self.line_starts[after..]
+            .iter()
+            .map(|&s| {
+                let v = u32::from(s) as i64 + delta;
+                debug_assert!(v >= 0, "shifted line_start underflowed");
+                TextSize::from(v as u32)
+            })
+            .collect();
+
+        // Truncate to the unaffected prefix, then re-add line starts
+        // that appear inside the splice region.
+        self.line_starts.truncate(first_affected + 1);
+
+        // Re-emit the line start at `start` if and only if it was
+        // originally a line start. Specifically: if `start` equals
+        // `line_starts[first_affected]`, the line still begins there;
+        // otherwise the edit happens mid-line and no new line start
+        // is introduced at `start`.
+        // (No action needed — the prefix already includes that entry
+        // when `line_starts[first_affected] == start`.)
+
+        // Walk new_text for newlines; each `\n` at byte j inside
+        // new_text introduces a line start at `start + j + 1`.
+        for (j, b) in new_text.bytes().enumerate() {
+            if b == b'\n' {
+                let s = u32::from(start) + j as u32 + 1;
+                self.line_starts.push(TextSize::from(s));
+            }
+        }
+
+        // Append the shifted tail. The last entry of the prefix and
+        // the first entry of the tail can in principle coincide if
+        // both sides describe the same line start; dedupe to keep the
+        // invariant that line_starts is strictly increasing.
+        if let (Some(&last), Some(&first)) = (self.line_starts.last(), tail.first()) {
+            if last == first {
+                tail.remove(0);
+            }
+        }
+        self.line_starts.extend(tail);
+
+        // Update text_len.
+        let new_len = u32::from(self.text_len) as i64 + delta;
+        debug_assert!(new_len >= 0, "text_len underflowed");
+        self.text_len = TextSize::from(new_len as u32);
+    }
 }
 
 /// Read-only view over a buffer plus its line index.
@@ -310,6 +406,164 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Splice helper used by the tests below: applies `byte_range`
+    /// →`new_text` to both the LineIndex (incrementally) and a
+    /// freshly-rebuilt LineIndex, returning both for comparison.
+    fn splice_and_rebuild(
+        original: &str,
+        byte_range: std::ops::Range<usize>,
+        new_text: &str,
+    ) -> (String, LineIndex, LineIndex) {
+        let mut spliced = LineIndex::new(original);
+        spliced.splice(byte_range.clone(), new_text);
+
+        let mut text = String::from(original);
+        text.replace_range(byte_range, new_text);
+        let rebuilt = LineIndex::new(&text);
+
+        (text, spliced, rebuilt)
+    }
+
+    #[test]
+    fn splice_single_char_insert_no_newline() {
+        // "Source: foo" → "Source: foox"
+        let (_, spliced, rebuilt) = splice_and_rebuild("Source: foo", 11..11, "x");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_single_char_insert_into_middle_of_line() {
+        // Edit on line 2; lines after the edit should shift but
+        // line_starts_count stays the same.
+        let (_, spliced, rebuilt) = splice_and_rebuild("aa\nbb\ncc\n", 4..4, "X");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_insert_newline() {
+        // Insert a newline mid-line. The line count should grow by 1.
+        let (text, spliced, rebuilt) = splice_and_rebuild("aaaa", 2..2, "\n");
+        assert_eq!(text, "aa\naa");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_insert_multiple_newlines() {
+        let (_, spliced, rebuilt) = splice_and_rebuild("aaaa", 2..2, "\n\n\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_delete_inside_line() {
+        let (text, spliced, rebuilt) = splice_and_rebuild("Source: foobar\n", 8..11, "");
+        assert_eq!(text, "Source: bar\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_delete_across_newline() {
+        // Delete "b\nc", merging two lines into one.
+        let (text, spliced, rebuilt) = splice_and_rebuild("aab\ncdd\n", 2..5, "");
+        assert_eq!(text, "aadd\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_replace_spanning_multiple_lines() {
+        // Replace "b\ncc\n" → "X" — collapse 3 lines into 2.
+        let (text, spliced, rebuilt) = splice_and_rebuild("aab\ncc\nde\n", 2..7, "X");
+        assert_eq!(text, "aaXde\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_replace_with_newline_growth() {
+        let (text, spliced, rebuilt) = splice_and_rebuild("aa", 1..1, "X\nY");
+        assert_eq!(text, "aX\nYa");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_at_start_of_buffer() {
+        let (text, spliced, rebuilt) = splice_and_rebuild("aaa\nbbb\n", 0..0, "Z\n");
+        assert_eq!(text, "Z\naaa\nbbb\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_at_end_of_buffer() {
+        let (text, spliced, rebuilt) = splice_and_rebuild("aaa\nbbb\n", 8..8, "Z");
+        assert_eq!(text, "aaa\nbbb\nZ");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_at_exact_line_boundary_keeps_line() {
+        // Insert at byte 4 (start of "bbb" line). The new content
+        // pushes "bbb" forward but shouldn't drop the line break
+        // before it.
+        let (text, spliced, rebuilt) = splice_and_rebuild("aaa\nbbb\n", 4..4, "X");
+        assert_eq!(text, "aaa\nXbbb\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_replacing_just_a_newline() {
+        // Replace "\n" with " " — joins two lines.
+        let (text, spliced, rebuilt) = splice_and_rebuild("aaa\nbbb\n", 3..4, " ");
+        assert_eq!(text, "aaa bbb\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_full_replacement_with_no_newlines() {
+        let (text, spliced, rebuilt) = splice_and_rebuild("aa\nbb\ncc", 0..8, "x");
+        assert_eq!(text, "x");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_into_empty_buffer() {
+        let (text, spliced, rebuilt) = splice_and_rebuild("", 0..0, "hello\nworld\n");
+        assert_eq!(text, "hello\nworld\n");
+        assert_eq!(spliced, rebuilt);
+    }
+
+    #[test]
+    fn splice_chained_edits_match_full_rebuild() {
+        // Apply a sequence of edits to the same index and to a
+        // running rebuilt index. Every step the two should agree.
+        let mut text = String::from("Source: foo\nMaintainer: A B <a@b>\n");
+        let mut spliced = LineIndex::new(&text);
+
+        let edits: &[(std::ops::Range<usize>, &str)] = &[
+            (8..11, "bar"),                // insert mid-line, no newline
+            (12..12, "Section: misc\n"),   // insert a whole new line
+            (0..7, "Package"),             // edit start of buffer
+            (text.len()..text.len(), "X"), // append at end (placeholder, fixed below)
+        ];
+
+        for (range, replacement) in edits {
+            // Re-evaluate the "append at end" range against the
+            // current text length.
+            let range = if range.start == range.end && range.start >= text.len() {
+                text.len()..text.len()
+            } else {
+                range.clone()
+            };
+
+            spliced.splice(range.clone(), replacement);
+            text.replace_range(range, replacement);
+
+            let rebuilt = LineIndex::new(&text);
+            assert_eq!(
+                spliced, rebuilt,
+                "spliced and rebuilt diverged after edits, text={:?}",
+                text
+            );
         }
     }
 }
