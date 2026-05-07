@@ -46,7 +46,7 @@ mod vcswatch;
 mod watch;
 mod workspace;
 
-use position::{text_range_to_lsp_range, try_lsp_range_to_text_range};
+use position::{LineIndex, Source};
 use std::collections::HashMap;
 use tower_lsp_server::ls_types::notification::Notification;
 use workspace::Workspace;
@@ -166,14 +166,18 @@ impl Backend {
         match file_type {
             FileType::Control => {
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(source_file);
-                Some(control::diagnostics::get_diagnostics(&source_text, &parsed))
+                Some(control::diagnostics::get_diagnostics(src, &parsed))
             }
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
             FileType::Patch => {
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
-                Some(dep3::get_diagnostics(&parsed.tree(), &source_text))
+                Some(dep3::get_diagnostics(&parsed.tree(), src))
             }
             FileType::Watch
             | FileType::TestsControl
@@ -531,8 +535,16 @@ impl LanguageServer for Backend {
 
         for change in &params.content_changes {
             if let Some(range) = &change.range {
-                // Incremental change: splice the range
-                if let Some(text_range) = position::try_lsp_range_to_text_range(&text, range) {
+                // The text mutates as we apply each change, so we
+                // build a fresh LineIndex per change. Avoiding this
+                // would mean tracking newline insertions/deletions
+                // through the splices — not worth the complexity for
+                // the rare case of multiple content changes per
+                // did_change.
+                let idx = LineIndex::new(&text);
+                if let Some(text_range) =
+                    Source::new(&text, &idx).try_lsp_range_to_text_range(range)
+                {
                     let start: usize = text_range.start().into();
                     let end: usize = text_range.end().into();
                     text.replace_range(start..end, &change.text);
@@ -583,10 +595,12 @@ impl LanguageServer for Backend {
 
         let workspace = self.workspace.lock().await;
         let source_text = workspace.source_text(file_info.source_file);
+        let idx = workspace.get_line_index(file_info.source_file);
+        let src = Source::new(&source_text, &idx);
         let parsed = workspace.get_parsed_changelog(file_info.source_file);
         let changelog = parsed.tree();
 
-        let edit = changelog::generate_timestamp_update_edit(&changelog, &source_text);
+        let edit = changelog::generate_timestamp_update_edit(&changelog, src);
         Ok(edit.map(|e| vec![e]))
     }
 
@@ -605,11 +619,13 @@ impl LanguageServer for Backend {
             Some((FileType::Control, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(source_file);
                 // Check if cursor is on a field value to try async relationship completions
                 let cursor_context = deb822::completion::get_cursor_context(
                     parsed.tree().as_deb822(),
-                    &source_text,
+                    src,
                     position,
                 );
                 if let Some(deb822::completion::CursorContext::FieldValue {
@@ -637,26 +653,30 @@ impl LanguageServer for Backend {
                 } else {
                     // Not on a field value — get field name completions
                     // (workspace lock and parsed result already held)
-                    control::get_completions(parsed.tree().as_deb822(), &source_text, position)
+                    control::get_completions(parsed.tree().as_deb822(), src, position)
                 }
             }
             Some((FileType::Copyright, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_copyright(source_file);
-                copyright::get_completions(&parsed, &source_text, position)
+                copyright::get_completions(&parsed, src, position)
             }
             Some((FileType::Watch, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let parsed = workspace.get_parsed_watch(source_file);
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let wf = parsed.to_watch_file();
                 match &wf {
                     debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
-                        watch::get_linebased_completions(&uri, wf, &source_text, position)
+                        watch::get_linebased_completions(&uri, wf, src, position)
                     }
                     debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
-                        watch::get_completions_deb822(wf.as_deb822(), &source_text, position)
+                        watch::get_completions_deb822(wf.as_deb822(), src, position)
                     }
                 }
             }
@@ -664,30 +684,30 @@ impl LanguageServer for Backend {
             Some((FileType::Changelog, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_changelog(source_file);
                 drop(workspace);
-                if let Some(bug_completions) = changelog::get_async_bug_completions(
-                    &parsed,
-                    &source_text,
-                    position,
-                    &self.bug_cache,
-                )
-                .await
+                if let Some(bug_completions) =
+                    changelog::get_async_bug_completions(&parsed, src, position, &self.bug_cache)
+                        .await
                 {
                     bug_completions
                 } else {
-                    changelog::get_completions(&parsed, &source_text, position)
+                    changelog::get_completions(&parsed, src, position)
                 }
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 drop(workspace);
                 let mut tag_cache = self.lintian_tag_cache.write().await;
                 let tags = tag_cache.get_tags().await;
-                lintian_overrides::get_completions(&parsed, &source_text, position, tags)
+                lintian_overrides::get_completions(&parsed, src, position, tags)
             }
             Some((FileType::SourceOptions, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -697,11 +717,12 @@ impl LanguageServer for Backend {
             Some((FileType::UpstreamMetadata, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
                 let project_root =
                     Self::find_debian_dir(&uri).and_then(|d| d.parent().map(|p| p.to_path_buf()));
                 drop(workspace);
                 upstream_metadata::get_completions(
-                    &source_text,
+                    Source::new(&source_text, &idx),
                     position,
                     &self.upstream_cache,
                     project_root.as_deref(),
@@ -726,8 +747,10 @@ impl LanguageServer for Backend {
             Some((FileType::Patch, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
                 let (parsed, header_end) = workspace.get_parsed_dep3_header(source_file);
-                dep3::get_completions(&parsed.tree(), header_end, &source_text, position)
+                dep3::get_completions(&parsed.tree(), header_end, src, position)
             }
             None => Vec::new(),
         };
@@ -759,10 +782,12 @@ impl LanguageServer for Backend {
         }
 
         let source_text = workspace.source_text(file_info.source_file);
+        let idx = workspace.get_line_index(file_info.source_file);
+        let src = Source::new(&source_text, &idx);
 
         let mut actions = Vec::new();
 
-        let text_range = try_lsp_range_to_text_range(&source_text, &params.range);
+        let text_range = src.try_lsp_range_to_text_range(&params.range);
 
         match file_info.file_type {
             FileType::Control => {
@@ -774,7 +799,7 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_control(file_info.source_file);
                 if let Some(action) = control::get_wrap_and_sort_action(
                     &params.text_document.uri,
-                    &source_text,
+                    src,
                     &parsed,
                     text_range,
                 ) {
@@ -782,11 +807,9 @@ impl LanguageServer for Backend {
                 }
 
                 // Add binary package action
-                if let Some(action) = control::get_add_binary_package_action(
-                    &params.text_document.uri,
-                    &source_text,
-                    &parsed,
-                ) {
+                if let Some(action) =
+                    control::get_add_binary_package_action(&params.text_document.uri, src, &parsed)
+                {
                     actions.push(action);
                 }
 
@@ -795,7 +818,7 @@ impl LanguageServer for Backend {
                     control::diagnostics::find_field_casing_issues(&parsed, Some(text_range));
                 actions.extend(control::get_field_casing_actions(
                     &params.text_document.uri,
-                    &source_text,
+                    src,
                     issues,
                     &params.context.diagnostics,
                 ));
@@ -809,7 +832,7 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file_info.source_file);
                 if let Some(action) = copyright::get_wrap_and_sort_action(
                     &params.text_document.uri,
-                    &source_text,
+                    src,
                     &parsed,
                     text_range,
                 ) {
@@ -821,7 +844,7 @@ impl LanguageServer for Backend {
                     .find_copyright_field_casing_issues(file_info.source_file, Some(text_range));
                 actions.extend(copyright::get_field_casing_actions(
                     &params.text_document.uri,
-                    &source_text,
+                    src,
                     issues,
                     &params.context.diagnostics,
                 ));
@@ -876,8 +899,7 @@ impl LanguageServer for Backend {
                         .find_unreleased_entries_in_range(file_info.source_file, text_range);
 
                     for info in unreleased_entries {
-                        let lsp_range =
-                            text_range_to_lsp_range(&source_text, info.unreleased_range);
+                        let lsp_range = src.text_range_to_lsp_range(info.unreleased_range);
 
                         let edit = TextEdit {
                             range: lsp_range,
@@ -931,10 +953,11 @@ impl LanguageServer for Backend {
         }
 
         let source_text = workspace.source_text(file_info.source_file);
+        let idx = workspace.get_line_index(file_info.source_file);
+        let src = Source::new(&source_text, &idx);
         let parsed = workspace.get_parsed_control(file_info.source_file);
 
-        let Some(pkg) =
-            control::find_package_name_at_position(&parsed, &source_text, &params.position)
+        let Some(pkg) = control::find_package_name_at_position(&parsed, src, &params.position)
         else {
             return Ok(None);
         };
@@ -960,11 +983,13 @@ impl LanguageServer for Backend {
         }
 
         let source_text = workspace.source_text(file_info.source_file);
+        let idx = workspace.get_line_index(file_info.source_file);
+        let src = Source::new(&source_text, &idx);
         let parsed = workspace.get_parsed_control(file_info.source_file);
 
         let Some(pkg) = control::find_package_name_at_position(
             &parsed,
-            &source_text,
+            src,
             &params.text_document_position.position,
         ) else {
             return Ok(None);
@@ -1024,7 +1049,12 @@ impl LanguageServer for Backend {
                     });
 
                     if let Some((tc_uri, text)) = tests_text {
-                        let edits = control::collect_tests_control_edits(&text, old_name, new_name);
+                        let tests_idx = LineIndex::new(&text);
+                        let edits = control::collect_tests_control_edits(
+                            Source::new(&text, &tests_idx),
+                            old_name,
+                            new_name,
+                        );
                         if !edits.is_empty() {
                             document_changes.push(DocumentChangeOperation::Edit(
                                 TextDocumentEdit {
@@ -1063,42 +1093,44 @@ impl LanguageServer for Backend {
         drop(files);
 
         let source_text = workspace.source_text(file.source_file);
+        let idx = workspace.get_line_index(file.source_file);
+        let src = Source::new(&source_text, &idx);
 
         let tokens = match file.file_type {
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
                 let control = parsed.tree();
-                control::generate_semantic_tokens(&control, &source_text)
+                control::generate_semantic_tokens(&control, src)
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 let copyright = parsed.tree();
-                copyright::generate_semantic_tokens(&copyright, &source_text)
+                copyright::generate_semantic_tokens(&copyright, src)
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
-                changelog::generate_semantic_tokens(&parsed, &source_text)
+                changelog::generate_semantic_tokens(&parsed, src)
             }
             FileType::Watch => {
                 let parsed = workspace.get_parsed_watch(file.source_file);
-                watch::generate_semantic_tokens(&parsed, &source_text)
+                watch::generate_semantic_tokens(&parsed, src)
             }
             FileType::TestsControl => {
                 let deb822_parse = workspace.get_parsed_deb822(file.source_file);
-                tests::generate_semantic_tokens(&deb822_parse, &source_text)
+                tests::generate_semantic_tokens(&deb822_parse, src)
             }
             FileType::UpstreamMetadata => {
                 let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
                 let yaml_file = parsed.tree();
                 match yaml_file.document() {
-                    Some(doc) => upstream_metadata::generate_semantic_tokens(&doc, &source_text),
+                    Some(doc) => upstream_metadata::generate_semantic_tokens(&doc, src),
                     None => vec![],
                 }
             }
             FileType::Rules => {
                 let parsed = workspace.get_parsed_rules(file.source_file);
                 let makefile = parsed.tree();
-                rules::generate_semantic_tokens(&makefile, &source_text)
+                rules::generate_semantic_tokens(&makefile, src)
             }
             FileType::SourceFormat => vec![],
             FileType::SourceOptions => source_options::generate_semantic_tokens(&source_text),
@@ -1110,19 +1142,19 @@ impl LanguageServer for Backend {
                 // sees no token highlights while the user is typing
                 // a malformed line.
                 let overrides = parsed.tree();
-                lintian_overrides::generate_semantic_tokens(&overrides, &source_text)
+                lintian_overrides::generate_semantic_tokens(&overrides, src)
             }
             FileType::PatchesSeries => {
                 let parsed = workspace.get_parsed_patches_series(file.source_file);
                 let patches_series = parsed.tree();
-                patches_series::generate_semantic_tokens(&patches_series, &source_text)
+                patches_series::generate_semantic_tokens(&patches_series, src)
             }
             // Semantic tokens cover the DEP-3 header at the top of
             // the patch only — the unified-diff body is left to
             // diff-lsp.
             FileType::Patch => {
                 let (parsed, _) = workspace.get_parsed_dep3_header(file.source_file);
-                dep3::generate_semantic_tokens(&parsed.tree(), &source_text)
+                dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
         };
 
@@ -1151,23 +1183,25 @@ impl LanguageServer for Backend {
 
         let workspace = self.workspace.lock().await;
         let source_text = workspace.source_text(file.source_file);
+        let idx = workspace.get_line_index(file.source_file);
+        let src = Source::new(&source_text, &idx);
 
         let symbols = match file.file_type {
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
-                changelog::generate_document_symbols(&parsed, &source_text)
+                changelog::generate_document_symbols(&parsed, src)
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
-                copyright::generate_document_symbols(&parsed, &source_text)
+                copyright::generate_document_symbols(&parsed, src)
             }
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
-                control::generate_document_symbols(&parsed, &source_text)
+                control::generate_document_symbols(&parsed, src)
             }
             FileType::Patch => {
                 let (parsed, _) = workspace.get_parsed_dep3_header(file.source_file);
-                dep3::generate_document_symbols(&parsed.tree(), &source_text)
+                dep3::generate_document_symbols(&parsed.tree(), src)
             }
             _ => return Ok(None),
         };
@@ -1191,28 +1225,30 @@ impl LanguageServer for Backend {
 
         let workspace = self.workspace.lock().await;
         let source_text = workspace.source_text(file.source_file);
+        let idx = workspace.get_line_index(file.source_file);
+        let src = Source::new(&source_text, &idx);
 
         let ranges = match file.file_type {
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
-                deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), &source_text)
+                deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), src)
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
-                deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), &source_text)
+                deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), src)
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
-                changelog::generate_folding_ranges(&parsed, &source_text)
+                changelog::generate_folding_ranges(&parsed, src)
             }
             FileType::Watch => {
                 let parsed = workspace.get_parsed_watch(file.source_file);
-                watch::generate_folding_ranges(&parsed, &source_text)
+                watch::generate_folding_ranges(&parsed, src)
             }
             FileType::TestsControl => {
                 let deb822_parse = workspace.get_parsed_deb822(file.source_file);
                 match deb822_parse.to_result() {
-                    Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, &source_text),
+                    Ok(deb822) => deb822::folding::generate_folding_ranges(&deb822, src),
                     Err(_) => return Ok(None),
                 }
             }
@@ -1241,13 +1277,15 @@ impl LanguageServer for Backend {
 
         let workspace = self.workspace.lock().await;
         let source_text = workspace.source_text(file.source_file);
+        let idx = workspace.get_line_index(file.source_file);
+        let src = Source::new(&source_text, &idx);
 
         let ranges = match file.file_type {
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
                 deb822::selection_range::generate_selection_ranges(
                     parsed.tree().as_deb822(),
-                    &source_text,
+                    src,
                     &params.positions,
                 )
             }
@@ -1255,31 +1293,31 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 deb822::selection_range::generate_selection_ranges(
                     parsed.tree().as_deb822(),
-                    &source_text,
+                    src,
                     &params.positions,
                 )
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
-                changelog::generate_selection_ranges(&parsed, &source_text, &params.positions)
+                changelog::generate_selection_ranges(&parsed, src, &params.positions)
             }
             FileType::Watch => {
                 let parsed = workspace.get_parsed_watch(file.source_file);
-                watch::generate_selection_ranges(&parsed, &source_text, &params.positions)
+                watch::generate_selection_ranges(&parsed, src, &params.positions)
             }
             FileType::TestsControl => {
                 let deb822_parse = workspace.get_parsed_deb822(file.source_file);
                 match deb822_parse.to_result() {
                     Ok(deb822) => deb822::selection_range::generate_selection_ranges(
                         &deb822,
-                        &source_text,
+                        src,
                         &params.positions,
                     ),
                     Err(_) => return Ok(None),
                 }
             }
             FileType::SourceOptions => {
-                source_options::generate_selection_ranges(&source_text, &params.positions)
+                source_options::generate_selection_ranges(src, &params.positions)
             }
             _ => return Ok(None),
         };
@@ -1384,15 +1422,17 @@ impl LanguageServer for Backend {
 
         let workspace = self.workspace.lock().await;
         let source_text = workspace.source_text(file.source_file);
+        let idx = workspace.get_line_index(file.source_file);
+        let src = Source::new(&source_text, &idx);
 
         match file.file_type {
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
-                Ok(control::format_control(&source_text, &parsed))
+                Ok(control::format_control(src, &parsed))
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
-                Ok(copyright::format_copyright(&source_text, &parsed))
+                Ok(copyright::format_copyright(src, &parsed))
             }
             FileType::Watch => {
                 let parsed = workspace.get_parsed_watch(file.source_file);
@@ -1416,10 +1456,10 @@ impl LanguageServer for Backend {
                         if formatted.as_str() == &*source_text {
                             return Ok(None);
                         }
-                        let full_range = text_range_to_lsp_range(
-                            &source_text,
-                            text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
-                        );
+                        let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
+                            0.into(),
+                            (source_text.len() as u32).into(),
+                        ));
                         Ok(Some(vec![TextEdit {
                             range: full_range,
                             new_text: formatted,
@@ -1446,10 +1486,10 @@ impl LanguageServer for Backend {
                 if formatted.as_str() == &*source_text {
                     return Ok(None);
                 }
-                let full_range = text_range_to_lsp_range(
-                    &source_text,
-                    text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
-                );
+                let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
+                    0.into(),
+                    (source_text.len() as u32).into(),
+                ));
                 Ok(Some(vec![TextEdit {
                     range: full_range,
                     new_text: formatted,
@@ -1473,8 +1513,10 @@ impl LanguageServer for Backend {
             FileType::Control => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
                 let parsed = workspace.get_parsed_control(file.source_file);
                 drop(workspace);
+                let src = Source::new(&source_text, &idx);
 
                 let ctx = control::code_lens::LensContext {
                     package_cache: &self.package_cache,
@@ -1483,8 +1525,7 @@ impl LanguageServer for Backend {
                     popcon_cache: &self.popcon_cache,
                     rdeps_cache: &self.rdeps_cache,
                 };
-                let (lenses, uncached) =
-                    control::generate_code_lenses(&parsed, &source_text, &ctx).await;
+                let (lenses, uncached) = control::generate_code_lenses(&parsed, src, &ctx).await;
 
                 if !uncached.is_empty() {
                     let client = self.client.clone();
@@ -1533,8 +1574,10 @@ impl LanguageServer for Backend {
             FileType::Copyright => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 drop(workspace);
+                let src = Source::new(&source_text, &idx);
 
                 // Derive the source root from the copyright file URI
                 // (debian/copyright -> parent is debian/ -> parent is source root)
@@ -1546,7 +1589,7 @@ impl LanguageServer for Backend {
 
                 let lenses = copyright::generate_code_lenses(
                     &parsed,
-                    &source_text,
+                    src,
                     source_root.as_deref(),
                     &self.git_file_cache,
                 )
@@ -1575,8 +1618,10 @@ impl LanguageServer for Backend {
             FileType::Changelog => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_changelog(file.source_file);
-                let hints = changelog::generate_inlay_hints(&parsed, &source_text, &params.range);
+                let hints = changelog::generate_inlay_hints(&parsed, src, &params.range);
                 if hints.is_empty() {
                     Ok(None)
                 } else {
@@ -1586,6 +1631,7 @@ impl LanguageServer for Backend {
             FileType::Control => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
                 let parsed = workspace.get_parsed_control(file.source_file);
 
                 // Resolve substvars from changelog and .substvars files
@@ -1601,12 +1647,13 @@ impl LanguageServer for Backend {
                 };
 
                 drop(workspace); // Release lock before async package cache access
+                let src = Source::new(&source_text, &idx);
                 let ctx = control::inlay_hints::HintContext {
                     package_cache: &self.package_cache,
                     resolved_substvars: &resolved_substvars,
                 };
                 let (hints, uncached_packages) =
-                    control::generate_inlay_hints(&parsed, &source_text, &params.range, &ctx).await;
+                    control::generate_inlay_hints(&parsed, src, &params.range, &ctx).await;
 
                 // Load uncached packages in the background (two batch
                 // subprocess calls), then ask the editor to re-request hints.
@@ -1645,31 +1692,25 @@ impl LanguageServer for Backend {
 
         let workspace = self.workspace.lock().await;
         let source_text = workspace.source_text(file.source_file);
+        let idx = workspace.get_line_index(file.source_file);
+        let src = Source::new(&source_text, &idx);
 
         match file.file_type {
             FileType::Control => {
                 let parsed = workspace.get_parsed_control(file.source_file);
-                Ok(control::get_hover(
-                    parsed.tree().as_deb822(),
-                    &source_text,
-                    position,
-                ))
+                Ok(control::get_hover(parsed.tree().as_deb822(), src, position))
             }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 let copyright = parsed.tree();
-                Ok(copyright::get_hover(
-                    copyright.as_deb822(),
-                    &source_text,
-                    position,
-                ))
+                Ok(copyright::get_hover(copyright.as_deb822(), src, position))
             }
             FileType::Watch => {
                 let parsed = workspace.get_parsed_watch(file.source_file);
                 let wf = parsed.to_watch_file();
                 match &wf {
                     debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
-                        Ok(watch::get_hover(wf.as_deb822(), &source_text, position))
+                        Ok(watch::get_hover(wf.as_deb822(), src, position))
                     }
                     _ => Ok(None),
                 }
@@ -1677,24 +1718,19 @@ impl LanguageServer for Backend {
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 drop(workspace);
-                Ok(changelog::get_hover(&parsed, &source_text, position, &self.bug_cache).await)
+                Ok(changelog::get_hover(&parsed, src, position, &self.bug_cache).await)
             }
             FileType::UpstreamMetadata => {
                 let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
                 let yaml_file = parsed.tree();
                 match yaml_file.document() {
-                    Some(doc) => Ok(upstream_metadata::get_hover(&doc, &source_text, position)),
+                    Some(doc) => Ok(upstream_metadata::get_hover(&doc, src, position)),
                     None => Ok(None),
                 }
             }
             FileType::Patch => {
                 let (parsed, header_end) = workspace.get_parsed_dep3_header(file.source_file);
-                Ok(dep3::get_hover(
-                    &parsed.tree(),
-                    header_end,
-                    &source_text,
-                    position,
-                ))
+                Ok(dep3::get_hover(&parsed.tree(), header_end, src, position))
             }
             _ => Ok(None),
         }
@@ -1746,8 +1782,10 @@ impl LanguageServer for Backend {
             FileType::Control => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(file.source_file);
-                let location = control::goto_definition(&parsed, &source_text, position, uri);
+                let location = control::goto_definition(&parsed, src, position, uri);
                 Ok(location.map(GotoDefinitionResponse::Scalar))
             }
             _ => Ok(None),
@@ -1770,14 +1808,11 @@ impl LanguageServer for Backend {
             FileType::Control => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(file.source_file);
-                let refs = control::find_references(
-                    &parsed,
-                    &source_text,
-                    position,
-                    uri,
-                    include_declaration,
-                );
+                let refs =
+                    control::find_references(&parsed, src, position, uri, include_declaration);
                 if refs.is_empty() {
                     Ok(None)
                 } else {
@@ -2036,8 +2071,10 @@ mod main_tests {
     fn test_completion_returns_control_completions() {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
 
-        let completions = control::get_completions(&deb822, text, Position::new(0, 3));
+        let completions = control::get_completions(&deb822, src, Position::new(0, 3));
         assert!(!completions.is_empty());
         assert!(completions.iter().any(|c| c.label == "Source"));
     }
@@ -2176,7 +2213,10 @@ mod main_tests {
         // Simulate applying an incremental edit like did_change does
         let mut text = "Source: test\nMaintainer: Alice\n".to_string();
         let range = Range::new(Position::new(0, 8), Position::new(0, 12));
-        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let idx = LineIndex::new(&text);
+        let text_range = Source::new(&text, &idx)
+            .try_lsp_range_to_text_range(&range)
+            .unwrap();
         let start: usize = text_range.start().into();
         let end: usize = text_range.end().into();
         text.replace_range(start..end, "hello");
@@ -2188,7 +2228,10 @@ mod main_tests {
         let mut text = "Source: test\n".to_string();
         // Insert at end of line 0
         let range = Range::new(Position::new(0, 12), Position::new(0, 12));
-        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let idx = LineIndex::new(&text);
+        let text_range = Source::new(&text, &idx)
+            .try_lsp_range_to_text_range(&range)
+            .unwrap();
         let start: usize = text_range.start().into();
         let end: usize = text_range.end().into();
         text.replace_range(start..end, "-pkg");
@@ -2199,7 +2242,10 @@ mod main_tests {
     fn test_incremental_edit_delete() {
         let mut text = "Source: test-pkg\n".to_string();
         let range = Range::new(Position::new(0, 8), Position::new(0, 16));
-        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let idx = LineIndex::new(&text);
+        let text_range = Source::new(&text, &idx)
+            .try_lsp_range_to_text_range(&range)
+            .unwrap();
         let start: usize = text_range.start().into();
         let end: usize = text_range.end().into();
         text.replace_range(start..end, "");
@@ -2211,7 +2257,10 @@ mod main_tests {
         let mut text = "Source: test\nMaintainer: Alice\nPriority: optional\n".to_string();
         // Replace entire second line
         let range = Range::new(Position::new(1, 0), Position::new(2, 0));
-        let text_range = position::try_lsp_range_to_text_range(&text, &range).unwrap();
+        let idx = LineIndex::new(&text);
+        let text_range = Source::new(&text, &idx)
+            .try_lsp_range_to_text_range(&range)
+            .unwrap();
         let start: usize = text_range.start().into();
         let end: usize = text_range.end().into();
         text.replace_range(start..end, "Maintainer: Bob\n");

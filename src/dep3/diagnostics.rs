@@ -5,7 +5,7 @@
 
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 
 /// Generate diagnostics for a DEP-3 header. `header` is the parsed
 /// deb822 tree of the header portion only (everything before the
@@ -15,7 +15,7 @@ use crate::position::text_range_to_lsp_range;
 ///
 /// Currently surfaces field-name casing issues (e.g. `description` →
 /// `Description`). Returns an empty vector if the header is empty.
-pub fn get_diagnostics(header: &deb822_lossless::Deb822, source_text: &str) -> Vec<Diagnostic> {
+pub fn get_diagnostics(header: &deb822_lossless::Deb822, src: Source<'_>) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for paragraph in header.paragraphs() {
         for entry in paragraph.entries() {
@@ -38,7 +38,7 @@ pub fn get_diagnostics(header: &deb822_lossless::Deb822, source_text: &str) -> V
             let Some(field_range) = entry.key_range() else {
                 continue;
             };
-            let lsp_range = text_range_to_lsp_range(source_text, field_range);
+            let lsp_range = src.text_range_to_lsp_range(field_range);
             diags.push(Diagnostic {
                 range: lsp_range,
                 severity: Some(DiagnosticSeverity::WARNING),
@@ -61,7 +61,8 @@ mod tests {
     fn run(text: &str) -> Vec<Diagnostic> {
         let header_end = dep3::lossless::header_end(text);
         let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
-        get_diagnostics(&parsed.tree(), text)
+        let idx = crate::position::LineIndex::new(text);
+        get_diagnostics(&parsed.tree(), Source::new(text, &idx))
     }
 
     #[test]

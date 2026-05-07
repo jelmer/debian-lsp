@@ -5,17 +5,17 @@
 use deb822_lossless::Deb822;
 use tower_lsp_server::ls_types::{FoldingRange, FoldingRangeKind};
 
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 
 /// Generate folding ranges for a deb822 document.
 ///
 /// Each paragraph that spans more than one line produces a `Region` folding
 /// range. Single-line paragraphs are omitted because there is nothing to fold.
-pub fn generate_folding_ranges(deb822: &Deb822, source_text: &str) -> Vec<FoldingRange> {
+pub fn generate_folding_ranges(deb822: &Deb822, src: Source<'_>) -> Vec<FoldingRange> {
     deb822
         .paragraphs()
         .filter_map(|para| {
-            let range = text_range_to_lsp_range(source_text, para.text_range());
+            let range = src.text_range_to_lsp_range(para.text_range());
             // When the range ends at column 0, the actual content ends on the
             // previous line (the trailing newline pushed us to the next line).
             let end_line = if range.end.character == 0 && range.end.line > range.start.line {
@@ -47,7 +47,8 @@ mod tests {
         let text = "Source: foo\nMaintainer: Test <test@example.com>\n";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
-        let ranges = generate_folding_ranges(&deb822, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&deb822, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].start_line, 0);
@@ -66,7 +67,8 @@ Description: A test package
 ";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
-        let ranges = generate_folding_ranges(&deb822, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&deb822, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0].start_line, 0);
@@ -80,7 +82,8 @@ Description: A test package
         let text = "";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
-        let ranges = generate_folding_ranges(&deb822, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&deb822, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 0);
     }
@@ -90,7 +93,8 @@ Description: A test package
         let text = "Source: foo\n";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
-        let ranges = generate_folding_ranges(&deb822, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&deb822, Source::new(text, &idx));
 
         assert_eq!(ranges.len(), 0);
     }
@@ -100,7 +104,8 @@ Description: A test package
         let text = "Source: foo\nMaintainer: Test <test@example.com>\n";
         let parsed = Deb822::parse(text);
         let deb822 = parsed.tree();
-        let ranges = generate_folding_ranges(&deb822, text);
+        let idx = crate::position::LineIndex::new(text);
+        let ranges = generate_folding_ranges(&deb822, Source::new(text, &idx));
 
         assert_eq!(ranges[0].kind, Some(FoldingRangeKind::Region));
     }

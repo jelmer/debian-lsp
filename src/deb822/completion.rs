@@ -1,5 +1,7 @@
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
 
+use crate::position::Source;
+
 /// A field definition for a deb822-based file format.
 pub struct FieldInfo {
     pub name: &'static str,
@@ -56,14 +58,14 @@ pub fn get_field_completions(fields: &[FieldInfo]) -> Vec<CompletionItem> {
 /// (e.g. continuation lines, comments, blank lines between paragraphs).
 pub fn get_cursor_context(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Option<CursorContext> {
-    if source_text.is_empty() {
+    if src.text.is_empty() {
         return Some(CursorContext::StartOfLine);
     }
 
-    let offset = crate::position::try_position_to_offset(source_text, position)?;
+    let offset = src.try_position_to_offset(position)?;
 
     // If cursor is at column 0 of a new line, it's a position where a new
     // field can be started, not a continuation of the previous entry.
@@ -123,11 +125,11 @@ pub fn get_cursor_context(
                 };
                 let start: usize = value_range.start().into();
                 let end: usize = prefix_end.into();
-                let mut prefix_bytes = end.min(source_text.len());
-                while !source_text.is_char_boundary(prefix_bytes) {
+                let mut prefix_bytes = end.min(src.text.len());
+                while !src.text.is_char_boundary(prefix_bytes) {
                     prefix_bytes -= 1;
                 }
-                source_text[start..prefix_bytes].to_string()
+                src.text[start..prefix_bytes].to_string()
             }
         } else {
             String::new()
@@ -156,12 +158,12 @@ pub fn get_cursor_context(
 /// name completions.
 pub fn get_completions(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     fields: &[FieldInfo],
     value_completer: impl Fn(&str, &str) -> Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
-    match get_cursor_context(deb822, source_text, position) {
+    match get_cursor_context(deb822, src, position) {
         Some(CursorContext::FieldValue {
             field_name,
             value_prefix,
@@ -199,9 +201,10 @@ mod tests {
     fn test_get_cursor_context_on_value() {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
 
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(1, 11)).expect("Should have context");
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(1, 11))
+            .expect("Should have context");
         assert_eq!(
             ctx,
             CursorContext::FieldValue {
@@ -215,9 +218,10 @@ mod tests {
     fn test_get_cursor_context_immediately_after_colon() {
         let text = "Section: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
 
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(0, 8)).expect("Should have context");
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(0, 8))
+            .expect("Should have context");
         assert_eq!(
             ctx,
             CursorContext::FieldValue {
@@ -231,9 +235,10 @@ mod tests {
     fn test_get_cursor_context_on_field_key() {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
 
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(1, 3)).expect("Should have context");
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(1, 3))
+            .expect("Should have context");
         assert_eq!(ctx, CursorContext::FieldKey);
     }
 
@@ -241,8 +246,9 @@ mod tests {
     fn test_get_cursor_context_empty_text() {
         let text = "";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(0, 0)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(0, 0))
+            .expect("Should have context");
         assert_eq!(ctx, CursorContext::StartOfLine);
     }
 
@@ -251,9 +257,10 @@ mod tests {
         let text = "Source: te\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
+        let idx = crate::position::LineIndex::new(text);
         let completions = get_completions(
             &deb822,
-            text,
+            Source::new(text, &idx),
             Position::new(0, 10),
             TEST_FIELDS,
             |field, _prefix| {
@@ -278,9 +285,10 @@ mod tests {
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
         // Cursor on field key area → no value context → field completions
+        let idx = crate::position::LineIndex::new(text);
         let completions = get_completions(
             &deb822,
-            text,
+            Source::new(text, &idx),
             Position::new(0, 2),
             TEST_FIELDS,
             |_, _| vec![],
@@ -297,9 +305,10 @@ mod tests {
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
         // Cursor on value, completer returns empty → empty (not field completions)
+        let idx = crate::position::LineIndex::new(text);
         let completions = get_completions(
             &deb822,
-            text,
+            Source::new(text, &idx),
             Position::new(0, 10),
             TEST_FIELDS,
             |_, _| vec![],
@@ -314,8 +323,10 @@ mod tests {
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
         // Cursor at end of "pkg-co" on line 2, column 7
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(2, 7)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(2, 7))
+            .expect("Should have context");
         match ctx {
             CursorContext::FieldValue {
                 field_name,
@@ -342,8 +353,10 @@ mod tests {
     fn test_get_cursor_context_partial_field_name_no_colon() {
         let text = "Source: test\nMai";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(1, 3)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(1, 3))
+            .expect("Should have context");
         assert_eq!(ctx, CursorContext::FieldKey);
     }
 
@@ -351,8 +364,10 @@ mod tests {
     fn test_get_cursor_context_empty_new_line_after_entry() {
         let text = "Source: test\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(1, 0)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(1, 0))
+            .expect("Should have context");
         assert_eq!(ctx, CursorContext::StartOfLine);
     }
 
@@ -360,8 +375,10 @@ mod tests {
     fn test_get_cursor_context_typing_single_char_on_new_line() {
         let text = "Source: test\nM";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(1, 1)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(1, 1))
+            .expect("Should have context");
         assert_eq!(ctx, CursorContext::FieldKey);
     }
 
@@ -369,8 +386,10 @@ mod tests {
     fn test_get_cursor_context_substvar_after_comma() {
         let text = "Depends: gpg,${misc:\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(0, 20)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(0, 20))
+            .expect("Should have context");
         match ctx {
             CursorContext::FieldValue {
                 field_name,
@@ -388,8 +407,10 @@ mod tests {
         let text = "Depends:\n gpg,${misc:\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
         // Line 1: " gpg,${misc:\n", cursor at col 12 (after last ':')
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(1, 12)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(1, 12))
+            .expect("Should have context");
         match ctx {
             CursorContext::FieldValue {
                 field_name,
@@ -407,8 +428,10 @@ mod tests {
     fn test_get_cursor_context_substvar_after_comma_space() {
         let text = "Depends: gpg, ${misc:\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let ctx =
-            get_cursor_context(&deb822, text, Position::new(0, 21)).expect("Should have context");
+        let idx = crate::position::LineIndex::new(text);
+
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(0, 21))
+            .expect("Should have context");
         match ctx {
             CursorContext::FieldValue {
                 field_name,
@@ -425,7 +448,8 @@ mod tests {
     fn test_partial_field_between_existing_fields() {
         let text = "Source: debian-codemods\nSection: devel\nHomepa\nPriority: optional\n";
         let deb822 = deb822_lossless::Deb822::parse(text).tree();
-        let ctx = get_cursor_context(&deb822, text, Position::new(2, 6));
+        let idx = crate::position::LineIndex::new(text);
+        let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(2, 6));
         assert!(ctx.is_some(), "Should have context");
         assert_eq!(ctx.unwrap(), CursorContext::FieldKey);
     }

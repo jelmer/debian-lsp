@@ -10,13 +10,13 @@ use debian_control::relations::SyntaxKind as RelSyntaxKind;
 use tower_lsp_server::ls_types::{Location, Position, Uri};
 
 use super::relation_completion::is_relationship_field;
-use crate::position::{text_range_to_lsp_range, try_position_to_offset};
+use crate::position::Source;
 
 /// Find all locations in a control file where the given package name appears
 /// in relationship fields.
 fn find_package_references_in_control(
     parse: &Parse<Control>,
-    source_text: &str,
+    src: Source<'_>,
     package_name: &str,
     uri: &Uri,
     include_declaration: bool,
@@ -31,7 +31,7 @@ fn find_package_references_in_control(
                 let para = binary.as_deb822();
                 if let Some(entry) = para.get_entry("Package") {
                     if let Some(value_range) = entry.value_range() {
-                        let range = text_range_to_lsp_range(source_text, value_range);
+                        let range = src.text_range_to_lsp_range(value_range);
                         locations.push(Location {
                             uri: uri.clone(),
                             range,
@@ -57,7 +57,7 @@ fn find_package_references_in_control(
             };
             let value_start: usize = value_range.start().into();
             let value_end: usize = value_range.end().into();
-            let raw_value = &source_text[value_start..value_end];
+            let raw_value = &src.text[value_start..value_end];
 
             let (relations, _errors) = Relations::parse_relaxed(raw_value, false);
             let syntax = relations.syntax();
@@ -73,7 +73,7 @@ fn find_package_references_in_control(
                                 ((value_start + rel_start) as u32).into(),
                                 ((value_start + rel_end) as u32).into(),
                             );
-                            let range = text_range_to_lsp_range(source_text, abs_range);
+                            let range = src.text_range_to_lsp_range(abs_range);
                             locations.push(Location {
                                 uri: uri.clone(),
                                 range,
@@ -96,13 +96,13 @@ fn find_package_references_in_control(
 /// where that package is referenced.
 pub fn find_references(
     parse: &Parse<Control>,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     uri: &Uri,
     include_declaration: bool,
 ) -> Vec<Location> {
     let control = parse.tree();
-    let Some(offset) = try_position_to_offset(source_text, position) else {
+    let Some(offset) = src.try_position_to_offset(position) else {
         return Vec::new();
     };
 
@@ -119,7 +119,7 @@ pub fn find_references(
             if let Some(name) = binary.name() {
                 return find_package_references_in_control(
                     parse,
-                    source_text,
+                    src,
                     &name,
                     uri,
                     include_declaration,
@@ -155,7 +155,7 @@ pub fn find_references(
     };
     let value_start: usize = value_range.start().into();
     let value_end: usize = value_range.end().into();
-    let raw_value = &source_text[value_start..value_end];
+    let raw_value = &src.text[value_start..value_end];
     let offset_in_value = usize::from(offset) - value_start;
 
     // Find the package name at the cursor offset.
@@ -192,7 +192,7 @@ pub fn find_references(
         return Vec::new();
     }
 
-    find_package_references_in_control(parse, source_text, &name, uri, include_declaration)
+    find_package_references_in_control(parse, src, &name, uri, include_declaration)
 }
 
 #[cfg(test)]
@@ -224,10 +224,12 @@ Architecture: any
 Description: Development files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "mypackage-dev" in Package: field (line 9)
-        let refs = find_references(&parsed, text, Position::new(9, 10), &uri, true);
+        let refs = find_references(&parsed, src, Position::new(9, 10), &uri, true);
         // Should find: the Package: declaration, Build-Depends ref, Depends ref
         assert_eq!(refs.len(), 3);
         // Declaration
@@ -255,10 +257,12 @@ Architecture: any
 Description: Development files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "mypackage-dev" in Package: field (line 9), no declaration
-        let refs = find_references(&parsed, text, Position::new(9, 10), &uri, false);
+        let refs = find_references(&parsed, src, Position::new(9, 10), &uri, false);
         // Should find: Build-Depends ref, Depends ref (no declaration)
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].range.start.line, 2);
@@ -282,10 +286,12 @@ Architecture: any
 Description: Dev files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "foo-dev" in Depends field (line 6)
-        let refs = find_references(&parsed, text, Position::new(6, 10), &uri, true);
+        let refs = find_references(&parsed, src, Position::new(6, 10), &uri, true);
         // Should find: Package: declaration, Build-Depends ref, Depends ref
         assert_eq!(refs.len(), 3);
         assert_eq!(refs[0].range.start.line, 9);
@@ -305,10 +311,12 @@ Architecture: any
 Description: Main
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "debhelper" - not defined in this file
-        let refs = find_references(&parsed, text, Position::new(2, 16), &uri, true);
+        let refs = find_references(&parsed, src, Position::new(2, 16), &uri, true);
         assert!(refs.is_empty());
     }
 
@@ -323,10 +331,12 @@ Architecture: any
 Description: Main
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on Architecture value
-        let refs = find_references(&parsed, text, Position::new(4, 16), &uri, true);
+        let refs = find_references(&parsed, src, Position::new(4, 16), &uri, true);
         assert!(refs.is_empty());
     }
 
@@ -345,10 +355,12 @@ Architecture: any
 Description: Dev files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "foo-dev" Package: field - not referenced anywhere
-        let refs = find_references(&parsed, text, Position::new(7, 10), &uri, true);
+        let refs = find_references(&parsed, src, Position::new(7, 10), &uri, true);
         // Should find only the declaration itself
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].range.start.line, 7);
@@ -369,10 +381,12 @@ Architecture: any
 Description: Dev files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // No declaration included, and no references
-        let refs = find_references(&parsed, text, Position::new(7, 10), &uri, false);
+        let refs = find_references(&parsed, src, Position::new(7, 10), &uri, false);
         assert!(refs.is_empty());
     }
 }

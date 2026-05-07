@@ -10,7 +10,7 @@ use super::fields::{
     get_subfield_name_completions, get_subfield_value_completions, FieldValueType, UPSTREAM_FIELDS,
 };
 use super::upstream_cache::SharedUpstreamCache;
-use crate::position::try_position_to_offset;
+use crate::position::Source;
 
 /// Cursor context within the upstream/metadata YAML document.
 enum CursorContext {
@@ -54,7 +54,7 @@ fn find_entry_at_offset(mapping: &Mapping, offset: u32) -> Option<yaml_edit::Map
 }
 
 /// Compute the column (0-indexed) at which sub-field keys start in a mapping.
-fn subfield_indent(mapping: &Mapping, source_text: &str) -> Option<u32> {
+fn subfield_indent(mapping: &Mapping, src: Source<'_>) -> Option<u32> {
     mapping
         .entries()
         .next()
@@ -62,7 +62,7 @@ fn subfield_indent(mapping: &Mapping, source_text: &str) -> Option<u32> {
         .and_then(|key| match key {
             YamlNode::Scalar(s) => {
                 // yaml_edit LineColumn is 1-indexed
-                Some(s.start_position(source_text).column as u32 - 1)
+                Some(s.start_position(src.text).column as u32 - 1)
             }
             _ => None,
         })
@@ -70,11 +70,11 @@ fn subfield_indent(mapping: &Mapping, source_text: &str) -> Option<u32> {
 
 /// Compute the default indent for a sequence item's sub-fields based on the
 /// top-level key that owns the sequence. The convention is key_column + 2.
-fn default_subfield_indent(entry: &yaml_edit::MappingEntry, source_text: &str) -> u32 {
+fn default_subfield_indent(entry: &yaml_edit::MappingEntry, src: Source<'_>) -> u32 {
     entry
         .key_node()
         .and_then(|key| match key {
-            YamlNode::Scalar(s) => Some(s.start_position(source_text).column as u32 - 1 + 2),
+            YamlNode::Scalar(s) => Some(s.start_position(src.text).column as u32 - 1 + 2),
             _ => None,
         })
         .unwrap_or(2)
@@ -97,12 +97,12 @@ fn lookup_field(key: &str) -> Option<&'static super::fields::UpstreamField> {
 }
 
 /// Extract the text between the value start and the cursor offset.
-fn extract_value_prefix(entry: &yaml_edit::MappingEntry, source_text: &str, offset: u32) -> String {
+fn extract_value_prefix(entry: &yaml_edit::MappingEntry, src: Source<'_>, offset: u32) -> String {
     match entry.value_node() {
         Some(YamlNode::Scalar(s)) => {
             let r = s.byte_range();
             if offset >= r.start {
-                source_text
+                src.text
                     .get(r.start as usize..offset as usize)
                     .unwrap_or("")
                     .to_string()
@@ -115,7 +115,7 @@ fn extract_value_prefix(entry: &yaml_edit::MappingEntry, source_text: &str, offs
 }
 
 /// Determine the cursor context by walking the YAML CST.
-fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorContext {
+fn determine_context(doc: &Document, src: Source<'_>, offset: u32) -> CursorContext {
     let mapping = match doc.as_mapping() {
         Some(m) => m,
         // Document isn't a mapping (or is empty) — offer top-level field names.
@@ -163,13 +163,12 @@ fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorCo
 
     // For scalar fields, if the cursor is on a different line than the key,
     // the user is likely starting a new top-level field.
-    let cursor_line = yaml_edit::byte_offset_to_line_column(source_text, offset as usize).line;
+    let cursor_line = yaml_edit::byte_offset_to_line_column(src.text, offset as usize).line;
     let key_line = entry
         .key_node()
         .map(|key| match key {
             YamlNode::Scalar(s) => {
-                yaml_edit::byte_offset_to_line_column(source_text, s.byte_range().start as usize)
-                    .line
+                yaml_edit::byte_offset_to_line_column(src.text, s.byte_range().start as usize).line
             }
             _ => 0,
         })
@@ -189,7 +188,7 @@ fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorCo
     match field.value_type {
         FieldValueType::Scalar => {
             if cursor_line == key_line || in_value {
-                let prefix = extract_value_prefix(&entry, source_text, offset);
+                let prefix = extract_value_prefix(&entry, src, offset);
                 CursorContext::TopLevelValue { field_name, prefix }
             } else {
                 CursorContext::TopLevelKey
@@ -203,7 +202,7 @@ fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorCo
             }
         }
         FieldValueType::MappingList(subfields) => {
-            determine_mapping_list_context(entry, source_text, offset, subfields)
+            determine_mapping_list_context(entry, src, offset, subfields)
         }
     }
 }
@@ -214,11 +213,11 @@ fn determine_context(doc: &Document, source_text: &str, offset: u32) -> CursorCo
 /// cursor is in, and whether it's on a sub-field key or value.
 fn determine_mapping_list_context(
     entry: yaml_edit::MappingEntry,
-    source_text: &str,
+    src: Source<'_>,
     offset: u32,
     subfields: &'static [super::fields::SubField],
 ) -> CursorContext {
-    let default_indent = default_subfield_indent(&entry, source_text);
+    let default_indent = default_subfield_indent(&entry, src);
 
     // Don't offer sub-field completions on the same line as the top-level key.
     // E.g. "Reference:|" should not complete "Author:" right after the colon.
@@ -226,13 +225,12 @@ fn determine_mapping_list_context(
         .key_node()
         .map(|key| match key {
             YamlNode::Scalar(s) => {
-                yaml_edit::byte_offset_to_line_column(source_text, s.byte_range().start as usize)
-                    .line
+                yaml_edit::byte_offset_to_line_column(src.text, s.byte_range().start as usize).line
             }
             _ => 0,
         })
         .unwrap_or(0);
-    let cursor_line = yaml_edit::byte_offset_to_line_column(source_text, offset as usize).line;
+    let cursor_line = yaml_edit::byte_offset_to_line_column(src.text, offset as usize).line;
     if cursor_line == key_line {
         return CursorContext::None;
     }
@@ -257,7 +255,7 @@ fn determine_mapping_list_context(
             if let Some(inner_mapping) = value_node.as_mapping() {
                 return determine_inner_mapping_context(
                     inner_mapping,
-                    source_text,
+                    src,
                     offset,
                     subfields,
                     default_indent,
@@ -277,7 +275,7 @@ fn determine_mapping_list_context(
             if offset_in_node_exclusive(&inner_mapping, offset) {
                 return determine_inner_mapping_context(
                     &inner_mapping,
-                    source_text,
+                    src,
                     offset,
                     subfields,
                     default_indent,
@@ -293,7 +291,7 @@ fn determine_mapping_list_context(
         .values()
         .filter_map(|item| item.as_mapping().cloned())
         .last()
-        .and_then(|m| subfield_indent(&m, source_text))
+        .and_then(|m| subfield_indent(&m, src))
         .unwrap_or(default_indent);
     CursorContext::SubFieldKey {
         subfields,
@@ -305,12 +303,12 @@ fn determine_mapping_list_context(
 /// Determine context within an inner mapping (a single item in a mapping list).
 fn determine_inner_mapping_context(
     mapping: &Mapping,
-    source_text: &str,
+    src: Source<'_>,
     offset: u32,
     subfields: &'static [super::fields::SubField],
     default_indent: u32,
 ) -> CursorContext {
-    let indent = subfield_indent(mapping, source_text).unwrap_or(default_indent);
+    let indent = subfield_indent(mapping, src).unwrap_or(default_indent);
 
     // Check each sub-entry. We need to find entries where the cursor is either
     // within the entry range, or just past the entry on the same line (for
@@ -321,7 +319,7 @@ fn determine_inner_mapping_context(
 
             if offset < key_range.end && offset >= key_range.start {
                 // Cursor is on the sub-field key.
-                let prefix = &source_text[key_range.start as usize..offset as usize];
+                let prefix = &src.text[key_range.start as usize..offset as usize];
                 return CursorContext::SubFieldKey {
                     subfields,
                     prefix: prefix.to_string(),
@@ -335,9 +333,9 @@ fn determine_inner_mapping_context(
             // offset >= key_end and they are on the same line.
             if offset >= key_range.end {
                 let key_end_line =
-                    yaml_edit::byte_offset_to_line_column(source_text, key_range.end as usize).line;
+                    yaml_edit::byte_offset_to_line_column(src.text, key_range.end as usize).line;
                 let cursor_line =
-                    yaml_edit::byte_offset_to_line_column(source_text, offset as usize).line;
+                    yaml_edit::byte_offset_to_line_column(src.text, offset as usize).line;
 
                 if cursor_line == key_end_line {
                     let subfield_name = key_scalar.as_string();
@@ -345,7 +343,7 @@ fn determine_inner_mapping_context(
                         Some(YamlNode::Scalar(val_scalar)) => {
                             let val_range = val_scalar.byte_range();
                             if offset >= val_range.start {
-                                source_text
+                                src.text
                                     .get(val_range.start as usize..offset as usize)
                                     .unwrap_or("")
                                     .to_string()
@@ -380,22 +378,22 @@ fn determine_inner_mapping_context(
 /// Returns `Ok(completions)` for contexts that don't need the cache, or
 /// `Err((field_name, prefix))` when the cache must be consulted.
 fn get_sync_completions(
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Result<Vec<CompletionItem>, (String, String)> {
-    let offset = match try_position_to_offset(source_text, position) {
+    let offset = match src.try_position_to_offset(position) {
         Some(o) => u32::from(o),
         None => return Ok(get_field_completions()),
     };
 
-    let parse = YamlFile::parse(source_text);
+    let parse = YamlFile::parse(src.text);
     let yaml_file = parse.tree();
     let doc = match yaml_file.document() {
         Some(d) => d,
         None => return Ok(get_field_completions()),
     };
 
-    match determine_context(&doc, source_text, offset) {
+    match determine_context(&doc, src, offset) {
         CursorContext::TopLevelKey => Ok(get_field_completions()),
         CursorContext::TopLevelValue { field_name, prefix } => Err((field_name, prefix)),
         CursorContext::SubFieldKey {
@@ -420,7 +418,7 @@ fn get_sync_completions(
 
 /// Get completions for a debian/upstream/metadata file at the given position.
 pub async fn get_completions(
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     upstream_cache: &SharedUpstreamCache,
     project_root: Option<&Path>,
@@ -428,7 +426,7 @@ pub async fn get_completions(
     // Do the YAML parsing and context determination synchronously first,
     // since YamlFile contains non-Send CST nodes that cannot be held
     // across an await point.
-    match get_sync_completions(source_text, position) {
+    match get_sync_completions(src, position) {
         Ok(completions) => completions,
         Err((field_name, prefix)) => {
             get_guessed_value_completions(
@@ -508,8 +506,9 @@ mod tests {
 
     /// Test helper: calls the sync completion path, returning empty for
     /// contexts that would need the upstream cache.
-    fn test_completions(source_text: &str, position: Position) -> Vec<CompletionItem> {
-        get_sync_completions(source_text, position).unwrap_or_default()
+    fn test_completions(text: &str, position: Position) -> Vec<CompletionItem> {
+        let idx = crate::position::LineIndex::new(text);
+        get_sync_completions(Source::new(text, &idx), position).unwrap_or_default()
     }
 
     #[test]
@@ -734,7 +733,8 @@ mod tests {
     fn test_top_level_value_right_after_colon() {
         let text = "Repository:\n";
         // Cursor right after the colon — should be in value context.
-        let result = get_sync_completions(text, Position::new(0, 11));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(0, 11));
         assert!(result.is_err(), "expected TopLevelValue context");
     }
 
@@ -742,21 +742,24 @@ mod tests {
     fn test_top_level_value_after_colon_space() {
         let text = "Repository: \n";
         // Cursor after "Repository: " — should be in value context.
-        let result = get_sync_completions(text, Position::new(0, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(0, 12));
         assert!(result.is_err(), "expected TopLevelValue context");
     }
 
     #[test]
     fn test_top_level_value_after_colon_space_no_newline() {
         let text = "Repository: ";
-        let result = get_sync_completions(text, Position::new(0, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(0, 12));
         assert!(result.is_err(), "expected TopLevelValue context");
     }
 
     #[test]
     fn test_top_level_value_after_colon_space_with_other_fields() {
         let text = "Name: foo\nRepository: \n";
-        let result = get_sync_completions(text, Position::new(1, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(1, 12));
         assert!(result.is_err(), "expected TopLevelValue context");
     }
 
@@ -764,7 +767,8 @@ mod tests {
     fn test_top_level_value_on_colon() {
         // Position on the colon itself — still value context (same line as key).
         let text = "Repository: \n";
-        let result = get_sync_completions(text, Position::new(0, 10));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(0, 10));
         assert!(result.is_err(), "expected TopLevelValue context");
     }
 
@@ -772,7 +776,8 @@ mod tests {
     fn test_top_level_value_between_colon_and_space() {
         // Position between colon and space.
         let text = "Repository: \n";
-        let result = get_sync_completions(text, Position::new(0, 11));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(0, 11));
         assert!(result.is_err(), "expected TopLevelValue context");
     }
 
@@ -785,7 +790,8 @@ mod tests {
             ("Repository: https\n", 0, 17, "https"),
             ("Repository: ", 0, 12, ""),
         ] {
-            let result = get_sync_completions(text, Position::new(line, col));
+            let idx = crate::position::LineIndex::new(text);
+            let result = get_sync_completions(Source::new(text, &idx), Position::new(line, col));
             match result {
                 Err((field, prefix)) => {
                     assert_eq!(field, "Repository");
@@ -800,7 +806,8 @@ mod tests {
     fn test_top_level_value_colon_space_with_existing_content() {
         // Simulates typing "Repository: " when there's already other content.
         let text = "Name: foo\nRepository: ";
-        let result = get_sync_completions(text, Position::new(1, 12));
+        let idx = crate::position::LineIndex::new(text);
+        let result = get_sync_completions(Source::new(text, &idx), Position::new(1, 12));
         assert!(result.is_err(), "expected TopLevelValue context, got Ok");
     }
 

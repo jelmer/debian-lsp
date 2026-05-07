@@ -5,7 +5,7 @@
 use tower_lsp_server::ls_types::SemanticToken;
 
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
-use crate::position::offset_to_position;
+use crate::position::Source;
 
 /// Field validator for v5 watch files
 struct WatchFieldValidator;
@@ -19,24 +19,22 @@ impl crate::deb822::semantic::FieldValidator for WatchFieldValidator {
 /// Generate semantic tokens for a watch file
 pub fn generate_semantic_tokens(
     parse: &debian_watch::parse::Parse,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<SemanticToken> {
     match parse.to_watch_file() {
         debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
             let validator = WatchFieldValidator;
-            crate::deb822::semantic::generate_tokens(wf.as_deb822(), source_text, &validator)
+            crate::deb822::semantic::generate_tokens(wf.as_deb822(), src, &validator)
         }
-        debian_watch::parse::ParsedWatchFile::LineBased(_) => {
-            generate_linebased_tokens(source_text)
-        }
+        debian_watch::parse::ParsedWatchFile::LineBased(_) => generate_linebased_tokens(src),
     }
 }
 
 /// Generate tokens for v1-4 line-based watch files
-fn generate_linebased_tokens(source_text: &str) -> Vec<SemanticToken> {
+fn generate_linebased_tokens(src: Source<'_>) -> Vec<SemanticToken> {
     use debian_watch::SyntaxKind;
 
-    let parsed = debian_watch::linebased::parse_watch_file(source_text);
+    let parsed = debian_watch::linebased::parse_watch_file(src.text);
     let wf = parsed.tree();
     let mut builder = SemanticTokensBuilder::new();
 
@@ -64,7 +62,7 @@ fn generate_linebased_tokens(source_text: &str) -> Vec<SemanticToken> {
 
             if let Some(tt) = token_type {
                 let range = token.text_range();
-                let start_pos = offset_to_position(source_text, range.start());
+                let start_pos = src.offset_to_position(range.start());
                 let length = crate::position::utf16_len(token.text());
 
                 if length > 0 {
@@ -86,7 +84,8 @@ mod tests {
         let text =
             "Version: 5\n\nSource: https://github.com/owner/repo/tags\nMatching-Pattern: .*/v?(\\d[\\d.]*)/.tar.gz\n";
         let parsed = debian_watch::parse::Parse::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
 
@@ -99,7 +98,8 @@ mod tests {
     fn test_v5_unknown_field() {
         let text = "Version: 5\n\nSource: https://example.com\nX-Custom: value\n";
         let parsed = debian_watch::parse::Parse::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let unknown = tokens
             .iter()
@@ -111,7 +111,8 @@ mod tests {
     fn test_v4_produces_tokens() {
         let text = "version=4\nhttps://example.com/files .*/foo-(\\d[\\d.]*)/.tar\\.gz\n";
         let parsed = debian_watch::parse::Parse::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         assert!(!tokens.is_empty(), "v4 watch files should produce tokens");
 
@@ -127,7 +128,8 @@ mod tests {
         let text =
             "version=4\n# This is a comment\nhttps://example.com .*/foo-(\\d[\\d.]*)/.tar\\.gz\n";
         let parsed = debian_watch::parse::Parse::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let has_comment = tokens
             .iter()
@@ -139,7 +141,8 @@ mod tests {
     fn test_v4_url_and_pattern() {
         let text = "version=4\nhttps://example.com/files .*/foo-(\\d[\\d.]*)/.tar\\.gz\n";
         let parsed = debian_watch::parse::Parse::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let value_tokens: Vec<_> = tokens
             .iter()

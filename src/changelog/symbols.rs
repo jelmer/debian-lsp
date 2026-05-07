@@ -1,20 +1,16 @@
 //! Document symbol generation for Debian changelog files.
 
+use crate::position::Source;
 use debian_changelog::{ChangeLog, Parse};
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{DocumentSymbol, SymbolKind};
-
-use crate::position::text_range_to_lsp_range;
 
 /// Generate document symbols for a changelog file.
 ///
 /// Each changelog entry becomes a symbol with the package name and version
 /// as its label, allowing breadcrumb navigation.
 #[allow(deprecated)] // DocumentSymbol::deprecated field
-pub fn generate_document_symbols(
-    parse: &Parse<ChangeLog>,
-    source_text: &str,
-) -> Vec<DocumentSymbol> {
+pub fn generate_document_symbols(parse: &Parse<ChangeLog>, src: Source<'_>) -> Vec<DocumentSymbol> {
     let changelog = parse.tree();
     let mut symbols = Vec::new();
 
@@ -24,12 +20,12 @@ pub fn generate_document_symbols(
 
         let name = format!("{package} ({version})");
 
-        let entry_range = text_range_to_lsp_range(source_text, entry.syntax().text_range());
+        let entry_range = src.text_range_to_lsp_range(entry.syntax().text_range());
 
         // The selection range is the header line (package + version)
         let selection_range = entry
             .header()
-            .map(|h| text_range_to_lsp_range(source_text, h.syntax().text_range()))
+            .map(|h| src.text_range_to_lsp_range(h.syntax().text_range()))
             .unwrap_or(entry_range);
 
         symbols.push(DocumentSymbol {
@@ -55,7 +51,8 @@ mod tests {
     fn test_single_entry() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = ChangeLog::parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "pkg (1.0-1)");
@@ -79,7 +76,8 @@ pkg (1.0-1) experimental; urgency=low
  -- B <b@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = ChangeLog::parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 2);
         assert_eq!(symbols[0].name, "pkg (2.0-1)");
@@ -92,7 +90,8 @@ pkg (1.0-1) experimental; urgency=low
     fn test_selection_range_is_header() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = ChangeLog::parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         // Selection range should start at the header
         assert_eq!(symbols[0].selection_range.start.line, 0);
@@ -104,7 +103,8 @@ pkg (1.0-1) experimental; urgency=low
     fn test_empty_changelog() {
         let text = "";
         let parsed = ChangeLog::parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 0);
     }
@@ -113,7 +113,8 @@ pkg (1.0-1) experimental; urgency=low
     fn test_multiple_distributions() {
         let text = "pkg (1.0-1) unstable testing; urgency=low\n\n  * Change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = ChangeLog::parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols[0].detail.as_deref(), Some("unstable testing"));
     }
@@ -134,7 +135,8 @@ pkg (1.0-1) unstable; urgency=low
  -- B <b@b.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = ChangeLog::parse(text);
-        let symbols = generate_document_symbols(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let symbols = generate_document_symbols(&parsed, Source::new(text, &idx));
 
         assert_eq!(symbols.len(), 2);
         // First entry ends before second entry starts

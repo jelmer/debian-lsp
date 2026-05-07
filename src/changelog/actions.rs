@@ -2,14 +2,14 @@ use chrono::Local;
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::TextEdit;
 
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 
 /// Generate a TextEdit that updates the timestamp of the first UNRELEASED entry
 /// to the current time. Returns `None` if the first entry is not UNRELEASED or
 /// has no timestamp.
 pub fn generate_timestamp_update_edit(
     changelog: &debian_changelog::ChangeLog,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Option<TextEdit> {
     let entry = changelog.iter().next()?;
 
@@ -40,7 +40,7 @@ pub fn generate_timestamp_update_edit(
         return None;
     }
 
-    let range = text_range_to_lsp_range(source_text, timestamp_node.text_range());
+    let range = src.text_range_to_lsp_range(timestamp_node.text_range());
 
     Some(TextEdit {
         range,
@@ -97,7 +97,8 @@ mod tests {
         let parsed = debian_changelog::ChangeLog::parse(changelog_text);
         let changelog = parsed.tree();
 
-        let edit = generate_timestamp_update_edit(&changelog, changelog_text);
+        let idx = crate::position::LineIndex::new(changelog_text);
+        let edit = generate_timestamp_update_edit(&changelog, Source::new(changelog_text, &idx));
         assert!(
             edit.is_some(),
             "should generate an edit for UNRELEASED entry"
@@ -125,7 +126,8 @@ mod tests {
         let parsed = debian_changelog::ChangeLog::parse(changelog_text);
         let changelog = parsed.tree();
 
-        let edit = generate_timestamp_update_edit(&changelog, changelog_text);
+        let idx = crate::position::LineIndex::new(changelog_text);
+        let edit = generate_timestamp_update_edit(&changelog, Source::new(changelog_text, &idx));
         assert!(
             edit.is_none(),
             "should not generate an edit for released entry"

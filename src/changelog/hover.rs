@@ -10,6 +10,7 @@ use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
+use crate::position::Source;
 
 /// Get hover information for a bug reference in a changelog file.
 ///
@@ -18,7 +19,7 @@ use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
 /// bug reference.
 pub async fn get_hover(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     bug_cache: &SharedBugCache,
 ) -> Option<Hover> {
@@ -26,7 +27,7 @@ pub async fn get_hover(
     // the first await so the future remains Send.
     let bug = {
         let changelog = debian_changelog::ChangeLog::cast(parse.syntax_node())?;
-        let offset = crate::position::try_position_to_offset(source_text, position)?;
+        let offset = src.try_position_to_offset(position)?;
         let entry = changelog.entry_at_offset(offset)?;
         entry.bug_at_offset(offset)?
     };

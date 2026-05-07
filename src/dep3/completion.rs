@@ -6,6 +6,7 @@
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use super::fields::DEP3_FIELDS;
+use crate::position::{LineIndex, Source};
 
 /// Get completion items for a DEP-3 header at `position`. `header`
 /// is the parsed deb822 of the header portion only; `header_end` is
@@ -14,16 +15,20 @@ use super::fields::DEP3_FIELDS;
 pub fn get_completions(
     header: &deb822_lossless::Deb822,
     header_end: usize,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Vec<CompletionItem> {
-    if !super::is_in_dep3_header(source_text, header_end, position) {
+    if !super::is_in_dep3_header(src, header_end, position) {
         return Vec::new();
     }
-    let header_text = &source_text[..header_end];
+    let header_text = &src.text[..header_end];
+    // The header substring shares its 0-offset with the buffer, so a
+    // fresh LineIndex over it is correct for the deb822 layer.
+    let header_idx = LineIndex::new(header_text);
+    let header_src = Source::new(header_text, &header_idx);
     crate::deb822::completion::get_completions(
         header,
-        header_text,
+        header_src,
         position,
         DEP3_FIELDS,
         value_completions,
@@ -80,9 +85,11 @@ mod tests {
     use super::*;
 
     fn run(text: &str, position: Position) -> Vec<CompletionItem> {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let header_end = dep3::lossless::header_end(text);
         let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
-        get_completions(&parsed.tree(), header_end, text, position)
+        get_completions(&parsed.tree(), header_end, src, position)
     }
 
     #[test]

@@ -1,13 +1,13 @@
 //! Semantic token generation for debian/patches/series files.
 use crate::deb822::semantic::{token_modifier, SemanticTokensBuilder, TokenType};
-use crate::position::offset_to_position;
+use crate::position::Source;
 use patchkit::edit::series::lex::SyntaxKind;
 use patchkit::edit::series::lossless::SeriesFile;
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::SemanticToken;
 
 /// Generate semantic tokens for a debian/patches/series file
-pub fn generate_semantic_tokens(series: &SeriesFile, source_text: &str) -> Vec<SemanticToken> {
+pub fn generate_semantic_tokens(series: &SeriesFile, src: Source<'_>) -> Vec<SemanticToken> {
     let mut builder = SemanticTokensBuilder::new();
 
     for element in series.syntax().descendants_with_tokens() {
@@ -15,7 +15,7 @@ pub fn generate_semantic_tokens(series: &SeriesFile, source_text: &str) -> Vec<S
             match token.kind() {
                 SyntaxKind::HASH | SyntaxKind::TEXT => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let length = crate::position::utf16_len(token.text());
                     builder.push(
                         start_pos.line,
@@ -27,7 +27,7 @@ pub fn generate_semantic_tokens(series: &SeriesFile, source_text: &str) -> Vec<S
                 }
                 SyntaxKind::PATCH_NAME => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let length = crate::position::utf16_len(token.text());
                     builder.push(
                         start_pos.line,
@@ -39,7 +39,7 @@ pub fn generate_semantic_tokens(series: &SeriesFile, source_text: &str) -> Vec<S
                 }
                 SyntaxKind::OPTION => {
                     let range = token.text_range();
-                    let start_pos = offset_to_position(source_text, range.start());
+                    let start_pos = src.offset_to_position(range.start());
                     let length = crate::position::utf16_len(token.text());
                     builder.push(
                         start_pos.line,
@@ -61,13 +61,15 @@ pub fn generate_semantic_tokens(series: &SeriesFile, source_text: &str) -> Vec<S
 mod tests {
     use super::generate_semantic_tokens;
     use crate::deb822::semantic::TokenType;
+    use crate::position::Source;
 
     #[test]
     fn test_generate_semantic_tokens_patch_name() {
         let text = "fix-arm.patch\n";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         assert_eq!(tokens[0].delta_line, 0);
@@ -81,7 +83,8 @@ mod tests {
         let text = "fix-arm.patch -p1\n";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].token_type, TokenType::Value as u32);
@@ -95,7 +98,8 @@ mod tests {
         let text = "# This is a comment\n";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         for token in &tokens {
@@ -108,7 +112,8 @@ mod tests {
         let text = "fix-arm.patch\nfix-mips.patch -p1\n";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].token_type, TokenType::Value as u32);
@@ -121,7 +126,8 @@ mod tests {
         let text = "";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert!(tokens.is_empty());
     }
@@ -131,7 +137,8 @@ mod tests {
         let text = "# Security\nfix-arm.patch -p1\nooo.patch\n";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert!(!tokens.is_empty());
         assert_eq!(tokens[0].token_type, TokenType::Comment as u32);
@@ -142,7 +149,8 @@ mod tests {
         let text = "upstream/fix-arm.patch\n";
         let parsed = patchkit::edit::series::parse(text);
         let series = parsed.tree();
-        let tokens = generate_semantic_tokens(&series, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&series, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].token_type, TokenType::Value as u32);

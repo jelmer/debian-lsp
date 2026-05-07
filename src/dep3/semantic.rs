@@ -44,16 +44,15 @@ fn intern(name: &str) -> &'static str {
 }
 
 /// Generate semantic tokens for a DEP-3 header. `header` is the
-/// parsed deb822 of the header portion only; `source_text` is the
-/// whole patch buffer, used by the underlying token generator for
-/// position math. Tokens are emitted only for the header — the diff
-/// body is left for diff-lsp.
+/// parsed deb822 of the header portion only; `src` carries the
+/// whole patch buffer + line index. Tokens are emitted only for
+/// the header — the diff body is left for diff-lsp.
 pub fn generate_semantic_tokens(
     header: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: crate::position::Source<'_>,
 ) -> Vec<SemanticToken> {
     let validator = Dep3FieldValidator;
-    generate_tokens(header, source_text, &validator)
+    generate_tokens(header, src, &validator)
 }
 
 #[cfg(test)]
@@ -64,7 +63,8 @@ mod tests {
     fn run(text: &str) -> Vec<SemanticToken> {
         let header_end = dep3::lossless::header_end(text);
         let parsed = deb822_lossless::Deb822::parse(&text[..header_end]);
-        generate_semantic_tokens(&parsed.tree(), text)
+        let idx = crate::position::LineIndex::new(text);
+        generate_semantic_tokens(&parsed.tree(), crate::position::Source::new(text, &idx))
     }
 
     #[test]

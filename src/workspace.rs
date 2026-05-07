@@ -126,6 +126,15 @@ pub fn parse_lintian_overrides(
     lintian_overrides::LintianOverrides::parse(&text)
 }
 
+/// Salsa-tracked line index for a buffer. Walking the full buffer
+/// per LSP-position conversion is O(N); the index turns it into a
+/// log N binary search. See [`crate::position::LineIndex`].
+#[salsa::tracked(returns(clone))]
+pub fn line_index(db: &dyn salsa::Database, file: SourceFile) -> Arc<crate::position::LineIndex> {
+    let text = file.text(db);
+    Arc::new(crate::position::LineIndex::new(&text))
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -275,12 +284,13 @@ impl Workspace {
 
     pub fn get_copyright_diagnostics(&self, file: SourceFile) -> Vec<Diagnostic> {
         let source_text = self.source_text(file);
+        let idx = self.get_line_index(file);
+        let src = crate::position::Source::new(&source_text, &idx);
         let mut diagnostics = Vec::new();
 
         // Add field casing diagnostics
         for issue in self.find_copyright_field_casing_issues(file, None) {
-            let lsp_range =
-                crate::position::text_range_to_lsp_range(&source_text, issue.field_range);
+            let lsp_range = src.text_range_to_lsp_range(issue.field_range);
 
             diagnostics.push(Diagnostic {
                 range: lsp_range,
@@ -357,6 +367,13 @@ impl Workspace {
         file: SourceFile,
     ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
         parse_lintian_overrides(self, file)
+    }
+
+    /// Salsa-cached line index for `file`. Use the methods on the
+    /// returned [`crate::position::LineIndex`] to convert byte
+    /// offsets to LSP positions and back.
+    pub fn get_line_index(&self, file: SourceFile) -> Arc<crate::position::LineIndex> {
+        line_index(self, file)
     }
 
     /// Find UNRELEASED entries in the given range that can be marked for upload

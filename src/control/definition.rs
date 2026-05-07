@@ -8,7 +8,7 @@ use tower_lsp_server::ls_types::{Location, Position, Uri};
 
 use super::relation_completion::is_relationship_field;
 use crate::deb822::completion::{get_cursor_context, CursorContext};
-use crate::position::{text_range_to_lsp_range, try_position_to_offset};
+use crate::position::Source;
 
 /// Find the package name at the cursor position within a relationship field value.
 ///
@@ -46,7 +46,7 @@ fn find_package_at_offset(value: &str, offset_in_value: usize) -> Option<String>
 /// binary packages defined in the file.
 pub fn goto_definition(
     parse: &Parse<Control>,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
     uri: &Uri,
 ) -> Option<Location> {
@@ -54,7 +54,7 @@ pub fn goto_definition(
     let deb822 = control.as_deb822();
 
     // Determine cursor context — we only handle relationship field values.
-    let ctx = get_cursor_context(deb822, source_text, position)?;
+    let ctx = get_cursor_context(deb822, src, position)?;
     let (field_name, _value_prefix) = match ctx {
         CursorContext::FieldValue {
             field_name,
@@ -68,7 +68,7 @@ pub fn goto_definition(
     }
 
     // Find the entry that contains the cursor to get the full value and its byte range.
-    let offset = try_position_to_offset(source_text, position)?;
+    let offset = src.try_position_to_offset(position)?;
     let entry = deb822
         .paragraphs()
         .flat_map(|p| p.entries().collect::<Vec<_>>())
@@ -84,7 +84,7 @@ pub fn goto_definition(
     // Get the raw value text from the source, stripping continuation-line
     // leading whitespace the same way the completion code does.
     let value_end: usize = value_range.end().into();
-    let raw_value = &source_text[value_start..value_end];
+    let raw_value = &src.text[value_start..value_end];
 
     // The value_prefix gives us text up to cursor with continuation indentation
     // stripped. But for CST offset computation we need the offset within the
@@ -97,7 +97,7 @@ pub fn goto_definition(
     for binary in control.binaries() {
         if binary.name().as_deref() == Some(package_name.as_str()) {
             let para = binary.as_deb822();
-            let range = text_range_to_lsp_range(source_text, para.syntax().text_range());
+            let range = src.text_range_to_lsp_range(para.syntax().text_range());
             return Some(Location {
                 uri: uri.clone(),
                 range,
@@ -109,7 +109,7 @@ pub fn goto_definition(
     if let Some(source) = control.source() {
         if source.name().as_deref() == Some(package_name.as_str()) {
             let para = source.as_deb822();
-            let range = text_range_to_lsp_range(source_text, para.syntax().text_range());
+            let range = src.text_range_to_lsp_range(para.syntax().text_range());
             return Some(Location {
                 uri: uri.clone(),
                 range,
@@ -149,10 +149,12 @@ Architecture: any
 Description: Development files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "mypackage-dev" in Build-Depends (line 2, on the 'm' of mypackage-dev)
-        let result = goto_definition(&parsed, text, Position::new(2, 26), &uri);
+        let result = goto_definition(&parsed, src, Position::new(2, 26), &uri);
         assert!(result.is_some(), "Should find definition for mypackage-dev");
         let loc = result.unwrap();
         // Should point to the "Package: mypackage-dev" paragraph
@@ -175,10 +177,12 @@ Architecture: any
 Description: Dev files
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "foo-dev" in Depends field (line 5, character 10)
-        let result = goto_definition(&parsed, text, Position::new(5, 10), &uri);
+        let result = goto_definition(&parsed, src, Position::new(5, 10), &uri);
         assert!(result.is_some(), "Should find definition for foo-dev");
         let loc = result.unwrap();
         assert_eq!(loc.range.start.line, 8);
@@ -195,10 +199,12 @@ Architecture: any
 Description: A package
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "any" in Architecture field — not a relationship field
-        let result = goto_definition(&parsed, text, Position::new(4, 16), &uri);
+        let result = goto_definition(&parsed, src, Position::new(4, 16), &uri);
         assert!(result.is_none());
     }
 
@@ -214,10 +220,12 @@ Architecture: any
 Description: A package
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "debhelper" — not defined in this control file
-        let result = goto_definition(&parsed, text, Position::new(2, 18), &uri);
+        let result = goto_definition(&parsed, src, Position::new(2, 18), &uri);
         assert!(result.is_none());
     }
 
@@ -239,10 +247,12 @@ Architecture: any
 Description: Dev
 ";
         let parsed = Control::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let src = Source::new(text, &idx);
         let uri = test_uri();
 
         // Cursor on "foo-dev" in multiline Build-Depends (line 4, character 1)
-        let result = goto_definition(&parsed, text, Position::new(4, 2), &uri);
+        let result = goto_definition(&parsed, src, Position::new(4, 2), &uri);
         assert!(
             result.is_some(),
             "Should find definition for foo-dev in multiline field"

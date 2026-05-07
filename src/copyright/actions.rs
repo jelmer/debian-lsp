@@ -1,4 +1,4 @@
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 use crate::workspace::FieldCasingIssue;
 use text_size::TextRange;
 use tower_lsp_server::ls_types::*;
@@ -6,25 +6,25 @@ use tower_lsp_server::ls_types::*;
 /// Format an entire copyright file using wrap-and-sort
 ///
 /// # Arguments
-/// * `source_text` - The source text of the file
+/// * `src.text` - The source text of the file
 /// * `parsed` - The parsed copyright file
 ///
 /// # Returns
 /// A list of text edits to apply, or None if the file is already formatted
 pub fn format_copyright(
-    source_text: &str,
+    src: Source<'_>,
     parsed: &debian_copyright::lossless::Parse,
 ) -> Option<Vec<TextEdit>> {
     let mut copyright = parsed.clone().to_result().ok()?;
     copyright.wrap_and_sort(deb822_lossless::Indentation::Spaces(1), false, Some(79));
     let formatted = copyright.to_string();
-    if formatted == source_text {
+    if formatted == src.text {
         return None;
     }
-    let full_range = crate::position::text_range_to_lsp_range(
-        source_text,
-        text_size::TextRange::new(0.into(), (source_text.len() as u32).into()),
-    );
+    let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
+        0.into(),
+        (src.text.len() as u32).into(),
+    ));
     Some(vec![TextEdit {
         range: full_range,
         new_text: formatted,
@@ -38,7 +38,7 @@ pub fn format_copyright(
 ///
 /// # Arguments
 /// * `uri` - The URI of the copyright file
-/// * `source_text` - The source text of the file
+/// * `src.text` - The source text of the file
 /// * `parsed` - The parsed copyright file
 /// * `text_range` - The text range to operate on
 ///
@@ -46,7 +46,7 @@ pub fn format_copyright(
 /// A code action if applicable paragraphs are found, None otherwise
 pub fn get_wrap_and_sort_action(
     uri: &Uri,
-    source_text: &str,
+    src: Source<'_>,
     parsed: &debian_copyright::lossless::Parse,
     text_range: TextRange,
 ) -> Option<CodeActionOrCommand> {
@@ -63,7 +63,7 @@ pub fn get_wrap_and_sort_action(
             None,
             None,
         );
-        let lsp_range = text_range_to_lsp_range(source_text, para_range);
+        let lsp_range = src.text_range_to_lsp_range(para_range);
         edits.push(TextEdit {
             range: lsp_range,
             new_text: formatted_para.to_string(),
@@ -80,7 +80,7 @@ pub fn get_wrap_and_sort_action(
             None,
             None,
         );
-        let lsp_range = text_range_to_lsp_range(source_text, para_range);
+        let lsp_range = src.text_range_to_lsp_range(para_range);
         edits.push(TextEdit {
             range: lsp_range,
             new_text: formatted_para.to_string(),
@@ -97,7 +97,7 @@ pub fn get_wrap_and_sort_action(
             None,
             None,
         );
-        let lsp_range = text_range_to_lsp_range(source_text, para_range);
+        let lsp_range = src.text_range_to_lsp_range(para_range);
         edits.push(TextEdit {
             range: lsp_range,
             new_text: formatted_para.to_string(),
@@ -127,7 +127,7 @@ pub fn get_wrap_and_sort_action(
 ///
 /// # Arguments
 /// * `uri` - The URI of the copyright file
-/// * `source_text` - The source text
+/// * `src.text` - The source text
 /// * `issues` - The field casing issues found
 /// * `diagnostics` - The diagnostics from the context
 ///
@@ -135,14 +135,14 @@ pub fn get_wrap_and_sort_action(
 /// A vector of code actions for fixing field casing
 pub fn get_field_casing_actions(
     uri: &Uri,
-    source_text: &str,
+    src: Source<'_>,
     issues: Vec<FieldCasingIssue>,
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
 
     for issue in issues {
-        let lsp_range = text_range_to_lsp_range(source_text, issue.field_range);
+        let lsp_range = src.text_range_to_lsp_range(issue.field_range);
 
         // Check if there's a matching diagnostic in the context
         let matching_diagnostics = diagnostics
@@ -205,10 +205,12 @@ License: GPL-3+
 "#;
 
         let parsed = debian_copyright::lossless::Parse::parse(input);
+        let idx = crate::position::LineIndex::new(input);
+        let src = Source::new(input, &idx);
         let uri: Uri = "file:///debian/copyright".parse().unwrap();
         let text_range = TextRange::new(0.into(), (input.len() as u32).into());
 
-        let action = get_wrap_and_sort_action(&uri, input, &parsed, text_range);
+        let action = get_wrap_and_sort_action(&uri, src, &parsed, text_range);
 
         // Should return a code action
         assert!(action.is_some());
@@ -262,6 +264,8 @@ License: GPL-3+
 upstream-name: test
 "#;
 
+        let idx = crate::position::LineIndex::new(input);
+        let src = Source::new(input, &idx);
         let uri: Uri = "file:///debian/copyright".parse().unwrap();
         let issues = vec![
             FieldCasingIssue {
@@ -276,7 +280,7 @@ upstream-name: test
             },
         ];
 
-        let actions = get_field_casing_actions(&uri, input, issues, &[]);
+        let actions = get_field_casing_actions(&uri, src, issues, &[]);
 
         assert_eq!(actions.len(), 2);
 
@@ -309,7 +313,8 @@ License: GPL-3+
 "#;
 
         let parsed = debian_copyright::lossless::Parse::parse(input);
-        let edits = format_copyright(input, &parsed);
+        let idx = crate::position::LineIndex::new(input);
+        let edits = format_copyright(Source::new(input, &idx), &parsed);
 
         // May or may not produce edits depending on whether input is already formatted
         if let Some(edits) = edits {
@@ -334,7 +339,8 @@ License: GPL-3+
 "#;
 
         let parsed = debian_copyright::lossless::Parse::parse(input);
-        let first_format = format_copyright(input, &parsed);
+        let idx = crate::position::LineIndex::new(input);
+        let first_format = format_copyright(Source::new(input, &idx), &parsed);
 
         let formatted = match first_format {
             Some(edits) => edits[0].new_text.clone(),
@@ -343,7 +349,8 @@ License: GPL-3+
 
         // Format again - should return None since already formatted
         let parsed2 = debian_copyright::lossless::Parse::parse(&formatted);
-        let second_format = format_copyright(&formatted, &parsed2);
+        let idx2 = crate::position::LineIndex::new(&formatted);
+        let second_format = format_copyright(Source::new(&formatted, &idx2), &parsed2);
         assert!(second_format.is_none());
     }
 }

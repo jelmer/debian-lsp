@@ -14,12 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::position::Source;
 use debian_copyright::GlobPattern;
 use rowan::ast::AstNode;
 use tokio::sync::Mutex;
 use tower_lsp_server::ls_types::{CodeLens, Command};
-
-use crate::position::text_range_to_lsp_range;
 
 /// How long cached git file lists remain valid.
 const GIT_FILE_LIST_TTL: Duration = Duration::from_secs(300);
@@ -220,14 +219,14 @@ fn git_ls_files(root: &Path) -> Option<Vec<String>> {
 /// is obtained from `git ls-files` and offloaded to a blocking thread.
 pub async fn generate_code_lenses(
     parsed: &debian_copyright::lossless::Parse,
-    source_text: &str,
+    src: Source<'_>,
     source_root: Option<&Path>,
     git_file_cache: &SharedGitFileCache,
 ) -> Vec<CodeLens> {
     // Extract everything we need from the non-Send parsed tree up front,
     // before any .await points.
-    let mut lenses = generate_license_lenses(parsed, source_text);
-    let file_lens_data = extract_file_lens_data(parsed, source_text);
+    let mut lenses = generate_license_lenses(parsed, src);
+    let file_lens_data = extract_file_lens_data(parsed, src);
 
     if file_lens_data.is_empty() {
         tracing::debug!("no file paragraphs found in copyright file");
@@ -277,7 +276,7 @@ impl FileLensData {
 /// no Send requirement).
 fn extract_file_lens_data(
     parsed: &debian_copyright::lossless::Parse,
-    source_text: &str,
+    src: Source<'_>,
 ) -> FileLensData {
     let copyright = parsed.tree();
 
@@ -313,9 +312,9 @@ fn extract_file_lens_data(
             .entries()
             .find(|e| e.key().is_some_and(|k| k.eq_ignore_ascii_case("Files")))
         {
-            text_range_to_lsp_range(source_text, entry.text_range())
+            src.text_range_to_lsp_range(entry.text_range())
         } else {
-            text_range_to_lsp_range(source_text, para_range)
+            src.text_range_to_lsp_range(para_range)
         };
 
         paragraphs.push(FilesParagraphData {
@@ -337,7 +336,7 @@ fn extract_file_lens_data(
 /// Generate license-usage code lenses only (no source root needed).
 pub fn generate_license_lenses(
     parsed: &debian_copyright::lossless::Parse,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<CodeLens> {
     let copyright = parsed.tree();
     let mut lenses = Vec::new();
@@ -374,9 +373,9 @@ pub fn generate_license_lenses(
             .entries()
             .find(|e| e.key().is_some_and(|k| k.eq_ignore_ascii_case("License")))
         {
-            text_range_to_lsp_range(source_text, entry.text_range())
+            src.text_range_to_lsp_range(entry.text_range())
         } else {
-            text_range_to_lsp_range(source_text, para_range)
+            src.text_range_to_lsp_range(para_range)
         };
 
         lenses.push(CodeLens {
@@ -426,7 +425,8 @@ License: GPL-2+
  This program is free software...
 ";
         let parsed = parse(text);
-        let lenses = generate_license_lenses(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_license_lenses(&parsed, Source::new(text, &idx));
 
         assert_eq!(lenses.len(), 2);
         assert_eq!(
@@ -455,7 +455,8 @@ License: Apache-2.0
  Licensed under the Apache License...
 ";
         let parsed = parse(text);
-        let lenses = generate_license_lenses(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_license_lenses(&parsed, Source::new(text, &idx));
 
         assert_eq!(lenses.len(), 2);
         assert_eq!(
@@ -476,7 +477,8 @@ License: MIT
  Permission is hereby granted...
 ";
         let parsed = parse(text);
-        let lenses = generate_license_lenses(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_license_lenses(&parsed, Source::new(text, &idx));
 
         assert_eq!(lenses.len(), 0);
     }
@@ -494,7 +496,8 @@ License: MIT
  Permission is hereby granted...
 ";
         let parsed = parse(text);
-        let lenses = generate_license_lenses(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_license_lenses(&parsed, Source::new(text, &idx));
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(
@@ -507,7 +510,8 @@ License: MIT
     fn test_empty_copyright() {
         let text = "";
         let parsed = parse(text);
-        let lenses = generate_license_lenses(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_license_lenses(&parsed, Source::new(text, &idx));
 
         assert_eq!(lenses.len(), 0);
     }
@@ -528,7 +532,8 @@ License: MIT
  Permission is hereby granted...
 ";
         let parsed = parse(text);
-        let lenses = generate_license_lenses(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_license_lenses(&parsed, Source::new(text, &idx));
 
         assert_eq!(lenses.len(), 2);
         assert_eq!(
@@ -580,8 +585,16 @@ Copyright: 2024 Bob
 License: GPL-2+
 ";
         let parsed = parse(text);
-        let lenses =
-            generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
+        let lenses = {
+            let idx = crate::position::LineIndex::new(text);
+            generate_code_lenses(
+                &parsed,
+                Source::new(text, &idx),
+                Some(root),
+                &new_shared_git_file_cache(),
+            )
+            .await
+        };
 
         // 3 file-count lenses + 0 license lenses (no standalone License paragraphs)
         // Last matching stanza wins: src/* claims src/{main,lib}.rs,
@@ -619,8 +632,16 @@ Copyright: 2024 Test
 License: MIT
 ";
         let parsed = parse(text);
-        let lenses =
-            generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
+        let lenses = {
+            let idx = crate::position::LineIndex::new(text);
+            generate_code_lenses(
+                &parsed,
+                Source::new(text, &idx),
+                Some(root),
+                &new_shared_git_file_cache(),
+            )
+            .await
+        };
 
         assert_eq!(lenses.len(), 1);
         assert_eq!(lenses[0].command.as_ref().unwrap().title, "1 file");
@@ -656,8 +677,16 @@ Copyright: 2024 Test
 License: MIT
 ";
         let parsed = parse(text);
-        let lenses =
-            generate_code_lenses(&parsed, text, Some(root), &new_shared_git_file_cache()).await;
+        let lenses = {
+            let idx = crate::position::LineIndex::new(text);
+            generate_code_lenses(
+                &parsed,
+                Source::new(text, &idx),
+                Some(root),
+                &new_shared_git_file_cache(),
+            )
+            .await
+        };
 
         // vendor/lib.js excluded, vendor/keep.js re-included, foo.c included
         assert_eq!(lenses.len(), 1);
@@ -677,7 +706,14 @@ License: MIT
  text
 ";
         let parsed = parse(text);
-        let lenses = generate_code_lenses(&parsed, text, None, &new_shared_git_file_cache()).await;
+        let idx = crate::position::LineIndex::new(text);
+        let lenses = generate_code_lenses(
+            &parsed,
+            Source::new(text, &idx),
+            None,
+            &new_shared_git_file_cache(),
+        )
+        .await;
 
         // Only license lenses, no file-count lenses
         assert_eq!(lenses.len(), 1);

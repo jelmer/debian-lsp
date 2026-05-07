@@ -11,12 +11,12 @@
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel};
 
-use crate::position::text_range_to_lsp_range;
+use crate::position::Source;
 
 /// Generate inlay hints for changelog distribution fields.
 pub fn generate_inlay_hints(
     parsed: &debian_changelog::Parse<debian_changelog::ChangeLog>,
-    source_text: &str,
+    src: Source<'_>,
     range: &tower_lsp_server::ls_types::Range,
 ) -> Vec<InlayHint> {
     let changelog = parsed.tree();
@@ -24,7 +24,7 @@ pub fn generate_inlay_hints(
 
     let target_distribution = super::get_target_distribution(&changelog);
 
-    let text_range = match crate::position::try_lsp_range_to_text_range(source_text, range) {
+    let text_range = match src.try_lsp_range_to_text_range(range) {
         Some(r) => r,
         None => return hints,
     };
@@ -68,8 +68,7 @@ pub fn generate_inlay_hints(
         let entry_range = entry.syntax().text_range();
         let abs_end = entry_range.start() + text_size::TextSize::from(dist_end as u32);
 
-        let lsp_range =
-            text_range_to_lsp_range(source_text, text_size::TextRange::new(abs_end, abs_end));
+        let lsp_range = src.text_range_to_lsp_range(text_size::TextRange::new(abs_end, abs_end));
 
         hints.push(InlayHint {
             position: lsp_range.start,
@@ -111,7 +110,8 @@ foo (1.0-1) unstable; urgency=medium
             end: tower_lsp_server::ls_types::Position::new(11, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, changelog_text, &range);
+        let idx = crate::position::LineIndex::new(changelog_text);
+        let hints = generate_inlay_hints(&parsed, Source::new(changelog_text, &idx), &range);
 
         // Should have hints for both UNRELEASED (-> unstable) and unstable (= sid)
         assert_eq!(hints.len(), 2);
@@ -142,7 +142,8 @@ foo (1.0-1) unstable; urgency=medium
             end: tower_lsp_server::ls_types::Position::new(4, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, changelog_text, &range);
+        let idx = crate::position::LineIndex::new(changelog_text);
+        let hints = generate_inlay_hints(&parsed, Source::new(changelog_text, &idx), &range);
 
         assert_eq!(hints.len(), 1);
 
@@ -167,7 +168,8 @@ foo (1.0-1) unstable; urgency=medium
             end: tower_lsp_server::ls_types::Position::new(4, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, changelog_text, &range);
+        let idx = crate::position::LineIndex::new(changelog_text);
+        let hints = generate_inlay_hints(&parsed, Source::new(changelog_text, &idx), &range);
 
         assert_eq!(hints.len(), 0);
     }
@@ -191,7 +193,8 @@ foo (1.0-1) unstable; urgency=medium
             end: tower_lsp_server::ls_types::Position::new(4, 0),
         };
 
-        let hints = generate_inlay_hints(&parsed, changelog_text, &range);
+        let idx = crate::position::LineIndex::new(changelog_text);
+        let hints = generate_inlay_hints(&parsed, Source::new(changelog_text, &idx), &range);
 
         assert_eq!(hints.len(), 1);
 

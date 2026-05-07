@@ -5,11 +5,10 @@
 //! - Renames `debian/<old_name>.*` files to `debian/<new_name>.*`
 //! - Updates references in `debian/tests/control` Depends lines
 
+use crate::position::Source;
 use debian_control::lossless::{Control, Parse};
 use std::path::Path;
 use tower_lsp_server::ls_types::*;
-
-use crate::position::{text_range_to_lsp_range, try_position_to_offset};
 
 /// File extensions that are named after binary packages in the debian/ directory.
 const PACKAGE_FILE_EXTENSIONS: &[&str] = &[
@@ -64,11 +63,11 @@ pub struct PackageNameAtPosition {
 /// Returns `Some` if the cursor is on a `Package:` field value in a binary paragraph.
 pub fn find_package_name_at_position(
     parsed: &Parse<Control>,
-    source_text: &str,
+    src: Source<'_>,
     position: &Position,
 ) -> Option<PackageNameAtPosition> {
     let control = parsed.tree();
-    let offset = try_position_to_offset(source_text, *position)?;
+    let offset = src.try_position_to_offset(*position)?;
 
     for binary in control.binaries() {
         let para = binary.as_deb822();
@@ -77,7 +76,7 @@ pub fn find_package_name_at_position(
 
         if value_range.contains(offset) || value_range.end() == offset {
             let name = binary.name()?;
-            let lsp_range = text_range_to_lsp_range(source_text, value_range);
+            let lsp_range = src.text_range_to_lsp_range(value_range);
             return Some(PackageNameAtPosition {
                 name,
                 range: lsp_range,
@@ -146,11 +145,11 @@ pub fn collect_package_file_renames(
 /// Searches all paragraphs for `Depends:` fields that reference the old package name
 /// and generates edits to replace with the new name.
 pub fn collect_tests_control_edits(
-    tests_control_text: &str,
+    tests_control_src: Source<'_>,
     old_name: &str,
     new_name: &str,
 ) -> Vec<TextEdit> {
-    let parsed = deb822_lossless::Deb822::parse(tests_control_text);
+    let parsed = deb822_lossless::Deb822::parse(tests_control_src.text);
     let deb822 = parsed.tree();
     let mut edits = Vec::new();
 
@@ -164,7 +163,7 @@ pub fn collect_tests_control_edits(
 
         let value_start: usize = value_range.start().into();
         let value_end: usize = value_range.end().into();
-        let value_text = &tests_control_text[value_start..value_end];
+        let value_text = &tests_control_src.text[value_start..value_end];
 
         // Find occurrences of the old package name in the Depends value.
         // We need to match whole package names, not substrings.
@@ -187,7 +186,7 @@ pub fn collect_tests_control_edits(
 
                 let start_range =
                     rowan::TextRange::new((abs_start as u32).into(), (abs_end as u32).into());
-                let lsp_range = text_range_to_lsp_range(tests_control_text, start_range);
+                let lsp_range = tests_control_src.text_range_to_lsp_range(start_range);
 
                 edits.push(TextEdit {
                     range: lsp_range,
@@ -227,7 +226,8 @@ Description: Development files
             line: 3,
             character: 9,
         };
-        let result = find_package_name_at_position(&parsed, text, &pos);
+        let idx = crate::position::LineIndex::new(text);
+        let result = find_package_name_at_position(&parsed, Source::new(text, &idx), &pos);
         assert!(result.is_some());
         let info = result.unwrap();
         assert_eq!(info.name, "foo");
@@ -237,7 +237,8 @@ Description: Development files
             line: 7,
             character: 9,
         };
-        let result = find_package_name_at_position(&parsed, text, &pos);
+        let idx = crate::position::LineIndex::new(text);
+        let result = find_package_name_at_position(&parsed, Source::new(text, &idx), &pos);
         assert!(result.is_some());
         let info = result.unwrap();
         assert_eq!(info.name, "foo-dev");
@@ -247,7 +248,8 @@ Description: Development files
             line: 0,
             character: 8,
         };
-        let result = find_package_name_at_position(&parsed, text, &pos);
+        let idx = crate::position::LineIndex::new(text);
+        let result = find_package_name_at_position(&parsed, Source::new(text, &idx), &pos);
         assert!(result.is_none());
 
         // Position on "Architecture:" line - should not match
@@ -255,7 +257,8 @@ Description: Development files
             line: 4,
             character: 5,
         };
-        let result = find_package_name_at_position(&parsed, text, &pos);
+        let idx = crate::position::LineIndex::new(text);
+        let result = find_package_name_at_position(&parsed, Source::new(text, &idx), &pos);
         assert!(result.is_none());
     }
 
@@ -268,7 +271,8 @@ Depends: foo, bar, baz
 Tests: test-foo-dev
 Depends: foo-dev, foo
 ";
-        let edits = collect_tests_control_edits(text, "foo", "qux");
+        let idx = crate::position::LineIndex::new(text);
+        let edits = collect_tests_control_edits(Source::new(text, &idx), "foo", "qux");
 
         // Should find "foo" in first Depends (but not "foo-dev") and "foo" in second Depends
         assert_eq!(edits.len(), 2);
@@ -282,7 +286,8 @@ Depends: foo-dev, foo
 Tests: test-bar
 Depends: bar, baz
 ";
-        let edits = collect_tests_control_edits(text, "foo", "qux");
+        let idx = crate::position::LineIndex::new(text);
+        let edits = collect_tests_control_edits(Source::new(text, &idx), "foo", "qux");
         assert!(edits.is_empty());
     }
 
@@ -293,7 +298,8 @@ Tests: test
 Depends: libfoo-dev, foo-dev, foo
 ";
         // Renaming "foo" should match "foo" but not "libfoo-dev" or "foo-dev"
-        let edits = collect_tests_control_edits(text, "foo", "bar");
+        let idx = crate::position::LineIndex::new(text);
+        let edits = collect_tests_control_edits(Source::new(text, &idx), "foo", "bar");
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "bar");
         // The edit should point to the last "foo" on line 1

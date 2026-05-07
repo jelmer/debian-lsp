@@ -4,6 +4,7 @@ use tower_lsp_server::ls_types::SemanticToken;
 
 use super::get_standard_field_name;
 use crate::deb822::semantic::{generate_tokens, FieldValidator};
+use crate::position::Source;
 
 /// Field validator for control files
 pub struct ControlFieldValidator;
@@ -17,10 +18,10 @@ impl FieldValidator for ControlFieldValidator {
 /// Generate semantic tokens for a control file
 pub fn generate_semantic_tokens(
     control: &debian_control::lossless::Control,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<SemanticToken> {
     let validator = ControlFieldValidator;
-    generate_tokens(control.as_deb822(), source_text, &validator)
+    generate_tokens(control.as_deb822(), src, &validator)
 }
 
 #[cfg(test)]
@@ -34,7 +35,8 @@ mod tests {
         let parsed = debian_control::lossless::Control::parse(text);
 
         let control = parsed.to_result().expect("Should parse");
-        let tokens = generate_semantic_tokens(&control, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&control, Source::new(text, &idx));
 
         // Should have 4 tokens: Source (field), test-package (value), Maintainer (field), value
         assert_eq!(tokens.len(), 4, "Should have exactly 4 tokens");
@@ -89,7 +91,8 @@ mod tests {
         let parsed = debian_control::lossless::Control::parse(text);
 
         let control = parsed.to_result().expect("Should parse");
-        let tokens = generate_semantic_tokens(&control, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&control, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 4, "Should have 4 tokens");
 
@@ -115,7 +118,8 @@ mod tests {
         let parsed = debian_control::lossless::Control::parse(text);
 
         let control = parsed.to_result().expect("Should parse");
-        let tokens = generate_semantic_tokens(&control, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&control, Source::new(text, &idx));
 
         // "source" (lowercase) should still be recognized as a known field
         assert_eq!(

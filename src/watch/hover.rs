@@ -3,6 +3,7 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 use crate::deb822::completion::{get_cursor_context, CursorContext};
 
 use super::fields::WATCH_FIELDS;
+use crate::position::Source;
 
 /// Look up a watch field description by name (case-insensitive).
 fn get_field_description(field_name: &str) -> Option<(&'static str, &'static str)> {
@@ -26,14 +27,14 @@ fn make_hover(field_name: &str, description: &str) -> Hover {
 /// Get hover information for a debian/watch v5 (deb822) file at the given cursor position.
 pub fn get_hover(
     deb822: &deb822_lossless::Deb822,
-    source_text: &str,
+    src: Source<'_>,
     position: Position,
 ) -> Option<Hover> {
-    let ctx = get_cursor_context(deb822, source_text, position)?;
+    let ctx = get_cursor_context(deb822, src, position)?;
 
     match ctx {
         CursorContext::FieldKey => {
-            let offset = crate::position::try_position_to_offset(source_text, position)?;
+            let offset = src.try_position_to_offset(position)?;
 
             let entry = deb822
                 .paragraphs()
@@ -62,7 +63,8 @@ mod tests {
         let text = "Version: 5\n\nSource: https://example.com\nMode: git\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(3, 2));
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(&deb822, Source::new(text, &idx), Position::new(3, 2));
         assert!(hover.is_some());
     }
 
@@ -71,7 +73,8 @@ mod tests {
         let text = "Version: 5\n\nUnknown: value\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
 
-        let hover = get_hover(&deb822, text, Position::new(2, 3));
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_hover(&deb822, Source::new(text, &idx), Position::new(2, 3));
         assert!(hover.is_none());
     }
 }

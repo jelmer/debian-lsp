@@ -4,12 +4,12 @@ use debian_changelog::SyntaxKind;
 use tower_lsp_server::ls_types::SemanticToken;
 
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
-use crate::position::offset_to_position;
+use crate::position::Source;
 
 /// Generate semantic tokens for a changelog file
 pub fn generate_semantic_tokens(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<SemanticToken> {
     let mut builder = SemanticTokensBuilder::new();
 
@@ -38,13 +38,13 @@ pub fn generate_semantic_tokens(
                         _ => None,
                     };
                     if let Some(tt) = token_type {
-                        push_token(&mut builder, source_text, range.start(), token.text(), tt);
+                        push_token(&mut builder, src, range.start(), token.text(), tt);
                     }
                 }
                 SyntaxKind::VERSION => {
                     push_token(
                         &mut builder,
-                        source_text,
+                        src,
                         range.start(),
                         token.text(),
                         TokenType::ChangelogVersion,
@@ -53,7 +53,7 @@ pub fn generate_semantic_tokens(
                 SyntaxKind::COMMENT => {
                     push_token(
                         &mut builder,
-                        source_text,
+                        src,
                         range.start(),
                         token.text(),
                         TokenType::Comment,
@@ -62,7 +62,7 @@ pub fn generate_semantic_tokens(
                 SyntaxKind::DETAIL => {
                     bug_ref_continues = push_bug_references(
                         &mut builder,
-                        source_text,
+                        src,
                         range.start(),
                         token.text(),
                         bug_ref_continues,
@@ -78,7 +78,7 @@ pub fn generate_semantic_tokens(
                         _ => None,
                     };
                     if let Some(tt) = token_type {
-                        push_token(&mut builder, source_text, range.start(), token.text(), tt);
+                        push_token(&mut builder, src, range.start(), token.text(), tt);
                     }
                 }
             }
@@ -90,12 +90,12 @@ pub fn generate_semantic_tokens(
 
 fn push_token(
     builder: &mut SemanticTokensBuilder,
-    source_text: &str,
+    src: Source<'_>,
     start: text_size::TextSize,
     text: &str,
     token_type: TokenType,
 ) {
-    let start_pos = offset_to_position(source_text, start);
+    let start_pos = src.offset_to_position(start);
     let length = crate::position::utf16_len(text);
     if length > 0 {
         builder.push(start_pos.line, start_pos.character, length, token_type, 0);
@@ -110,7 +110,7 @@ fn push_token(
 /// Returns `true` if the reference continues past the end of this token.
 fn push_bug_references(
     builder: &mut SemanticTokensBuilder,
-    source_text: &str,
+    src: Source<'_>,
     token_start: text_size::TextSize,
     text: &str,
     continues_from_prev: bool,
@@ -122,7 +122,7 @@ fn push_bug_references(
     for span in &spans {
         let matched_text = &text[span.start..span.end];
         let abs_start = text_size::TextSize::from((start + span.start) as u32);
-        let start_pos = offset_to_position(source_text, abs_start);
+        let start_pos = src.offset_to_position(abs_start);
         let length = crate::position::utf16_len(matched_text);
         if length > 0 {
             builder.push(
@@ -154,7 +154,8 @@ mod tests {
     fn test_all_token_types_in_entry() {
         let text = "test-package (1.0-1) unstable; urgency=medium\n\n  * Initial release.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let summary = token_summary(&tokens);
 
@@ -201,7 +202,8 @@ mod tests {
     fn test_maintainer_and_timestamp() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Change.\n\n -- Test User <test@test.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let summary = token_summary(&tokens);
 
@@ -232,7 +234,8 @@ pkg (1.0-1) unstable; urgency=low
  -- B <b@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 ";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         // Should have package tokens for both entries
         let package_tokens: Vec<_> = tokens
@@ -253,7 +256,8 @@ pkg (1.0-1) unstable; urgency=low
     fn test_multiple_distributions() {
         let text = "pkg (1.0-1) unstable testing; urgency=low\n\n  * Change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let dist_tokens: Vec<_> = tokens
             .iter()
@@ -270,7 +274,8 @@ pkg (1.0-1) unstable; urgency=low
     fn test_bug_reference_closes() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix bug. (Closes: #123456)\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let bug_tokens: Vec<_> = tokens
             .iter()
@@ -285,7 +290,8 @@ pkg (1.0-1) unstable; urgency=low
     fn test_bug_reference_lp() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix bug. (LP: #987654)\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let bug_tokens: Vec<_> = tokens
             .iter()
@@ -300,7 +306,8 @@ pkg (1.0-1) unstable; urgency=low
     fn test_bug_reference_multiple() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix bugs. (Closes: #111, #222)\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let bug_tokens: Vec<_> = tokens
             .iter()
@@ -315,7 +322,8 @@ pkg (1.0-1) unstable; urgency=low
     fn test_no_bug_reference() {
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Regular change.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let bug_tokens: Vec<_> = tokens
             .iter()
@@ -329,7 +337,8 @@ pkg (1.0-1) unstable; urgency=low
         // "Closes:" on one line, bug number on the next
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix bug. Closes:\n    #123456\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let bug_tokens: Vec<_> = tokens
             .iter()
@@ -346,7 +355,8 @@ pkg (1.0-1) unstable; urgency=low
         // Bugs split across lines with comma
         let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix bugs. Closes: #111,\n    #222\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
         let parsed = debian_changelog::ChangeLog::parse(text);
-        let tokens = generate_semantic_tokens(&parsed, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
 
         let bug_tokens: Vec<_> = tokens
             .iter()

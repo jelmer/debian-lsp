@@ -4,6 +4,7 @@ use tower_lsp_server::ls_types::SemanticToken;
 
 use super::get_standard_field_name;
 use crate::deb822::semantic::{generate_tokens, FieldValidator};
+use crate::position::Source;
 
 /// Field validator for copyright files
 pub struct CopyrightFieldValidator;
@@ -17,10 +18,10 @@ impl FieldValidator for CopyrightFieldValidator {
 /// Generate semantic tokens for a copyright file
 pub fn generate_semantic_tokens(
     copyright: &debian_copyright::lossless::Copyright,
-    source_text: &str,
+    src: Source<'_>,
 ) -> Vec<SemanticToken> {
     let validator = CopyrightFieldValidator;
-    generate_tokens(copyright.as_deb822(), source_text, &validator)
+    generate_tokens(copyright.as_deb822(), src, &validator)
 }
 
 #[cfg(test)]
@@ -34,7 +35,8 @@ mod tests {
         let parsed = debian_copyright::lossless::Parse::parse(text);
 
         let copyright = parsed.tree();
-        let tokens = generate_semantic_tokens(&copyright, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&copyright, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 4, "Should have exactly 4 tokens");
 
@@ -65,7 +67,8 @@ mod tests {
         let parsed = debian_copyright::lossless::Parse::parse(text);
 
         let copyright = parsed.tree();
-        let tokens = generate_semantic_tokens(&copyright, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&copyright, Source::new(text, &idx));
 
         assert_eq!(tokens.len(), 4);
 
@@ -83,7 +86,8 @@ mod tests {
         let parsed = debian_copyright::lossless::Parse::parse(text);
 
         let copyright = parsed.tree();
-        let tokens = generate_semantic_tokens(&copyright, text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&copyright, Source::new(text, &idx));
 
         assert_eq!(tokens[0].token_type, TokenType::Field as u32);
     }
