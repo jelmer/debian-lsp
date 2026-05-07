@@ -27,6 +27,7 @@ mod changelog;
 mod control;
 mod copyright;
 mod deb822;
+mod dep3;
 mod distros;
 mod lintian_overrides;
 mod maintainers;
