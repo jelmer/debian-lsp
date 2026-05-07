@@ -14,7 +14,7 @@ use ::lintian_brush::diagnostic::{
     Action, ActionPlan, ChangelogAction, Deb822Action, Dep3Action, Diagnostic as LbDiagnostic,
     FilesystemAction, IndentPattern, ParagraphSelector, WatchAction, YamlAction, YamlPathComponent,
 };
-use ::lintian_brush::workspace::iter_detectors;
+use ::lintian_brush::workspace::{iter_detectors, ChangelogAspect, DetectorCost, Trigger};
 use ::lintian_brush::{FixerPreferences, Version};
 use debian_changelog::ChangeLog;
 use debian_control::lossless::Control;
@@ -28,9 +28,328 @@ use tower_lsp_server::ls_types::{
 };
 
 use crate::lintian_brush::workspace::LspDebianWorkspace;
-use crate::position;
 use crate::workspace::{SourceFile, Workspace};
 use crate::FileInfo;
+
+pub use crate::phase::RunPhase;
+
+// Local one-shot wrappers around the [`LineIndex`] methods. Match
+// the dropped free-function shims in `crate::position`: build a
+// fresh index per call. Hot paths should migrate to the salsa-cached
+// `Workspace::get_line_index` + `Source<'_>` API.
+mod position {
+    use crate::position::LineIndex;
+    use rowan::{TextRange, TextSize};
+    use tower_lsp_server::ls_types::{Position, Range};
+
+    pub fn text_range_to_lsp_range(text: &str, range: TextRange) -> Range {
+        LineIndex::new(text).text_range_to_lsp_range(text, range)
+    }
+
+    pub fn offset_to_position(text: &str, offset: TextSize) -> Position {
+        LineIndex::new(text).offset_to_position(text, offset)
+    }
+}
+
+/// Maximum [`DetectorCost`] this phase will run.
+fn phase_max_cost(phase: RunPhase) -> DetectorCost {
+    match phase {
+        RunPhase::Keystroke => DetectorCost::Cheap,
+        RunPhase::Open => DetectorCost::Subprocess,
+        RunPhase::Explicit => DetectorCost::Network,
+    }
+}
+
+/// Whether detectors are allowed to use the network in this phase.
+fn phase_allow_net(phase: RunPhase) -> bool {
+    matches!(phase, RunPhase::Explicit)
+}
+
+/// Decide whether `detector` should run for an edit on `rel` whose
+/// changed text spans `changed_ranges` (or `None` if the entire file
+/// is in scope, e.g. on file-open).
+///
+/// Filtering is conservative: a detector with no declared triggers
+/// always runs, and a detector with at least one trigger that *might*
+/// match runs even if other triggers definitely don't. We never block
+/// a detector that the registry hasn't told us is irrelevant.
+fn detector_matches(
+    detector: &dyn ::lintian_brush::workspace::Detector,
+    rel: &Path,
+    deb822: Option<&deb822_lossless::Deb822>,
+    changelog: Option<&ChangeLog>,
+    yaml: Option<&yaml_edit::YamlFile>,
+    changed_ranges: Option<&[rowan::TextRange]>,
+) -> bool {
+    let triggers = detector.triggers();
+    if triggers.is_empty() {
+        // No declared triggers — be conservative and run it.
+        return true;
+    }
+    triggers
+        .iter()
+        .any(|t| trigger_matches(t, rel, deb822, changelog, yaml, changed_ranges))
+}
+
+/// Does `trigger` match an edit on `rel` whose changed ranges are
+/// `changed_ranges`? `deb822` / `changelog` / `yaml` are the cached
+/// parses for this file, used for field-level filtering. When any of
+/// them is `None` we fall back to the file-level match (over-trigger
+/// rather than miss).
+fn trigger_matches(
+    trigger: &Trigger,
+    rel: &Path,
+    deb822: Option<&deb822_lossless::Deb822>,
+    changelog: Option<&ChangeLog>,
+    yaml: Option<&yaml_edit::YamlFile>,
+    changed_ranges: Option<&[rowan::TextRange]>,
+) -> bool {
+    match trigger {
+        Trigger::File(p) => Path::new(p) == rel,
+        Trigger::Glob(g) => glob_matches(g, rel),
+        Trigger::Deb822Field {
+            file,
+            paragraph_key,
+            field,
+        } => {
+            if Path::new(file) != rel {
+                return false;
+            }
+            let Some(deb822) = deb822 else {
+                // We don't have a parse to narrow against; assume
+                // possible match.
+                return true;
+            };
+            let Some(ranges) = changed_ranges else {
+                // No range info — assume any field could be touched.
+                return true;
+            };
+            ranges
+                .iter()
+                .any(|r| deb822_range_touches_field(deb822, *r, paragraph_key, field))
+        }
+        Trigger::Watch(aspect) => {
+            if rel != Path::new("debian/watch") {
+                return false;
+            }
+            // We don't currently narrow watch triggers by aspect — the
+            // line-based vs deb822 split makes that fiddly. Match any
+            // aspect if the file matches.
+            let _ = aspect;
+            true
+        }
+        Trigger::Changelog(aspect) => {
+            if rel != Path::new("debian/changelog") {
+                return false;
+            }
+            let Some(changelog) = changelog else {
+                return true;
+            };
+            let Some(ranges) = changed_ranges else {
+                return true;
+            };
+            ranges
+                .iter()
+                .any(|r| changelog_range_touches_aspect(changelog, *r, *aspect))
+        }
+        Trigger::UpstreamMetadataField(field) => {
+            if rel != Path::new("debian/upstream/metadata") {
+                return false;
+            }
+            let Some(yaml) = yaml else {
+                return true;
+            };
+            let Some(ranges) = changed_ranges else {
+                return true;
+            };
+            ranges
+                .iter()
+                .any(|r| yaml_range_touches_top_field(yaml, *r, field))
+        }
+    }
+}
+
+/// Match an `fnmatch(3)`-style glob against `rel`. Supports `*` (any
+/// run of non-separator chars) and `?` (single non-separator char);
+/// no character classes, no `**`. Path separators are matched literally
+/// — a `*` does not cross a `/`.
+fn glob_matches(pattern: &str, rel: &Path) -> bool {
+    let Some(s) = rel.to_str() else {
+        return false;
+    };
+    glob_matches_str(pattern, s)
+}
+
+fn glob_matches_str(pattern: &str, s: &str) -> bool {
+    let pat = pattern.as_bytes();
+    let txt = s.as_bytes();
+    glob_matches_inner(pat, 0, txt, 0)
+}
+
+fn glob_matches_inner(pat: &[u8], mut pi: usize, txt: &[u8], mut ti: usize) -> bool {
+    while pi < pat.len() {
+        match pat[pi] {
+            b'*' => {
+                // Skip runs of `*`.
+                while pi < pat.len() && pat[pi] == b'*' {
+                    pi += 1;
+                }
+                if pi == pat.len() {
+                    // Trailing `*` — match anything but a `/`.
+                    return !txt[ti..].contains(&b'/');
+                }
+                // Try every position in the current path component.
+                while ti <= txt.len() {
+                    if glob_matches_inner(pat, pi, txt, ti) {
+                        return true;
+                    }
+                    if ti == txt.len() || txt[ti] == b'/' {
+                        return false;
+                    }
+                    ti += 1;
+                }
+                return false;
+            }
+            b'?' => {
+                if ti >= txt.len() || txt[ti] == b'/' {
+                    return false;
+                }
+                pi += 1;
+                ti += 1;
+            }
+            c => {
+                if ti >= txt.len() || txt[ti] != c {
+                    return false;
+                }
+                pi += 1;
+                ti += 1;
+            }
+        }
+    }
+    ti == txt.len()
+}
+
+/// Does `range` overlap with any entry whose key matches `field` in a
+/// paragraph that contains a key matching `paragraph_key`? Both `field`
+/// and `paragraph_key` follow Trigger's wildcard rules: trailing `*` is
+/// a prefix wildcard, bare `*` matches anything.
+fn deb822_range_touches_field(
+    deb822: &deb822_lossless::Deb822,
+    range: rowan::TextRange,
+    paragraph_key: &str,
+    field: &str,
+) -> bool {
+    for paragraph in deb822.paragraphs_in_range(range) {
+        // Does this paragraph contain a key matching `paragraph_key`?
+        let has_key = paragraph
+            .entries()
+            .filter_map(|e| e.key())
+            .any(|k| name_matches(paragraph_key, &k));
+        if !has_key {
+            continue;
+        }
+        for entry in paragraph.entries_in_range(range) {
+            let Some(key) = entry.key() else {
+                continue;
+            };
+            if name_matches(field, &key) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Does the changed `range` touch any part of a changelog entry that
+/// corresponds to `aspect`? Conservative: when in doubt, return true.
+fn changelog_range_touches_aspect(
+    changelog: &ChangeLog,
+    range: rowan::TextRange,
+    aspect: ChangelogAspect,
+) -> bool {
+    use rowan::ast::AstNode as _;
+    for entry in changelog.entries_in_range(range) {
+        let entry_range = entry.syntax().text_range();
+        if !ranges_overlap(entry_range, range) {
+            continue;
+        }
+        // Determine whether the changed range falls in the header,
+        // body, or footer. Without finer-grained API, treat any
+        // changelog edit as potentially touching the aspect — but we
+        // can rule out body-only edits against header-aspect triggers.
+        match aspect {
+            ChangelogAspect::Body => {
+                // Any overlap with an entry plausibly touches the body.
+                return true;
+            }
+            ChangelogAspect::Version | ChangelogAspect::Distribution | ChangelogAspect::Urgency => {
+                if let Some(header) = entry.header() {
+                    if ranges_overlap(header.syntax().text_range(), range) {
+                        return true;
+                    }
+                }
+            }
+            ChangelogAspect::Maintainer | ChangelogAspect::Timestamp => {
+                if let Some(footer) = entry.footer() {
+                    if ranges_overlap(footer.syntax().text_range(), range) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Does the changed `range` touch a top-level mapping entry in `yaml`
+/// whose key matches `field`? `field` follows Trigger's wildcard rules.
+fn yaml_range_touches_top_field(
+    yaml: &yaml_edit::YamlFile,
+    range: rowan::TextRange,
+    field: &str,
+) -> bool {
+    use rowan::ast::AstNode as _;
+    let Some(doc) = yaml.document() else {
+        return false;
+    };
+    let Some(mapping) = doc.as_mapping() else {
+        return false;
+    };
+    for entry in mapping.entries() {
+        let entry_range = entry.syntax().text_range();
+        if !ranges_overlap(entry_range, range) {
+            continue;
+        }
+        let Some(key_node) = entry.key_node() else {
+            continue;
+        };
+        let key = match &key_node {
+            yaml_edit::YamlNode::Scalar(s) => s.as_string(),
+            _ => continue,
+        };
+        if name_matches(field, &key) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Wildcard match for trigger field-/paragraph-key patterns: a bare
+/// `*` matches anything, a trailing `*` is a prefix match, otherwise
+/// equality.
+fn name_matches(pattern: &str, name: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return name.starts_with(prefix);
+    }
+    pattern == name
+}
+
+fn ranges_overlap(a: rowan::TextRange, b: rowan::TextRange) -> bool {
+    a.start() < b.end() && b.start() < a.end()
+}
 
 /// Run every registered lintian-brush detector against the package
 /// rooted by `uri` and return the resulting code actions. `uri` may
@@ -45,6 +364,7 @@ pub fn run_fixers_for_uri(
     workspace: &Workspace,
     open_files: &HashMap<Uri, FileInfo>,
     diagnostics: &[Diagnostic],
+    phase: RunPhase,
 ) -> Vec<CodeActionOrCommand> {
     let Some(base_path) = base_path_for_debian_file(uri) else {
         return Vec::new();
@@ -59,9 +379,7 @@ pub fn run_fixers_for_uri(
     };
 
     let preferences = FixerPreferences {
-        // The LSP host never blocks on the network: a code action must be
-        // synthesised quickly. Detectors respect this when they care.
-        net_access: Some(false),
+        net_access: Some(phase_allow_net(phase)),
         ..Default::default()
     };
 
@@ -73,8 +391,17 @@ pub fn run_fixers_for_uri(
         relevant_open_files(open_files),
     );
 
+    // We don't apply trigger-based filtering for code-action
+    // invocation: the user is asking "show me everything that needs
+    // fixing in this package", not just on this file. Cost gating
+    // still applies so a keystroke-mode invocation (rare for fixers in
+    // practice) stays cheap.
+    let max_cost = phase_max_cost(phase);
     let mut actions = Vec::new();
     for detector in iter_detectors() {
+        if detector.cost() > max_cost {
+            continue;
+        }
         let diags = match detector.detect(&ws, &preferences) {
             Ok(d) => d,
             Err(_) => continue,
@@ -127,6 +454,8 @@ pub fn run_diagnostics_for_uri(
     uri: &Uri,
     workspace: &Workspace,
     open_files: &HashMap<Uri, FileInfo>,
+    phase: RunPhase,
+    changed_ranges: Option<&[rowan::TextRange]>,
 ) -> Vec<Diagnostic> {
     let Some(base_path) = base_path_for_debian_file(uri) else {
         return Vec::new();
@@ -139,7 +468,7 @@ pub fn run_diagnostics_for_uri(
         None => (None, None),
     };
     let preferences = FixerPreferences {
-        net_access: Some(false),
+        net_access: Some(phase_allow_net(phase)),
         ..Default::default()
     };
 
@@ -151,9 +480,26 @@ pub fn run_diagnostics_for_uri(
         relevant_open_files(open_files),
     );
     let original = ws.current_text(&rel).unwrap_or_default();
+    let deb822_parse = parse_for_trigger_filtering_deb822(&ws, &rel);
+    let changelog_parse = parse_for_trigger_filtering_changelog(&ws, &rel);
+    let yaml_parse = parse_for_trigger_filtering_yaml(&ws, &rel);
+    let max_cost = phase_max_cost(phase);
 
     let mut out = Vec::new();
     for detector in iter_detectors() {
+        if detector.cost() > max_cost {
+            continue;
+        }
+        if !detector_matches(
+            detector.as_ref(),
+            &rel,
+            deb822_parse.as_ref(),
+            changelog_parse.as_ref(),
+            yaml_parse.as_ref(),
+            changed_ranges,
+        ) {
+            continue;
+        }
         let diags = match detector.detect(&ws, &preferences) {
             Ok(d) => d,
             Err(_) => continue,
@@ -197,6 +543,43 @@ pub fn run_diagnostics_for_uri(
         }
     }
     out
+}
+
+/// Pull the salsa-cached deb822 parse for `rel` if `rel` looks like a
+/// deb822 file we can extract a `Deb822` from. Used by the trigger
+/// filter to narrow `Deb822Field` triggers to fields whose ranges
+/// overlap the changed range. Returns `None` for non-deb822 files.
+fn parse_for_trigger_filtering_deb822(
+    ws: &LspDebianWorkspace<'_>,
+    rel: &Path,
+) -> Option<deb822_lossless::Deb822> {
+    if rel == Path::new("debian/copyright") {
+        ws.parsed_copyright_for(rel).map(|c| c.as_deb822().clone())
+    } else {
+        ws.parsed_control_for(rel).map(|c| c.as_deb822().clone())
+    }
+}
+
+fn parse_for_trigger_filtering_changelog(
+    ws: &LspDebianWorkspace<'_>,
+    rel: &Path,
+) -> Option<ChangeLog> {
+    if rel == Path::new("debian/changelog") {
+        ws.parsed_changelog_for(rel)
+    } else {
+        None
+    }
+}
+
+fn parse_for_trigger_filtering_yaml(
+    ws: &LspDebianWorkspace<'_>,
+    rel: &Path,
+) -> Option<yaml_edit::YamlFile> {
+    if rel == Path::new("debian/upstream/metadata") {
+        ws.parsed_yaml_for(rel)
+    } else {
+        None
+    }
 }
 
 /// Return true if any plan on `diag` has an action targeting `rel`.
@@ -2762,7 +3145,13 @@ mod tests {
             },
         );
 
-        let actions = run_fixers_for_uri(&control_uri, &workspace, &open_files, &[]);
+        let actions = run_fixers_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            &[],
+            RunPhase::Explicit,
+        );
 
         let qa_action = actions
             .iter()
@@ -2854,7 +3243,13 @@ mod tests {
             },
         );
 
-        let diagnostics = run_diagnostics_for_uri(&control_uri, &workspace, &open_files);
+        let diagnostics = run_diagnostics_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            RunPhase::Explicit,
+            None,
+        );
         let qa = diagnostics
             .iter()
             .find(|d| matches!(&d.code, Some(NumberOrString::String(s)) if s == "faulty-debian-qa-group-phrase"))
@@ -3093,7 +3488,13 @@ mod tests {
             },
         );
 
-        let actions = run_fixers_for_uri(&control_uri, &workspace, &open_files, &[]);
+        let actions = run_fixers_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            &[],
+            RunPhase::Explicit,
+        );
 
         let pycompat_uri = Uri::from_file_path(debian.join("pycompat")).unwrap();
         let action = actions

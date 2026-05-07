@@ -36,6 +36,7 @@ mod lintian_overrides;
 mod maintainers;
 mod package_cache;
 mod patches_series;
+mod phase;
 mod popcon;
 mod position;
 mod rdeps;
@@ -238,6 +239,8 @@ struct Backend {
     settings: Arc<Mutex<Settings>>,
 }
 
+use phase::RunPhase;
+
 impl Backend {
     /// Acquire a clone of the workspace under a brief Mutex lock.
     ///
@@ -253,12 +256,24 @@ impl Backend {
         self.workspace.lock().await.clone()
     }
 
+    /// Collect diagnostics for a buffer event.
+    ///
+    /// `phase` controls how expensive a detector is allowed to be (cheap
+    /// only on every keystroke; subprocess-OK on file-open; everything
+    /// only on explicit user action). `changed_ranges` narrows
+    /// field-aware detector triggers to those whose declared field
+    /// overlaps the actually-edited text — `None` means "treat the whole
+    /// file as changed", appropriate for `did_open` and the CLI `check`
+    /// command. With the lintian-brush feature off both arguments are
+    /// ignored.
     fn collect_diagnostics(
         uri: &Uri,
         source_file: workspace::SourceFile,
         file_type: FileType,
         workspace: &Workspace,
         open_files: &HashMap<Uri, FileInfo>,
+        phase: RunPhase,
+        changed_ranges: Option<&[rowan::TextRange]>,
     ) -> Option<Vec<Diagnostic>> {
         // Per-file-type built-in diagnostics. Returns None for file
         // types we have no built-in handler for *and* that the
@@ -310,14 +325,18 @@ impl Backend {
                 | FileType::Patch
         ) {
             Some(lintian_brush::fixers::run_diagnostics_for_uri(
-                uri, workspace, open_files,
+                uri,
+                workspace,
+                open_files,
+                phase,
+                changed_ranges,
             ))
         } else {
             None
         };
         #[cfg(not(feature = "lintian-brush"))]
         let lb: Option<Vec<Diagnostic>> = None;
-        let _ = (uri, open_files);
+        let _ = (uri, open_files, phase, changed_ranges);
 
         match (builtin, lb) {
             (None, None) => None,
@@ -657,6 +676,11 @@ impl LanguageServer for Backend {
             file_type,
             &workspace,
             &files,
+            // File-open: scope is the whole file, no range filter, and
+            // we're willing to do filesystem / subprocess work since
+            // initial scan is rare.
+            RunPhase::Open,
+            None,
         );
         drop(files);
 
@@ -692,13 +716,18 @@ impl LanguageServer for Backend {
             return;
         }
 
-        // Apply incremental content changes to the current text.
+        // Apply incremental content changes to the current text and
+        // collect the post-edit byte ranges so the lintian-brush
+        // detector layer can narrow field-aware triggers to the
+        // entries actually touched.
         //
         // The Mutex is held only for the splice + `update_file`. The
         // diagnostics phase below runs on a Workspace clone so other
         // requests can take the lock concurrently — a salsa `Storage`
         // clone is a cheap Arc bump and shares the cache with the
         // original.
+        let mut changed_ranges: Vec<rowan::TextRange> = Vec::new();
+        let mut full_replacement = false;
         let (workspace, source_file) = {
             let mut workspace = self.workspace.lock().await;
             // Owned String here because we splice content_changes into it
@@ -722,10 +751,16 @@ impl LanguageServer for Backend {
                         let start: usize = text_range.start().into();
                         let end: usize = text_range.end().into();
                         text.replace_range(start..end, &change.text);
+                        let new_end = start + change.text.len();
+                        changed_ranges.push(rowan::TextRange::new(
+                            (start as u32).into(),
+                            (new_end as u32).into(),
+                        ));
                     }
                 } else {
-                    // Full replacement
+                    // Full replacement: scope is the whole file.
                     text = change.text.clone();
+                    full_replacement = true;
                 }
             }
 
@@ -740,12 +775,22 @@ impl LanguageServer for Backend {
             (workspace.clone(), source_file)
         };
 
+        // For did_change we run only `Cheap` detectors so every
+        // keystroke stays responsive. A full replacement (no range)
+        // means we have nothing to narrow on, so pass `None`.
+        let ranges_arg: Option<&[rowan::TextRange]> = if full_replacement {
+            None
+        } else {
+            Some(&changed_ranges)
+        };
         let diagnostics = Self::collect_diagnostics(
             &params.text_document.uri,
             source_file,
             file_type,
             &workspace,
             &files,
+            RunPhase::Keystroke,
+            ranges_arg,
         );
         drop(files);
 
@@ -1172,6 +1217,9 @@ impl LanguageServer for Backend {
             &workspace,
             &files,
             &params.context.diagnostics,
+            // Code actions are an explicit user request, so let
+            // detectors do everything including network checks.
+            RunPhase::Explicit,
         ));
 
         // Filter actions based on client's requested kinds
@@ -2307,6 +2355,11 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
             file_type,
             &workspace,
             &empty_files,
+            // The CLI is a one-shot scan — the user is asking
+            // explicitly for issues, so let detectors do whatever they
+            // need to including network access.
+            RunPhase::Explicit,
+            None,
         ) {
             Some(d) => d,
             None => continue,
