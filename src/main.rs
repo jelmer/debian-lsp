@@ -726,9 +726,7 @@ impl LanguageServer for Backend {
         // requests can take the lock concurrently — a salsa `Storage`
         // clone is a cheap Arc bump and shares the cache with the
         // original.
-        let mut changed_ranges: Vec<rowan::TextRange> = Vec::new();
-        let mut full_replacement = false;
-        let (workspace, source_file) = {
+        let (workspace, source_file, changed_ranges, full_replacement) = {
             let mut workspace = self.workspace.lock().await;
             // Owned String here because we splice content_changes into it
             // before handing back to salsa via update_file.
@@ -736,6 +734,8 @@ impl LanguageServer for Backend {
                 .map(|info| workspace.source_text(info.source_file).to_string())
                 .unwrap_or_default();
 
+            let mut changed_ranges: Vec<rowan::TextRange> = Vec::new();
+            let mut full_replacement = false;
             for change in &params.content_changes {
                 if let Some(range) = &change.range {
                     // The text mutates as we apply each change, so we
@@ -772,7 +772,12 @@ impl LanguageServer for Backend {
                     file_type,
                 },
             );
-            (workspace.clone(), source_file)
+            (
+                workspace.clone(),
+                source_file,
+                changed_ranges,
+                full_replacement,
+            )
         };
 
         // For did_change we run only `Cheap` detectors so every

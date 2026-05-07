@@ -35,24 +35,6 @@ use crate::FileInfo;
 
 pub use crate::phase::RunPhase;
 
-// Local one-shot wrappers around the [`LineIndex`] methods. Match
-// the dropped free-function shims in `crate::position`: build a
-// fresh index per call. Hot paths should migrate to the salsa-cached
-// `Workspace::get_line_index` + `Source<'_>` API.
-mod position {
-    use crate::position::LineIndex;
-    use rowan::{TextRange, TextSize};
-    use tower_lsp_server::ls_types::{Position, Range};
-
-    pub fn text_range_to_lsp_range(text: &str, range: TextRange) -> Range {
-        LineIndex::new(text).text_range_to_lsp_range(text, range)
-    }
-
-    pub fn offset_to_position(text: &str, offset: TextSize) -> Position {
-        LineIndex::new(text).offset_to_position(text, offset)
-    }
-}
-
 /// Maximum [`DetectorCost`] this phase will run.
 fn phase_max_cost(phase: RunPhase) -> DetectorCost {
     match phase {
