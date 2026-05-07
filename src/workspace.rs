@@ -126,6 +126,15 @@ pub fn parse_lintian_overrides(
     lintian_overrides::LintianOverrides::parse(&text)
 }
 
+/// Salsa-tracked line index for a buffer. Walking the full buffer
+/// per LSP-position conversion is O(N); the index turns it into a
+/// log N binary search. See [`crate::position::LineIndex`].
+#[salsa::tracked(returns(clone))]
+pub fn line_index(db: &dyn salsa::Database, file: SourceFile) -> Arc<crate::position::LineIndex> {
+    let text = file.text(db);
+    Arc::new(crate::position::LineIndex::new(&text))
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -357,6 +366,13 @@ impl Workspace {
         file: SourceFile,
     ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
         parse_lintian_overrides(self, file)
+    }
+
+    /// Salsa-cached line index for `file`. Use the methods on the
+    /// returned [`crate::position::LineIndex`] to convert byte
+    /// offsets to LSP positions and back.
+    pub fn get_line_index(&self, file: SourceFile) -> Arc<crate::position::LineIndex> {
+        line_index(self, file)
     }
 
     /// Find UNRELEASED entries in the given range that can be marked for upload
