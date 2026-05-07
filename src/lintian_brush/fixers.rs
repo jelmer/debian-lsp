@@ -551,6 +551,8 @@ pub fn run_diagnostics_for_uri(
         relevant_open_files(open_files),
     );
     let original = ws.current_text(&rel).unwrap_or_default();
+    let original_idx = crate::position::LineIndex::new(&original);
+    let original_src = crate::position::Source::new(&original, &original_idx);
     let deb822_parse = parse_for_trigger_filtering_deb822(&ws, &rel);
     let changelog_parse = parse_for_trigger_filtering_changelog(&ws, &rel);
     let yaml_parse = parse_for_trigger_filtering_yaml(&ws, &rel);
@@ -606,7 +608,7 @@ pub fn run_diagnostics_for_uri(
             let Some(tag) = diag.issue.as_ref().and_then(|i| i.tag.clone()) else {
                 continue;
             };
-            let range = diagnostic_range(&diag, &ws, &rel, &original);
+            let range = diagnostic_range(&diag, &ws, &rel, original_src);
             out.push(Diagnostic {
                 range,
                 severity: Some(tower_lsp_server::ls_types::DiagnosticSeverity::INFORMATION),
@@ -695,19 +697,19 @@ fn diagnostic_range(
     diag: &LbDiagnostic,
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
-    anchor_text: &str,
+    anchor_src: crate::position::Source<'_>,
 ) -> Range {
     for plan in &diag.plans {
         for action in &plan.actions {
             if action_file(action) != Some(anchor_rel) {
                 continue;
             }
-            if let Some(range) = locate_action_target(action, ws, anchor_text) {
+            if let Some(range) = locate_action_target(action, ws, anchor_src) {
                 return range;
             }
         }
     }
-    full_document_range(anchor_text)
+    full_document_range(anchor_src.text)
 }
 
 /// Return the LSP `Range` corresponding to the most specific source
@@ -715,7 +717,7 @@ fn diagnostic_range(
 fn locate_action_target(
     action: &Action,
     ws: &LspDebianWorkspace<'_>,
-    anchor_text: &str,
+    anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
     let rel = action_file(action)?;
     match action {
@@ -780,24 +782,18 @@ fn locate_action_target(
             let paragraph = find_paragraph_in_deb822(paragraph_in, selector)?;
             if let Some(field) = field {
                 if let Some(entry) = find_entry_in_paragraph(&paragraph, &field) {
-                    return Some(position::text_range_to_lsp_range(
-                        anchor_text,
-                        entry.text_range(),
-                    ));
+                    return Some(anchor_src.text_range_to_lsp_range(entry.text_range()));
                 }
             }
-            Some(position::text_range_to_lsp_range(
-                anchor_text,
-                paragraph.text_range(),
-            ))
+            Some(anchor_src.text_range_to_lsp_range(paragraph.text_range()))
         }
         Action::Filesystem(FilesystemAction::ReplaceText { range, .. }) => {
-            if range.start > range.end || range.end > anchor_text.len() {
+            if range.start > range.end || range.end > anchor_src.text.len() {
                 return None;
             }
             let text_range =
                 rowan::TextRange::new((range.start as u32).into(), (range.end as u32).into());
-            Some(position::text_range_to_lsp_range(anchor_text, text_range))
+            Some(anchor_src.text_range_to_lsp_range(text_range))
         }
         // These filesystem variants don't carry a source range we can map
         // back to a TextEdit position.
@@ -812,16 +808,16 @@ fn locate_action_target(
         ) => None,
         Action::Yaml(yaml) => {
             let yaml_file = ws.parsed_yaml_for(rel)?;
-            yaml_action_range(yaml, &yaml_file, anchor_text)
+            yaml_action_range(yaml, &yaml_file, anchor_src)
         }
         Action::Changelog(cl) => {
             let changelog = ws.parsed_changelog_for(rel)?;
-            changelog_action_range(cl, &changelog, anchor_text)
+            changelog_action_range(cl, &changelog, anchor_src)
         }
-        Action::Dep3(d) => dep3_action_range(d, ws, rel, anchor_text),
+        Action::Dep3(d) => dep3_action_range(d, ws, rel, anchor_src),
         Action::Watch(w) => {
             let watch = ws.parsed_watch_for(rel)?;
-            watch_action_range(w, &watch, anchor_text)
+            watch_action_range(w, &watch, anchor_src)
         }
         // Action kinds not yet wired into the LSP translator. These are
         // filtered out of `is_action_translatable` so they shouldn't
@@ -997,9 +993,11 @@ fn translate_action(action: &Action, ws: &LspDebianWorkspace<'_>) -> ActionEffec
             | FilesystemAction::Substitute { .. }
             | FilesystemAction::NormalizeLineEndings { .. } => {
                 let original = ws.current_text(rel).unwrap_or_default();
+                let original_idx = crate::position::LineIndex::new(&original);
+                let original_src = crate::position::Source::new(&original, &original_idx);
                 return ActionEffect::TextEdits {
                     uri,
-                    edits: filesystem_action_to_text_edits(fs, &original),
+                    edits: filesystem_action_to_text_edits(fs, original_src),
                 };
             }
         }
@@ -1007,7 +1005,9 @@ fn translate_action(action: &Action, ws: &LspDebianWorkspace<'_>) -> ActionEffec
 
     // All other actions produce text edits.
     let original = ws.current_text(rel).unwrap_or_default();
-    let edits = action_to_text_edits(action, ws, rel, &original);
+    let original_idx = crate::position::LineIndex::new(&original);
+    let original_src = crate::position::Source::new(&original, &original_idx);
+    let edits = action_to_text_edits(action, ws, rel, original_src);
     ActionEffect::TextEdits { uri, edits }
 }
 
@@ -1018,7 +1018,7 @@ fn action_to_text_edits(
     action: &Action,
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     match action {
         Action::Deb822(deb) => {
@@ -1033,26 +1033,26 @@ fn action_to_text_edits(
                 let Some(copyright) = ws.parsed_copyright_for(rel) else {
                     return Vec::new();
                 };
-                copyright_action_to_text_edits(deb, copyright, original_text)
+                copyright_action_to_text_edits(deb, copyright, original_src)
             } else {
                 let Some(control) = ws.parsed_control_for(rel) else {
                     return Vec::new();
                 };
-                deb822_action_to_text_edits(deb, &control, original_text)
+                deb822_action_to_text_edits(deb, &control, original_src)
             }
         }
-        Action::Filesystem(fs) => filesystem_action_to_text_edits(fs, original_text),
+        Action::Filesystem(fs) => filesystem_action_to_text_edits(fs, original_src),
         Action::Yaml(yaml) => {
             let Some(yaml_file) = ws.parsed_yaml_for(rel) else {
                 return Vec::new();
             };
-            yaml_action_to_text_edits(yaml, &yaml_file, original_text)
+            yaml_action_to_text_edits(yaml, &yaml_file, original_src)
         }
         Action::Changelog(cl) => {
             let Some(changelog) = ws.parsed_changelog_for(rel) else {
                 return Vec::new();
             };
-            changelog_action_to_text_edits(cl, &changelog, original_text)
+            changelog_action_to_text_edits(cl, &changelog, original_src)
         }
         // Systemd and DesktopIni files aren't tracked by the salsa
         // workspace yet — adding new file types is a bigger change. Until
@@ -1064,12 +1064,12 @@ fn action_to_text_edits(
         Action::DesktopIni(_) => unimplemented!(
             "DesktopIni actions are not yet wired into the LSP translator (no salsa parse)"
         ),
-        Action::Dep3(d) => dep3_action_to_text_edits(d, ws, rel, original_text),
+        Action::Dep3(d) => dep3_action_to_text_edits(d, ws, rel, original_src),
         Action::Watch(w) => {
             let Some(watch) = ws.parsed_watch_for(rel) else {
                 return Vec::new();
             };
-            watch_action_to_text_edits(w, watch, original_text)
+            watch_action_to_text_edits(w, watch, original_src)
         }
         // TODO: debian/rules *is* cacheable in the salsa workspace
         // (`get_parsed_rules`). Wiring it to byte-precise TextEdits is a
@@ -1096,7 +1096,7 @@ fn action_to_text_edits(
 fn changelog_action_to_text_edits(
     action: &ChangelogAction,
     changelog: &ChangeLog,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     match action {
         ChangelogAction::SetEntryDate {
@@ -1111,8 +1111,7 @@ fn changelog_action_to_text_edits(
             if entry.timestamp().as_deref() == Some(rfc2822.as_str()) {
                 return Vec::new();
             }
-            let lsp_range =
-                position::text_range_to_lsp_range(original_text, timestamp.syntax().text_range());
+            let lsp_range = original_src.text_range_to_lsp_range(timestamp.syntax().text_range());
             vec![TextEdit {
                 range: lsp_range,
                 new_text: rfc2822.clone(),
@@ -1129,7 +1128,7 @@ fn changelog_action_to_text_edits(
             let Some(range) = entry_change_block_range(&entry) else {
                 return Vec::new();
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, range);
+            let lsp_range = original_src.text_range_to_lsp_range(range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: render_changelog_change_block(lines),
@@ -1143,11 +1142,11 @@ fn changelog_action_to_text_edits(
             ..
         } => {
             let Some(range) =
-                find_bullet_range(changelog, original_text, version, author, text, *occurrence)
+                find_bullet_range(changelog, original_src, version, author, text, *occurrence)
             else {
                 return Vec::new();
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, range);
+            let lsp_range = original_src.text_range_to_lsp_range(range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: String::new(),
@@ -1165,11 +1164,11 @@ fn changelog_action_to_text_edits(
                 return Vec::new();
             }
             let Some(range) =
-                find_bullet_range(changelog, original_text, version, author, text, *occurrence)
+                find_bullet_range(changelog, original_src, version, author, text, *occurrence)
             else {
                 return Vec::new();
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, range);
+            let lsp_range = original_src.text_range_to_lsp_range(range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: render_bullet_block(new_lines),
@@ -1189,7 +1188,7 @@ fn changelog_action_to_text_edits(
             let Some(range) = entry_version_token_range(&entry) else {
                 return Vec::new();
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, range);
+            let lsp_range = original_src.text_range_to_lsp_range(range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: format!("({})", new_version),
@@ -1214,21 +1213,18 @@ fn entry_version_token_range(entry: &debian_changelog::Entry) -> Option<rowan::T
 fn changelog_action_range(
     action: &ChangelogAction,
     changelog: &ChangeLog,
-    anchor_text: &str,
+    anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
     match action {
         ChangelogAction::SetEntryDate { version, .. } => {
             let entry = find_changelog_entry(changelog, version)?;
             let ts = entry.timestamp_node()?;
-            Some(position::text_range_to_lsp_range(
-                anchor_text,
-                ts.syntax().text_range(),
-            ))
+            Some(anchor_src.text_range_to_lsp_range(ts.syntax().text_range()))
         }
         ChangelogAction::ReplaceEntryChanges { version, .. } => {
             let entry = find_changelog_entry(changelog, version)?;
             let range = entry_change_block_range(&entry)?;
-            Some(position::text_range_to_lsp_range(anchor_text, range))
+            Some(anchor_src.text_range_to_lsp_range(range))
         }
         ChangelogAction::RemoveBullet {
             version,
@@ -1245,13 +1241,13 @@ fn changelog_action_range(
             ..
         } => {
             let range =
-                find_bullet_range(changelog, anchor_text, version, author, text, *occurrence)?;
-            Some(position::text_range_to_lsp_range(anchor_text, range))
+                find_bullet_range(changelog, anchor_src, version, author, text, *occurrence)?;
+            Some(anchor_src.text_range_to_lsp_range(range))
         }
         ChangelogAction::SetEntryVersion { version, .. } => {
             let entry = find_changelog_entry(changelog, version)?;
             let range = entry_version_token_range(&entry)?;
-            Some(position::text_range_to_lsp_range(anchor_text, range))
+            Some(anchor_src.text_range_to_lsp_range(range))
         }
     }
 }
@@ -1301,7 +1297,7 @@ fn render_changelog_change_block(lines: &[String]) -> String {
 /// `Change`'s reported line numbers (relative to the parent entry).
 fn find_bullet_range(
     changelog: &ChangeLog,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
     version: &str,
     author: &Option<String>,
     text: &str,
@@ -1318,7 +1314,7 @@ fn find_bullet_range(
             let bullet_text = bullet.lines().join("\n");
             if bullet_author == *author && bullet_text == *text {
                 if seen == occurrence {
-                    return bullet_byte_range(&bullet, original_text);
+                    return bullet_byte_range(&bullet, original_src);
                 }
                 seen += 1;
             }
@@ -1329,13 +1325,14 @@ fn find_bullet_range(
 
 /// Compute the byte range covering a bullet's lines in the source file.
 /// Uses the bullet's reported start line (file-relative, 0-indexed) plus
-/// the count of lines it occupies, walking `original_text` to map back to
+/// the count of lines it occupies, walking `original_src` to map back to
 /// byte offsets. Each bullet line is removed in full — leading indent
 /// through trailing newline.
 fn bullet_byte_range(
     bullet: &debian_changelog::Change,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Option<rowan::TextRange> {
+    let original_text = original_src.text;
     let start_line = bullet.line()?;
     let line_count = bullet.lines().len();
     let abs_start = nth_line_start(original_text, start_line)?;
@@ -1380,8 +1377,9 @@ fn dep3_action_to_text_edits(
     action: &Dep3Action,
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     // Use the salsa-cached header parse when the file is open in the
     // editor; fall back to a one-shot parse otherwise (e.g. for files
     // we only know from disk).
@@ -1413,7 +1411,7 @@ fn dep3_action_to_text_edits(
                 let Some(value_range) = entry.value_range() else {
                     return Vec::new();
                 };
-                let lsp_range = position::text_range_to_lsp_range(original_text, value_range);
+                let lsp_range = original_src.text_range_to_lsp_range(value_range);
                 vec![TextEdit {
                     range: lsp_range,
                     new_text: value.clone(),
@@ -1422,7 +1420,7 @@ fn dep3_action_to_text_edits(
                 // Insert at the end of the header paragraph.
                 let para_range = paragraph.text_range();
                 let insertion: usize = para_range.end().into();
-                let pos = position::offset_to_position(original_text, (insertion as u32).into());
+                let pos = original_src.offset_to_position((insertion as u32).into());
                 let new_entry_text = format!("{}: {}\n", field, value);
                 vec![TextEdit {
                     range: Range {
@@ -1437,7 +1435,7 @@ fn dep3_action_to_text_edits(
             let Some(entry) = find_entry_in_paragraph(paragraph, field) else {
                 return Vec::new();
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, entry.text_range());
+            let lsp_range = original_src.text_range_to_lsp_range(entry.text_range());
             vec![TextEdit {
                 range: lsp_range,
                 new_text: String::new(),
@@ -1454,7 +1452,7 @@ fn dep3_action_to_text_edits(
             let Some(key_range) = entry.key_range() else {
                 return Vec::new();
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, key_range);
+            let lsp_range = original_src.text_range_to_lsp_range(key_range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: to_field.clone(),
@@ -1467,7 +1465,7 @@ fn dep3_action_range(
     action: &Dep3Action,
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
-    anchor_text: &str,
+    anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
     // Same routing as `dep3_action_to_text_edits`: prefer the
     // salsa-cached header parse, fall back to a one-shot parse for
@@ -1475,7 +1473,7 @@ fn dep3_action_range(
     let header_para = if let Some((parse, _)) = ws.parsed_dep3_header_for(rel) {
         parse.tree().paragraphs().next()?
     } else {
-        let (h, _) = crate::dep3::parse_dep3_header(anchor_text)?;
+        let (h, _) = crate::dep3::parse_dep3_header(anchor_src.text)?;
         h.as_deb822().clone()
     };
     let field = match action {
@@ -1485,10 +1483,7 @@ fn dep3_action_range(
         Dep3Action::RenameField { from_field, .. } => from_field.as_str(),
     };
     let entry = find_entry_in_paragraph(&header_para, field)?;
-    Some(position::text_range_to_lsp_range(
-        anchor_text,
-        entry.text_range(),
-    ))
+    Some(anchor_src.text_range_to_lsp_range(entry.text_range()))
 }
 
 /// Find the byte range of a watch entry whose URL matches `url`. Walks
@@ -1568,8 +1563,9 @@ where
 fn watch_action_to_text_edits(
     action: &WatchAction,
     mut watch: debian_watch::parse::ParsedWatchFile,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     use debian_watch::parse::ParsedEntry;
 
     let result = match action {
@@ -1639,7 +1635,7 @@ fn watch_action_to_text_edits(
     if original_text[start..end] == new_text {
         return Vec::new();
     }
-    let lsp_range = position::text_range_to_lsp_range(original_text, range);
+    let lsp_range = original_src.text_range_to_lsp_range(range);
     vec![TextEdit {
         range: lsp_range,
         new_text,
@@ -1649,7 +1645,7 @@ fn watch_action_to_text_edits(
 fn watch_action_range(
     action: &WatchAction,
     watch: &debian_watch::parse::ParsedWatchFile,
-    anchor_text: &str,
+    anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
     let url = match action {
         WatchAction::SetEntryMatchingPattern { url, .. }
@@ -1659,14 +1655,15 @@ fn watch_action_range(
         | WatchAction::ConvertEntryToTemplate { url, .. } => url,
     };
     let range = watch_entry_range_by_url(watch, url)?;
-    Some(position::text_range_to_lsp_range(anchor_text, range))
+    Some(anchor_src.text_range_to_lsp_range(range))
 }
 
 fn yaml_action_to_text_edits(
     action: &YamlAction,
     yaml_file: &yaml_edit::YamlFile,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     let Some(doc) = yaml_file.document() else {
         return Vec::new();
     };
@@ -1675,14 +1672,14 @@ fn yaml_action_to_text_edits(
     };
     match action {
         YamlAction::SetField { key, value, .. } => {
-            yaml_set_field_edits(&parent, key, value, None, original_text)
+            yaml_set_field_edits(&parent, key, value, None, original_src)
         }
         YamlAction::SetFieldOrdered {
             key,
             value,
             field_order,
             ..
-        } => yaml_set_field_edits(&parent, key, value, Some(field_order), original_text),
+        } => yaml_set_field_edits(&parent, key, value, Some(field_order), original_src),
         YamlAction::RemoveField { key, .. } => {
             let Some(entry) = parent.find_entry_by_key(key.as_str()) else {
                 return Vec::new();
@@ -1692,7 +1689,7 @@ fn yaml_action_to_text_edits(
             let end_after_nl = absorb_trailing_newline(original_text, entry_range.end().into());
             let text_range =
                 rowan::TextRange::new((start as u32).into(), (end_after_nl as u32).into());
-            let lsp_range = position::text_range_to_lsp_range(original_text, text_range);
+            let lsp_range = original_src.text_range_to_lsp_range(text_range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: String::new(),
@@ -1712,7 +1709,7 @@ fn yaml_action_to_text_edits(
                 yaml_edit::YamlNode::Alias(a) => a.syntax().text_range(),
                 yaml_edit::YamlNode::TaggedNode(t) => t.syntax().text_range(),
             };
-            let lsp_range = position::text_range_to_lsp_range(original_text, key_syntax_range);
+            let lsp_range = original_src.text_range_to_lsp_range(key_syntax_range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: to.clone(),
@@ -1730,8 +1727,9 @@ fn yaml_set_field_edits(
     key: &str,
     value: &str,
     field_order: Option<&[String]>,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     if let Some(entry) = parent.find_entry_by_key(key) {
         if let Some(yaml_edit::YamlNode::Scalar(scalar)) = entry.value_node() {
             if scalar.as_string() == value {
@@ -1739,7 +1737,7 @@ fn yaml_set_field_edits(
             }
         }
         let entry_range = entry.syntax().text_range();
-        let lsp_range = position::text_range_to_lsp_range(original_text, entry_range);
+        let lsp_range = original_src.text_range_to_lsp_range(entry_range);
         return vec![TextEdit {
             range: lsp_range,
             new_text: format_yaml_entry(key, value, false),
@@ -1752,7 +1750,7 @@ fn yaml_set_field_edits(
             .unwrap_or_else(|| parent.syntax().text_range().end().into()),
         None => parent.syntax().text_range().end().into(),
     };
-    let pos = position::offset_to_position(original_text, (insertion_offset as u32).into());
+    let pos = original_src.offset_to_position((insertion_offset as u32).into());
     let leading_newline =
         insertion_offset > 0 && !original_text[..insertion_offset].ends_with('\n');
     let new_text = format_yaml_entry(key, value, leading_newline);
@@ -1796,7 +1794,7 @@ fn yaml_ordered_insertion_offset(
 fn yaml_action_range(
     action: &YamlAction,
     yaml_file: &yaml_edit::YamlFile,
-    anchor_text: &str,
+    anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
     let doc = yaml_file.document()?;
     let parent = navigate_yaml_mapping(&doc, yaml_action_parent_path(action))?;
@@ -1807,10 +1805,7 @@ fn yaml_action_range(
         YamlAction::RenameField { from, .. } => from.as_str(),
     };
     let entry = parent.find_entry_by_key(key)?;
-    Some(position::text_range_to_lsp_range(
-        anchor_text,
-        entry.syntax().text_range(),
-    ))
+    Some(anchor_src.text_range_to_lsp_range(entry.syntax().text_range()))
 }
 
 fn yaml_action_parent_path(action: &YamlAction) -> &[YamlPathComponent] {
@@ -1869,7 +1864,7 @@ fn absorb_trailing_newline(text: &str, end: usize) -> usize {
 fn deb822_action_to_text_edits(
     action: &Deb822Action,
     control: &Control,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     match action {
         Deb822Action::SetField {
@@ -1877,50 +1872,50 @@ fn deb822_action_to_text_edits(
             field,
             value,
             ..
-        } => set_field_edits(control, paragraph, field, value, original_text),
+        } => set_field_edits(control, paragraph, field, value, original_src),
         Deb822Action::RemoveField {
             paragraph, field, ..
-        } => remove_field_edits(control, paragraph, field, original_text),
+        } => remove_field_edits(control, paragraph, field, original_src),
         Deb822Action::RenameField {
             paragraph,
             from,
             to,
             ..
-        } => rename_field_edits(control, paragraph, from, to, original_text),
+        } => rename_field_edits(control, paragraph, from, to, original_src),
         Deb822Action::RemoveParagraph { paragraph, .. } => {
-            remove_paragraph_edits(control, paragraph, original_text)
+            remove_paragraph_edits(control, paragraph, original_src)
         }
         Deb822Action::AppendParagraph { fields, indent, .. } => {
-            append_paragraph_edits(fields, *indent, original_text)
+            append_paragraph_edits(fields, *indent, original_src)
         }
         Deb822Action::NormalizeFieldSpacing {
             paragraph, field, ..
-        } => normalize_field_spacing_edits(control, paragraph, field, original_text),
+        } => normalize_field_spacing_edits(control, paragraph, field, original_src),
         Deb822Action::DropRelation {
             paragraph,
             field,
             package,
             ..
-        } => drop_relation_edits(control, paragraph, field, package, original_text),
+        } => drop_relation_edits(control, paragraph, field, package, original_src),
         Deb822Action::EnsureSubstvar {
             paragraph,
             field,
             substvar,
             ..
-        } => ensure_substvar_edits(control, paragraph, field, substvar, original_text),
+        } => ensure_substvar_edits(control, paragraph, field, substvar, original_src),
         Deb822Action::DropSubstvar {
             paragraph,
             field,
             substvar,
             ..
-        } => drop_substvar_edits(control, paragraph, field, substvar, original_text),
+        } => drop_substvar_edits(control, paragraph, field, substvar, original_src),
         Deb822Action::SetFieldWithIndent {
             paragraph,
             field,
             value,
             indent,
             ..
-        } => set_field_with_indent_edits(control, paragraph, field, value, indent, original_text),
+        } => set_field_with_indent_edits(control, paragraph, field, value, indent, original_src),
         Deb822Action::ReplaceRelation {
             paragraph,
             field,
@@ -1933,14 +1928,14 @@ fn deb822_action_to_text_edits(
             field,
             from_package,
             to_entry,
-            original_text,
+            original_src,
         ),
         Deb822Action::EnsureRelation {
             paragraph,
             field,
             entry,
             ..
-        } => ensure_relation_edits(control, paragraph, field, entry, original_text),
+        } => ensure_relation_edits(control, paragraph, field, entry, original_src),
         Deb822Action::MoveRelation {
             paragraph,
             from_field,
@@ -1953,11 +1948,11 @@ fn deb822_action_to_text_edits(
             from_field,
             to_field,
             package,
-            original_text,
+            original_src,
         ),
         Deb822Action::ReorderParagraphs {
             key_field, order, ..
-        } => reorder_paragraphs_edits(control, key_field, order, original_text),
+        } => reorder_paragraphs_edits(control, key_field, order, original_src),
     }
 }
 
@@ -1978,14 +1973,15 @@ fn deb822_action_to_text_edits(
 fn copyright_action_to_text_edits(
     action: &Deb822Action,
     copyright: Copyright,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     // AppendParagraph and ReorderParagraphs don't target a single
     // existing paragraph; route them through the generic helpers (which
     // operate on raw text or on a Deb822 directly).
     match action {
         Deb822Action::AppendParagraph { fields, indent, .. } => {
-            return append_paragraph_edits(fields, *indent, original_text);
+            return append_paragraph_edits(fields, *indent, original_src);
         }
         Deb822Action::ReorderParagraphs { .. } => {
             // No detector emits this against debian/copyright in
@@ -2021,7 +2017,7 @@ fn copyright_action_to_text_edits(
     // trailing blank line. Mirrors `remove_paragraph_edits` but against
     // the copyright deb822.
     if matches!(action, Deb822Action::RemoveParagraph { .. }) {
-        return remove_paragraph_edits_from_deb822(copyright.as_deb822(), selector, original_text);
+        return remove_paragraph_edits_from_deb822(copyright.as_deb822(), selector, original_src);
     }
 
     // Locate the target paragraph and snapshot its current byte range
@@ -2089,7 +2085,7 @@ fn copyright_action_to_text_edits(
     if original_text[start..end] == mutated {
         return Vec::new();
     }
-    let lsp_range = position::text_range_to_lsp_range(original_text, paragraph_range);
+    let lsp_range = original_src.text_range_to_lsp_range(paragraph_range);
     vec![TextEdit {
         range: lsp_range,
         new_text: mutated,
@@ -2194,8 +2190,9 @@ fn apply_typed_copyright_field_op<T: CopyrightFieldOps>(
 fn remove_paragraph_edits_from_deb822(
     deb822: &deb822_lossless::Deb822,
     selector: &ParagraphSelector,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     let Some(paragraph) = find_paragraph_in_deb822(deb822, selector) else {
         return Vec::new();
     };
@@ -2203,7 +2200,7 @@ fn remove_paragraph_edits_from_deb822(
     let start: usize = para_range.start().into();
     let end_after_blank = absorb_trailing_blank_line(original_text, para_range.end().into());
     let text_range = rowan::TextRange::new((start as u32).into(), (end_after_blank as u32).into());
-    let lsp_range = position::text_range_to_lsp_range(original_text, text_range);
+    let lsp_range = original_src.text_range_to_lsp_range(text_range);
     vec![TextEdit {
         range: lsp_range,
         new_text: String::new(),
@@ -2278,7 +2275,7 @@ fn set_field_edits(
     selector: &ParagraphSelector,
     field: &str,
     value: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
@@ -2291,7 +2288,7 @@ fn set_field_edits(
         let Some(value_range) = entry.value_range() else {
             return Vec::new();
         };
-        let lsp_range = position::text_range_to_lsp_range(original_text, value_range);
+        let lsp_range = original_src.text_range_to_lsp_range(value_range);
         vec![TextEdit {
             range: lsp_range,
             new_text: value.to_string(),
@@ -2304,7 +2301,7 @@ fn set_field_edits(
         // debian-control's SOURCE_FIELD_ORDER.)
         let para_range = paragraph.text_range();
         let insertion: usize = para_range.end().into();
-        let pos = position::offset_to_position(original_text, (insertion as u32).into());
+        let pos = original_src.offset_to_position((insertion as u32).into());
         let new_entry_text = format!("{}: {}\n", field, value);
         vec![TextEdit {
             range: Range {
@@ -2320,7 +2317,7 @@ fn remove_field_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
@@ -2329,7 +2326,7 @@ fn remove_field_edits(
         // Field not present; no-op.
         return Vec::new();
     };
-    let lsp_range = position::text_range_to_lsp_range(original_text, entry.text_range());
+    let lsp_range = original_src.text_range_to_lsp_range(entry.text_range());
     vec![TextEdit {
         range: lsp_range,
         new_text: String::new(),
@@ -2339,8 +2336,9 @@ fn remove_field_edits(
 fn remove_paragraph_edits(
     control: &Control,
     selector: &ParagraphSelector,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
     };
@@ -2348,7 +2346,7 @@ fn remove_paragraph_edits(
     let start: usize = para_range.start().into();
     let end_after_blank = absorb_trailing_blank_line(original_text, para_range.end().into());
     let text_range = rowan::TextRange::new((start as u32).into(), (end_after_blank as u32).into());
-    let lsp_range = position::text_range_to_lsp_range(original_text, text_range);
+    let lsp_range = original_src.text_range_to_lsp_range(text_range);
     vec![TextEdit {
         range: lsp_range,
         new_text: String::new(),
@@ -2376,8 +2374,9 @@ fn absorb_trailing_blank_line(text: &str, end: usize) -> usize {
 fn append_paragraph_edits(
     fields: &[(String, String)],
     indent: Option<usize>,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     if fields.is_empty() {
         return Vec::new();
     }
@@ -2390,7 +2389,7 @@ fn append_paragraph_edits(
     } else {
         rendered
     };
-    let pos = position::offset_to_position(original_text, (original_text.len() as u32).into());
+    let pos = original_src.offset_to_position((original_text.len() as u32).into());
     vec![TextEdit {
         range: Range {
             start: pos,
@@ -2435,7 +2434,7 @@ fn rename_field_edits(
     selector: &ParagraphSelector,
     from: &str,
     to: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
@@ -2446,7 +2445,7 @@ fn rename_field_edits(
     let Some(key_range) = entry.key_range() else {
         return Vec::new();
     };
-    let lsp_range = position::text_range_to_lsp_range(original_text, key_range);
+    let lsp_range = original_src.text_range_to_lsp_range(key_range);
     vec![TextEdit {
         range: lsp_range,
         new_text: to.to_string(),
@@ -2461,8 +2460,9 @@ fn normalize_field_spacing_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
     };
@@ -2508,10 +2508,10 @@ fn normalize_field_spacing_edits(
     if current == replacement {
         return Vec::new();
     }
-    let lsp_range = position::text_range_to_lsp_range(
-        original_text,
-        rowan::TextRange::new((gap_start as u32).into(), (gap_end as u32).into()),
-    );
+    let lsp_range = original_src.text_range_to_lsp_range(rowan::TextRange::new(
+        (gap_start as u32).into(),
+        (gap_end as u32).into(),
+    ));
     vec![TextEdit {
         range: lsp_range,
         new_text: replacement.to_string(),
@@ -2526,12 +2526,13 @@ fn relations_field_edits<F>(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
     mutate: F,
 ) -> Vec<TextEdit>
 where
     F: FnOnce(&mut debian_control::lossless::Relations) -> bool,
 {
+    let original_text = original_src.text;
     use debian_control::lossless::Relations;
 
     let Some(paragraph) = find_paragraph(control, selector) else {
@@ -2560,7 +2561,7 @@ where
     if new_value == value_text {
         return Vec::new();
     }
-    let lsp_range = position::text_range_to_lsp_range(original_text, value_range);
+    let lsp_range = original_src.text_range_to_lsp_range(value_range);
     vec![TextEdit {
         range: lsp_range,
         new_text: new_value,
@@ -2572,9 +2573,9 @@ fn drop_relation_edits(
     selector: &ParagraphSelector,
     field: &str,
     package: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
-    relations_field_edits(control, selector, field, original_text, |relations| {
+    relations_field_edits(control, selector, field, original_src, |relations| {
         // Walk relations in reverse so popping by index leaves earlier
         // indices stable. `iter_relations_for` returns `(idx, entry)`.
         let indices: Vec<usize> = relations
@@ -2596,9 +2597,9 @@ fn ensure_substvar_edits(
     selector: &ParagraphSelector,
     field: &str,
     substvar: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
-    relations_field_edits(control, selector, field, original_text, |relations| {
+    relations_field_edits(control, selector, field, original_src, |relations| {
         if relations.substvars().any(|s| s.trim() == substvar.trim()) {
             return false;
         }
@@ -2611,9 +2612,9 @@ fn drop_substvar_edits(
     selector: &ParagraphSelector,
     field: &str,
     substvar: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
-    relations_field_edits(control, selector, field, original_text, |relations| {
+    relations_field_edits(control, selector, field, original_src, |relations| {
         if !relations.substvars().any(|s| s.trim() == substvar.trim()) {
             return false;
         }
@@ -2633,7 +2634,7 @@ fn set_field_with_indent_edits(
     field: &str,
     value: &str,
     indent: &IndentPattern,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
@@ -2647,7 +2648,7 @@ fn set_field_with_indent_edits(
         if entry.value().as_str() == value {
             return Vec::new();
         }
-        let lsp_range = position::text_range_to_lsp_range(original_text, entry.text_range());
+        let lsp_range = original_src.text_range_to_lsp_range(entry.text_range());
         vec![TextEdit {
             range: lsp_range,
             new_text: rendered,
@@ -2655,7 +2656,7 @@ fn set_field_with_indent_edits(
     } else {
         let para_range = paragraph.text_range();
         let insertion: usize = para_range.end().into();
-        let pos = position::offset_to_position(original_text, (insertion as u32).into());
+        let pos = original_src.offset_to_position((insertion as u32).into());
         vec![TextEdit {
             range: Range {
                 start: pos,
@@ -2696,12 +2697,12 @@ fn replace_relation_edits(
     field: &str,
     from_package: &str,
     to_entry: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     use debian_control::lossless::relations::Entry;
     use std::str::FromStr;
 
-    relations_field_edits(control, selector, field, original_text, |relations| {
+    relations_field_edits(control, selector, field, original_src, |relations| {
         let Some((idx, _)) = relations.iter_relations_for(from_package).next() else {
             return false;
         };
@@ -2738,17 +2739,17 @@ fn ensure_relation_edits(
     selector: &ParagraphSelector,
     field: &str,
     entry: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let Some(paragraph) = find_paragraph(control, selector) else {
         return Vec::new();
     };
     if find_entry_in_paragraph(&paragraph, field).is_none() {
         // Field absent — insert it with the literal entry text.
-        return set_field_edits(control, selector, field, entry, original_text);
+        return set_field_edits(control, selector, field, entry, original_src);
     }
 
-    relations_field_edits(control, selector, field, original_text, |relations| {
+    relations_field_edits(control, selector, field, original_src, |relations| {
         use debian_control::lossless::Entry;
         use debian_control::relations::VersionConstraint;
         use std::str::FromStr;
@@ -2790,8 +2791,9 @@ fn move_relation_edits(
     from_field: &str,
     to_field: &str,
     package: &str,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     use debian_control::lossless::Relations;
 
     let Some(paragraph) = find_paragraph(control, selector) else {
@@ -2822,7 +2824,7 @@ fn move_relation_edits(
     // Source field: either drop it entirely (when empty) or replace its
     // value with the new rendering.
     if from_relations.is_empty() || from_relations.to_string().trim().is_empty() {
-        let lsp_range = position::text_range_to_lsp_range(original_text, from_entry.text_range());
+        let lsp_range = original_src.text_range_to_lsp_range(from_entry.text_range());
         edits.push(TextEdit {
             range: lsp_range,
             new_text: String::new(),
@@ -2830,7 +2832,7 @@ fn move_relation_edits(
     } else {
         let new_value = from_relations.to_string();
         if new_value != from_text {
-            let lsp_range = position::text_range_to_lsp_range(original_text, from_value_range);
+            let lsp_range = original_src.text_range_to_lsp_range(from_value_range);
             edits.push(TextEdit {
                 range: lsp_range,
                 new_text: new_value,
@@ -2854,7 +2856,7 @@ fn move_relation_edits(
         to_relations.add_dependency(moved_entry, None);
         let new_value = to_relations.to_string();
         if new_value != to_text {
-            let lsp_range = position::text_range_to_lsp_range(original_text, to_value_range);
+            let lsp_range = original_src.text_range_to_lsp_range(to_value_range);
             edits.push(TextEdit {
                 range: lsp_range,
                 new_text: new_value,
@@ -2864,7 +2866,7 @@ fn move_relation_edits(
         // Append a new field at end of paragraph with just the moved entry.
         let para_range = paragraph.text_range();
         let insertion: usize = para_range.end().into();
-        let pos = position::offset_to_position(original_text, (insertion as u32).into());
+        let pos = original_src.offset_to_position((insertion as u32).into());
         let new_text = format!("{}: {}\n", to_field, moved_entry);
         edits.push(TextEdit {
             range: Range {
@@ -2887,8 +2889,9 @@ fn reorder_paragraphs_edits(
     control: &Control,
     key_field: &str,
     order: &[String],
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     // Collect (index, slot range, current text, key value) for every
     // paragraph that has key_field.
     let participants: Vec<(usize, rowan::TextRange, String, String)> = control
@@ -2946,7 +2949,7 @@ fn reorder_paragraphs_edits(
             continue;
         }
         any_change = true;
-        let lsp_range = position::text_range_to_lsp_range(original_text, *range);
+        let lsp_range = original_src.text_range_to_lsp_range(*range);
         edits.push(TextEdit {
             range: lsp_range,
             new_text: (*new_text).to_string(),
@@ -2962,8 +2965,9 @@ fn reorder_paragraphs_edits(
 
 fn filesystem_action_to_text_edits(
     action: &FilesystemAction,
-    original_text: &str,
+    original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let original_text = original_src.text;
     match action {
         FilesystemAction::Write { content, .. } => {
             let Ok(new_text) = std::str::from_utf8(content) else {
@@ -2985,7 +2989,7 @@ fn filesystem_action_to_text_edits(
             }
             let text_range =
                 rowan::TextRange::new((range.start as u32).into(), (range.end as u32).into());
-            let lsp_range = position::text_range_to_lsp_range(original_text, text_range);
+            let lsp_range = original_src.text_range_to_lsp_range(text_range);
             vec![TextEdit {
                 range: lsp_range,
                 new_text: replacement.clone(),
@@ -3004,7 +3008,7 @@ fn filesystem_action_to_text_edits(
                 new_text: converted,
             }]
         }
-        FilesystemAction::Substitute { from, to, .. } => substitute_edits(from, to, original_text),
+        FilesystemAction::Substitute { from, to, .. } => substitute_edits(from, to, original_src),
         // The dispatcher in `translate_action` peels these off into
         // resource ops (or panics on SetMode) before reaching here.
         FilesystemAction::Rename { .. }
@@ -3016,19 +3020,24 @@ fn filesystem_action_to_text_edits(
     }
 }
 
-/// Replace every literal occurrence of `from` with `to` in `original_text`.
+/// Replace every literal occurrence of `from` with `to` in `original_src`.
 /// Mirrors the applier's behaviour: literal find-and-replace, no regex.
-fn substitute_edits(from: &str, to: &str, original_text: &str) -> Vec<TextEdit> {
+fn substitute_edits(
+    from: &str,
+    to: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
     if from.is_empty() {
         return Vec::new();
     }
+    let original_text = original_src.text;
     let mut edits = Vec::new();
     let mut search_from = 0usize;
     while let Some(rel) = original_text[search_from..].find(from) {
         let abs_start = search_from + rel;
         let abs_end = abs_start + from.len();
         let text_range = rowan::TextRange::new((abs_start as u32).into(), (abs_end as u32).into());
-        let lsp_range = position::text_range_to_lsp_range(original_text, text_range);
+        let lsp_range = original_src.text_range_to_lsp_range(text_range);
         edits.push(TextEdit {
             range: lsp_range,
             new_text: to.to_string(),
@@ -3239,6 +3248,19 @@ mod tests {
     use super::*;
     use crate::FileType;
 
+    /// Build a `Source` over `text` for tests. Stores the `LineIndex` in
+    /// the caller's scope via a `let` binding pattern: `let idx =
+    /// idx_of(text); let src = src_of(text, &idx);`.
+    fn idx_of(text: &str) -> crate::position::LineIndex {
+        crate::position::LineIndex::new(text)
+    }
+    fn src_of<'a>(
+        text: &'a str,
+        idx: &'a crate::position::LineIndex,
+    ) -> crate::position::Source<'a> {
+        crate::position::Source::new(text, idx)
+    }
+
     /// Smoke test: a `debian/control` with `Maintainer: QA Folks
     /// <packages@qa.debian.org>` should produce one code action from the
     /// `wrong-debian-qa-group-name` detector, with a TextEdit that
@@ -3308,8 +3330,8 @@ mod tests {
             edits[0].new_text
         );
         // Apply the edit and check the resulting text is what we expect.
-        let original_text = std::fs::read_to_string(&control_path).unwrap();
-        let applied = apply_text_edit_to_string(&original_text, &edits[0]);
+        let original_src = std::fs::read_to_string(&control_path).unwrap();
+        let applied = apply_text_edit_to_string(&original_src, &edits[0]);
         assert_eq!(
             applied,
             "Source: foo\nMaintainer: Debian QA Group <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
@@ -3407,7 +3429,8 @@ mod tests {
     #[test]
     fn substitute_emits_one_edit_per_occurrence() {
         let text = "abc PWD def PWD\n";
-        let edits = substitute_edits("PWD", "CURDIR", text);
+        let idx = idx_of(text);
+        let edits = substitute_edits("PWD", "CURDIR", src_of(text, &idx));
         assert_eq!(edits.len(), 2);
         let mut applied = text.to_string();
         // Apply right-to-left so earlier offsets stay valid.
@@ -3419,7 +3442,8 @@ mod tests {
 
     #[test]
     fn substitute_with_empty_pattern_emits_nothing() {
-        assert!(substitute_edits("", "x", "abc").is_empty());
+        let idx = idx_of("abc");
+        assert!(substitute_edits("", "x", src_of("abc", &idx)).is_empty());
     }
 
     #[test]
@@ -3427,7 +3451,9 @@ mod tests {
         let text = "Source: foo\n\nPackage: bar\nDescription: x\n x\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
-        let edits = remove_paragraph_edits(&control, &ParagraphSelector::Source, text);
+        let idx = idx_of(text);
+        let edits =
+            remove_paragraph_edits(&control, &ParagraphSelector::Source, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(applied, "Package: bar\nDescription: x\n x\n");
@@ -3436,13 +3462,14 @@ mod tests {
     #[test]
     fn append_paragraph_inserts_at_eof_with_separator() {
         let text = "Source: foo\nMaintainer: A B <a@b>\n";
+        let idx = idx_of(text);
         let edits = append_paragraph_edits(
             &[
                 ("Package".to_string(), "bar".to_string()),
                 ("Description".to_string(), "short\nlong line".to_string()),
             ],
             None,
-            text,
+            src_of(text, &idx),
         );
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
@@ -3455,8 +3482,12 @@ mod tests {
     #[test]
     fn append_paragraph_skips_separator_when_blank_line_present() {
         let text = "Source: foo\n\n";
-        let edits =
-            append_paragraph_edits(&[("Package".to_string(), "bar".to_string())], None, text);
+        let idx = idx_of(text);
+        let edits = append_paragraph_edits(
+            &[("Package".to_string(), "bar".to_string())],
+            None,
+            src_of(text, &idx),
+        );
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(applied, "Source: foo\n\nPackage: bar\n");
     }
@@ -3471,7 +3502,8 @@ mod tests {
             key: "Bug-Database".into(),
             value: "https://newhost/bugs".into(),
         };
-        let edits = yaml_action_to_text_edits(&action, &yaml_file, text);
+        let idx = idx_of(text);
+        let edits = yaml_action_to_text_edits(&action, &yaml_file, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3489,7 +3521,8 @@ mod tests {
             parent_path: Vec::new(),
             key: "Bar".into(),
         };
-        let edits = yaml_action_to_text_edits(&action, &yaml_file, text);
+        let idx = idx_of(text);
+        let edits = yaml_action_to_text_edits(&action, &yaml_file, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(applied, "Foo: 1\nBaz: 3\n");
@@ -3505,7 +3538,8 @@ mod tests {
             from: "Old-Name".into(),
             to: "New-Name".into(),
         };
-        let edits = yaml_action_to_text_edits(&action, &yaml_file, text);
+        let idx = idx_of(text);
+        let edits = yaml_action_to_text_edits(&action, &yaml_file, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(applied, "New-Name: keep-me\n");
@@ -3520,7 +3554,8 @@ mod tests {
             version: "1.0".into(),
             rfc2822: "Tue, 02 Jan 2024 12:00:00 +0000".into(),
         };
-        let edits = changelog_action_to_text_edits(&action, &changelog, text);
+        let idx = idx_of(text);
+        let edits = changelog_action_to_text_edits(&action, &changelog, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert!(applied.contains("Tue, 02 Jan 2024 12:00:00 +0000"));
@@ -3536,7 +3571,8 @@ mod tests {
             version: "1.0".into(),
             lines: vec!["  * Brand new line.".to_string()],
         };
-        let edits = changelog_action_to_text_edits(&action, &changelog, text);
+        let idx = idx_of(text);
+        let edits = changelog_action_to_text_edits(&action, &changelog, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert!(applied.contains("  * Brand new line."));
@@ -3674,7 +3710,8 @@ mod tests {
             text: "* Drop me.".into(),
             occurrence: 0,
         };
-        let edits = changelog_action_to_text_edits(&action, &changelog, text);
+        let idx = idx_of(text);
+        let edits = changelog_action_to_text_edits(&action, &changelog, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert!(applied.contains("Keep me."));
@@ -3687,8 +3724,13 @@ mod tests {
         let text = "Source: foo\nSection:    misc\n\nPackage: bar\nDescription: x\n x\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
-        let edits =
-            normalize_field_spacing_edits(&control, &ParagraphSelector::Source, "Section", text);
+        let idx = idx_of(text);
+        let edits = normalize_field_spacing_edits(
+            &control,
+            &ParagraphSelector::Source,
+            "Section",
+            src_of(text, &idx),
+        );
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3702,8 +3744,13 @@ mod tests {
         let text = "Source: foo\nSection: misc\n\nPackage: bar\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
-        let edits =
-            normalize_field_spacing_edits(&control, &ParagraphSelector::Source, "Section", text);
+        let idx = idx_of(text);
+        let edits = normalize_field_spacing_edits(
+            &control,
+            &ParagraphSelector::Source,
+            "Section",
+            src_of(text, &idx),
+        );
         assert!(edits.is_empty());
     }
 
@@ -3712,12 +3759,13 @@ mod tests {
         let text = "Source: foo\nBuild-Depends: debhelper-compat (= 13), unwanted, autoconf\n\nPackage: bar\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
         let edits = drop_relation_edits(
             &control,
             &ParagraphSelector::Source,
             "Build-Depends",
             "unwanted",
-            text,
+            src_of(text, &idx),
         );
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
@@ -3731,6 +3779,7 @@ mod tests {
         let text = "Source: foo\n\nPackage: bar\nDepends: libc6\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
         let edits = ensure_substvar_edits(
             &control,
             &ParagraphSelector::Binary {
@@ -3738,7 +3787,7 @@ mod tests {
             },
             "Depends",
             "${misc:Depends}",
-            text,
+            src_of(text, &idx),
         );
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
@@ -3751,6 +3800,7 @@ mod tests {
         let text = "Source: foo\n\nPackage: bar\nDepends: libc6, ${misc:Depends}\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
         let edits = ensure_substvar_edits(
             &control,
             &ParagraphSelector::Binary {
@@ -3758,7 +3808,7 @@ mod tests {
             },
             "Depends",
             "${misc:Depends}",
-            text,
+            src_of(text, &idx),
         );
         assert!(edits.is_empty());
     }
@@ -3768,6 +3818,7 @@ mod tests {
         let text = "Source: foo\n\nPackage: bar\nDepends: libc6, ${shlibs:Depends}\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
         let edits = drop_substvar_edits(
             &control,
             &ParagraphSelector::Binary {
@@ -3775,7 +3826,7 @@ mod tests {
             },
             "Depends",
             "${shlibs:Depends}",
-            text,
+            src_of(text, &idx),
         );
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
@@ -3798,7 +3849,8 @@ mod tests {
             field: "Upstream-Contact".into(),
             value: "team@example.com".into(),
         };
-        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        let idx = idx_of(text);
+        let edits = copyright_action_to_text_edits(&action, copyright, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3824,7 +3876,8 @@ mod tests {
             field: "Upstream-Name".into(),
             value: "foo".into(),
         };
-        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        let idx = idx_of(text);
+        let edits = copyright_action_to_text_edits(&action, copyright, src_of(text, &idx));
         assert!(edits.is_empty());
     }
 
@@ -3842,7 +3895,8 @@ mod tests {
             paragraph: ParagraphSelector::CopyrightFiles { glob: "*".into() },
             field: "Comment".into(),
         };
-        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        let idx = idx_of(text);
+        let edits = copyright_action_to_text_edits(&action, copyright, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3875,7 +3929,8 @@ mod tests {
             value: "BSD-3-clause\nRedistribution and use in source\nand binary forms are OK."
                 .into(),
         };
-        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        let idx = idx_of(text);
+        let edits = copyright_action_to_text_edits(&action, copyright, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         // Continuation lines must be indented by exactly one space.
@@ -3909,7 +3964,8 @@ mod tests {
                 glob: "doomed/*".into(),
             },
         };
-        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        let idx = idx_of(text);
+        let edits = copyright_action_to_text_edits(&action, copyright, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3931,7 +3987,8 @@ mod tests {
             url: "https://example.com/foo".into(),
             new_url: "https://example.com/bar".into(),
         };
-        let edits = watch_action_to_text_edits(&action, watch, text);
+        let idx = idx_of(text);
+        let edits = watch_action_to_text_edits(&action, watch, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3949,7 +4006,8 @@ mod tests {
             url: "https://example.com/foo".into(),
             new_url: "https://example.com/foo".into(),
         };
-        let edits = watch_action_to_text_edits(&action, watch, text);
+        let idx = idx_of(text);
+        let edits = watch_action_to_text_edits(&action, watch, src_of(text, &idx));
         assert!(edits.is_empty());
     }
 
@@ -3963,7 +4021,8 @@ mod tests {
             url: "https://example.com/foo".into(),
             new_pattern: "v(.+)\\.tar\\.gz".into(),
         };
-        let edits = watch_action_to_text_edits(&action, watch, text);
+        let idx = idx_of(text);
+        let edits = watch_action_to_text_edits(&action, watch, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -3982,7 +4041,8 @@ mod tests {
             url: "https://example.com/foo".into(),
             option: "pretty".into(),
         };
-        let edits = watch_action_to_text_edits(&action, watch, text);
+        let idx = idx_of(text);
+        let edits = watch_action_to_text_edits(&action, watch, src_of(text, &idx));
         assert_eq!(edits.len(), 1);
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert_eq!(
@@ -4001,7 +4061,8 @@ mod tests {
             option: "mode".into(),
             value: "git".into(),
         };
-        let edits = watch_action_to_text_edits(&action, watch, text);
+        let idx = idx_of(text);
+        let edits = watch_action_to_text_edits(&action, watch, src_of(text, &idx));
         assert!(edits.is_empty());
     }
 
