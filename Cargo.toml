@@ -15,6 +15,12 @@ include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/R
 default = ["launchpad"]
 launchpad = ["dep:launchpadlib"]
 openssl-vendored = ["dep:openssl"]
+# Off by default. Enables an `LspDebianWorkspace` that adapts the salsa
+# Workspace to lintian-brush's `FixerWorkspace` trait, and surfaces
+# migrated lintian-brush fixers as code actions. Pulls in the full
+# lintian-brush dependency tree (pyo3, breezyshim, sqlx, sequoia, …);
+# leave it off if those are unwanted in the server binary.
+lintian-brush = ["dep:lintian-brush"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
@@ -49,6 +55,7 @@ patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = "0.16"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
+lintian-brush = { path = "../lintian-brush/lintian-brush", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

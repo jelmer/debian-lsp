@@ -30,6 +30,8 @@ mod deb822;
 mod debcargo;
 mod dep3;
 mod distros;
+#[cfg(feature = "lintian-brush")]
+mod lintian_brush;
 mod lintian_overrides;
 mod maintainers;
 mod package_cache;
@@ -252,9 +254,11 @@ impl Backend {
     }
 
     fn collect_diagnostics(
+        uri: &Uri,
         source_file: workspace::SourceFile,
         file_type: FileType,
         workspace: &Workspace,
+        open_files: &HashMap<Uri, FileInfo>,
     ) -> Option<Vec<Diagnostic>> {
         match file_type {
             FileType::Control => {
@@ -262,7 +266,19 @@ impl Backend {
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(source_file);
-                Some(control::diagnostics::get_diagnostics(src, &parsed))
+                #[allow(unused_mut)]
+                let mut diags = control::diagnostics::get_diagnostics(src, &parsed);
+                // With the lintian-brush feature on, also surface every
+                // detector hit as a diagnostic. The same detectors back the
+                // code-action path in `run_control_fixers_for_uri`, so the
+                // diagnostic and the quick-fix carry matching `code` values
+                // and the editor pairs them up.
+                #[cfg(feature = "lintian-brush")]
+                diags.extend(lintian_brush::fixers::run_control_diagnostics_for_uri(
+                    uri, workspace, open_files,
+                ));
+                let _ = (uri, open_files);
+                Some(diags)
             }
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
             FileType::Patch => {
@@ -606,7 +622,13 @@ impl LanguageServer for Backend {
             self.prefetch_upstream_guesses(&params.text_document.uri);
         }
 
-        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        let diagnostics = Self::collect_diagnostics(
+            &params.text_document.uri,
+            source_file,
+            file_type,
+            &workspace,
+            &files,
+        );
         drop(files);
 
         if let Some(diagnostics) = diagnostics {
@@ -689,7 +711,13 @@ impl LanguageServer for Backend {
             (workspace.clone(), source_file)
         };
 
-        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        let diagnostics = Self::collect_diagnostics(
+            &params.text_document.uri,
+            source_file,
+            file_type,
+            &workspace,
+            &files,
+        );
         drop(files);
 
         if let Some(diagnostics) = diagnostics {
@@ -997,6 +1025,14 @@ impl LanguageServer for Backend {
                     }
                 }
                 actions.extend(casing_actions);
+
+                #[cfg(feature = "lintian-brush")]
+                actions.extend(lintian_brush::fixers::run_control_fixers_for_uri(
+                    &params.text_document.uri,
+                    &workspace,
+                    &files,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Copyright => {
                 let Some(text_range) = text_range else {
@@ -2211,9 +2247,18 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
             }
         };
 
-        let source_file = workspace.update_file(uri, content.clone());
+        let source_file = workspace.update_file(uri.clone(), content.clone());
 
-        let diagnostics = match Backend::collect_diagnostics(source_file, file_type, &workspace) {
+        // The CLI `check` command runs against a single file with no
+        // companion buffer state — pass an empty open-files map.
+        let empty_files: HashMap<Uri, FileInfo> = HashMap::new();
+        let diagnostics = match Backend::collect_diagnostics(
+            &uri,
+            source_file,
+            file_type,
+            &workspace,
+            &empty_files,
+        ) {
             Some(d) => d,
             None => continue,
         };
