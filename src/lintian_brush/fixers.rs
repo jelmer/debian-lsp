@@ -3119,12 +3119,20 @@ fn resolve_package_version(
 ) -> Option<(String, Version)> {
     let changelog_path = base_path.join("debian/changelog");
     let changelog_uri = Uri::from_file_path(&changelog_path)?;
-    let changelog_text: String = if let Some(info) = open_files.get(&changelog_uri) {
-        workspace.source_text(info.source_file).to_string()
+    // Use the salsa-cached parse when the changelog is open in the
+    // editor — otherwise this would re-parse the entire changelog on
+    // every keystroke in any debian/* file, since the lintian-brush
+    // diagnostic and code-action paths both call it. Fall back to a
+    // disk read + one-shot parse only when the file isn't tracked.
+    let parsed = if let Some(info) = open_files.get(&changelog_uri) {
+        workspace
+            .get_parsed_changelog(info.source_file)
+            .to_result()
+            .ok()?
     } else {
-        std::fs::read_to_string(&changelog_path).ok()?
+        let text = std::fs::read_to_string(&changelog_path).ok()?;
+        debian_changelog::ChangeLog::read_relaxed(text.as_bytes()).ok()?
     };
-    let parsed = debian_changelog::ChangeLog::read_relaxed(changelog_text.as_bytes()).ok()?;
     let entry = parsed.iter().next()?;
     let package = entry.package()?;
     let version = entry.version()?;
