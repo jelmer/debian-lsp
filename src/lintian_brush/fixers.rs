@@ -818,7 +818,7 @@ fn locate_action_target(
             let changelog = ws.parsed_changelog_for(rel)?;
             changelog_action_range(cl, &changelog, anchor_text)
         }
-        Action::Dep3(d) => dep3_action_range(d, anchor_text),
+        Action::Dep3(d) => dep3_action_range(d, ws, rel, anchor_text),
         Action::Watch(w) => {
             let watch = ws.parsed_watch_for(rel)?;
             watch_action_range(w, &watch, anchor_text)
@@ -1064,7 +1064,7 @@ fn action_to_text_edits(
         Action::DesktopIni(_) => unimplemented!(
             "DesktopIni actions are not yet wired into the LSP translator (no salsa parse)"
         ),
-        Action::Dep3(d) => dep3_action_to_text_edits(d, original_text),
+        Action::Dep3(d) => dep3_action_to_text_edits(d, ws, rel, original_text),
         Action::Watch(w) => {
             let Some(watch) = ws.parsed_watch_for(rel) else {
                 return Vec::new();
@@ -1376,14 +1376,32 @@ fn render_bullet_block(new_lines: &[String]) -> String {
     out
 }
 
-fn dep3_action_to_text_edits(action: &Dep3Action, original_text: &str) -> Vec<TextEdit> {
-    let Some((header, _header_end)) = crate::dep3::parse_dep3_header(original_text) else {
-        // Empty header — no anchor for SetField/RemoveField/RenameField.
-        // For SetField we *could* insert at offset 0; mirror the applier
-        // by treating empty header as "no edit" until the user wants it.
-        return Vec::new();
+fn dep3_action_to_text_edits(
+    action: &Dep3Action,
+    ws: &LspDebianWorkspace<'_>,
+    rel: &Path,
+    original_text: &str,
+) -> Vec<TextEdit> {
+    // Use the salsa-cached header parse when the file is open in the
+    // editor; fall back to a one-shot parse otherwise (e.g. for files
+    // we only know from disk).
+    let header_para = if let Some((parse, _)) = ws.parsed_dep3_header_for(rel) {
+        let tree = parse.tree();
+        let Some(p) = tree.paragraphs().next() else {
+            return Vec::new();
+        };
+        p
+    } else {
+        let Some((h, _)) = crate::dep3::parse_dep3_header(original_text) else {
+            // Empty header — no anchor for
+            // SetField/RemoveField/RenameField. For SetField we *could*
+            // insert at offset 0; mirror the applier by treating empty
+            // header as "no edit" until the user wants it.
+            return Vec::new();
+        };
+        h.as_deb822().clone()
     };
-    let paragraph = header.as_deb822();
+    let paragraph = &header_para;
     match action {
         Dep3Action::SetField { field, value, .. } => {
             // Reuse the deb822 set-field logic by calling
@@ -1445,16 +1463,28 @@ fn dep3_action_to_text_edits(action: &Dep3Action, original_text: &str) -> Vec<Te
     }
 }
 
-fn dep3_action_range(action: &Dep3Action, anchor_text: &str) -> Option<Range> {
-    let (header, _) = crate::dep3::parse_dep3_header(anchor_text)?;
-    let paragraph = header.as_deb822();
+fn dep3_action_range(
+    action: &Dep3Action,
+    ws: &LspDebianWorkspace<'_>,
+    rel: &Path,
+    anchor_text: &str,
+) -> Option<Range> {
+    // Same routing as `dep3_action_to_text_edits`: prefer the
+    // salsa-cached header parse, fall back to a one-shot parse for
+    // files not tracked by the editor.
+    let header_para = if let Some((parse, _)) = ws.parsed_dep3_header_for(rel) {
+        parse.tree().paragraphs().next()?
+    } else {
+        let (h, _) = crate::dep3::parse_dep3_header(anchor_text)?;
+        h.as_deb822().clone()
+    };
     let field = match action {
         Dep3Action::SetField { field, .. } | Dep3Action::RemoveField { field, .. } => {
             field.as_str()
         }
         Dep3Action::RenameField { from_field, .. } => from_field.as_str(),
     };
-    let entry = find_entry_in_paragraph(paragraph, field)?;
+    let entry = find_entry_in_paragraph(&header_para, field)?;
     Some(position::text_range_to_lsp_range(
         anchor_text,
         entry.text_range(),
