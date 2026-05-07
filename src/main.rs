@@ -307,6 +307,7 @@ impl Backend {
                 | FileType::Watch
                 | FileType::UpstreamMetadata
                 | FileType::TestsControl
+                | FileType::Patch
         ) {
             Some(lintian_brush::fixers::run_diagnostics_for_uri(
                 uri, workspace, open_files,
@@ -987,7 +988,8 @@ impl LanguageServer for Backend {
             | FileType::Changelog
             | FileType::Watch
             | FileType::UpstreamMetadata
-            | FileType::TestsControl => {}
+            | FileType::TestsControl
+            | FileType::Patch => {}
             _ => return Ok(None),
         }
 
@@ -1151,7 +1153,10 @@ impl LanguageServer for Backend {
                     }
                 }
             }
-            FileType::Watch | FileType::UpstreamMetadata | FileType::TestsControl => {
+            FileType::Watch
+            | FileType::UpstreamMetadata
+            | FileType::TestsControl
+            | FileType::Patch => {
                 // No built-in code actions; lintian-brush detectors
                 // below are the only source.
             }
