@@ -3,19 +3,25 @@
 //! Queries the `vcswatch` table to find the latest packaged version
 //! for a given VCS repository URL.
 
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use lru::LruCache;
 use tokio::sync::RwLock;
 
 /// Thread-safe shared cache for VCS watch lookups.
 pub type SharedVcsWatchCache = Arc<RwLock<VcsWatchCache>>;
 
+/// Maximum number of distinct VCS URLs cached. URLs referenced over a
+/// long editor session would otherwise grow unbounded; with the LRU
+/// the oldest entries fall out once the cap is reached.
+const VCSWATCH_CACHE_CAPACITY: usize = 1024;
+
 /// Cached VCS watch data from UDD.
 pub struct VcsWatchCache {
     pool: crate::udd::SharedPool,
     /// Map from VCS URL to packaged version. `None` means "looked up, not found".
-    version_by_url: HashMap<String, Option<String>>,
+    version_by_url: LruCache<String, Option<String>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -29,7 +35,9 @@ impl VcsWatchCache {
     pub fn new(pool: crate::udd::SharedPool) -> Self {
         Self {
             pool,
-            version_by_url: HashMap::new(),
+            version_by_url: LruCache::new(
+                NonZeroUsize::new(VCSWATCH_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
         }
     }
 
@@ -37,20 +45,21 @@ impl VcsWatchCache {
     ///
     /// Returns `None` if the URL is not found in vcswatch or the query fails.
     pub async fn get_version_for_url(&mut self, url: &str) -> Option<&str> {
-        if !self.version_by_url.contains_key(url) {
+        if !self.version_by_url.contains(url) {
             self.fetch_version_for_url(url).await;
         }
-        self.get_cached_version_for_url(url)
+        self.version_by_url.get(url).and_then(|v| v.as_deref())
     }
 
     /// Look up the packaged version from cache only, without fetching.
+    /// Does not promote the entry in the LRU.
     pub fn get_cached_version_for_url(&self, url: &str) -> Option<&str> {
-        self.version_by_url.get(url).and_then(|v| v.as_deref())
+        self.version_by_url.peek(url).and_then(|v| v.as_deref())
     }
 
     /// Returns `true` if this URL has been looked up (hit or miss).
     pub fn is_cached(&self, url: &str) -> bool {
-        self.version_by_url.contains_key(url)
+        self.version_by_url.contains(url)
     }
 
     async fn fetch_version_for_url(&mut self, url: &str) {
@@ -72,11 +81,11 @@ impl VcsWatchCache {
                 url: Some(row_url),
                 version,
             }) => {
-                self.version_by_url.insert(row_url, version);
+                self.version_by_url.put(row_url, version);
             }
             _ => {
                 // Not found — cache as None to avoid re-querying
-                self.version_by_url.insert(url.to_string(), None);
+                self.version_by_url.put(url.to_string(), None);
             }
         }
     }
@@ -85,7 +94,7 @@ impl VcsWatchCache {
     #[cfg(test)]
     pub(crate) fn insert_cached(&mut self, url: &str, version: &str) {
         self.version_by_url
-            .insert(url.to_string(), Some(version.to_string()));
+            .put(url.to_string(), Some(version.to_string()));
     }
 }
 

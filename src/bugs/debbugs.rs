@@ -23,7 +23,7 @@ impl BugCache {
     /// Fetch bug IDs and details for a source package from UDD in a single query.
     async fn fetch_bugs_for_source_package(&mut self, source_package: &str) {
         let key = format!("src:{}", source_package);
-        if self.bug_ids_by_package.contains_key(&key) {
+        if self.bug_ids_by_package.contains(&key) {
             return;
         }
 
@@ -51,7 +51,7 @@ impl BugCache {
                 continue;
             };
             ids.push(id);
-            self.bug_details_by_id.insert(
+            self.bug_details_by_id.put(
                 id,
                 CachedDebbugsBugDetails {
                     title: row.title,
@@ -64,7 +64,7 @@ impl BugCache {
             );
         }
 
-        self.bug_ids_by_package.insert(key, ids);
+        self.bug_ids_by_package.put(key, ids);
     }
 
     /// Return Debian bug summaries for a source `package` that match a decimal prefix.
@@ -77,17 +77,26 @@ impl BugCache {
 
         let normalized_prefix = prefix.trim();
         let key = format!("src:{}", package);
-        let Some(ids) = self.bug_ids_by_package.get(&key) else {
-            return Vec::new();
+        // Snapshot the matching IDs to release the borrow on
+        // `bug_ids_by_package` before walking `bug_details_by_id`
+        // (each `.get()` on the LRU is `&mut self`, so the two
+        // can't be borrowed simultaneously).
+        let matching_ids: Vec<u32> = match self.bug_ids_by_package.get(&key) {
+            Some(ids) => ids
+                .iter()
+                .copied()
+                .filter(|id| id.to_string().starts_with(normalized_prefix))
+                .collect(),
+            None => return Vec::new(),
         };
 
-        ids.iter()
-            .filter(|id| id.to_string().starts_with(normalized_prefix))
-            .map(|&id| self.make_summary(id))
+        matching_ids
+            .into_iter()
+            .map(|id| self.make_summary(id))
             .collect()
     }
 
-    fn make_summary(&self, id: u32) -> DebbugsBugSummary {
+    fn make_summary(&mut self, id: u32) -> DebbugsBugSummary {
         match self.bug_details_by_id.get(&id) {
             Some(details) => DebbugsBugSummary {
                 id,
@@ -113,10 +122,10 @@ impl BugCache {
     /// Return a single Debian bug summary by ID, fetching from UDD if not
     /// already cached.
     pub async fn get_debian_bug_summary(&mut self, id: u32) -> Option<DebbugsBugSummary> {
-        if !self.bug_details_by_id.contains_key(&id) {
+        if !self.bug_details_by_id.contains(&id) {
             self.fetch_bug_by_id(id).await;
         }
-        if self.bug_details_by_id.contains_key(&id) {
+        if self.bug_details_by_id.contains(&id) {
             Some(self.make_summary(id))
         } else {
             None
@@ -143,7 +152,7 @@ impl BugCache {
         };
 
         if let Some(row) = row {
-            self.bug_details_by_id.insert(
+            self.bug_details_by_id.put(
                 id,
                 CachedDebbugsBugDetails {
                     title: row.title,
@@ -158,26 +167,28 @@ impl BugCache {
     }
 
     /// Count open bugs for a source package from cache only, without fetching.
+    /// Read-only: uses `peek` so the cache LRU order is unchanged.
     ///
     /// Returns `None` if the source package has not been fetched yet.
     pub fn get_cached_open_bug_count(&self, source_package: &str) -> Option<usize> {
         let key = format!("src:{}", source_package);
-        let ids = self.bug_ids_by_package.get(&key)?;
+        let ids = self.bug_ids_by_package.peek(&key)?;
         Some(
             ids.iter()
-                .filter(|id| self.bug_details_by_id.get(id).is_some_and(|d| !d.done))
+                .filter(|id| self.bug_details_by_id.peek(id).is_some_and(|d| !d.done))
                 .count(),
         )
     }
 
     /// Count open bugs filed against a binary package from cache only.
+    /// Read-only: uses `peek` so the cache LRU order is unchanged.
     ///
     /// Returns `None` if the binary package has not been fetched yet.
     pub fn get_cached_open_binary_bug_count(&self, binary_package: &str) -> Option<usize> {
-        let ids = self.bug_ids_by_package.get(binary_package)?;
+        let ids = self.bug_ids_by_package.peek(binary_package)?;
         Some(
             ids.iter()
-                .filter(|id| self.bug_details_by_id.get(id).is_some_and(|d| !d.done))
+                .filter(|id| self.bug_details_by_id.peek(id).is_some_and(|d| !d.done))
                 .count(),
         )
     }
@@ -192,7 +203,7 @@ impl BugCache {
 
     /// Fetch bugs filed against a binary package name from UDD and cache them.
     async fn fetch_bugs_for_binary_package(&mut self, binary_package: &str) {
-        if self.bug_ids_by_package.contains_key(binary_package) {
+        if self.bug_ids_by_package.contains(binary_package) {
             return;
         }
 
@@ -220,20 +231,25 @@ impl BugCache {
                 continue;
             };
             ids.push(id);
-            self.bug_details_by_id
-                .entry(id)
-                .or_insert(CachedDebbugsBugDetails {
-                    title: row.title,
-                    severity: row.severity,
-                    done: row.done.as_ref().is_some_and(|d| !d.is_empty()),
-                    tags: row.tags,
-                    forwarded: row.forwarded,
-                    originator: row.submitter,
-                });
+            // Don't overwrite a previously-cached entry — bugs filed
+            // against a binary may already have been seen via the
+            // source package and shouldn't lose their (richer) record.
+            if !self.bug_details_by_id.contains(&id) {
+                self.bug_details_by_id.put(
+                    id,
+                    CachedDebbugsBugDetails {
+                        title: row.title,
+                        severity: row.severity,
+                        done: row.done.as_ref().is_some_and(|d| !d.is_empty()),
+                        tags: row.tags,
+                        forwarded: row.forwarded,
+                        originator: row.submitter,
+                    },
+                );
+            }
         }
 
-        self.bug_ids_by_package
-            .insert(binary_package.to_string(), ids);
+        self.bug_ids_by_package.put(binary_package.to_string(), ids);
     }
 
     /// Pre-fetch bugs filed against a binary package name.
@@ -251,7 +267,7 @@ impl BugCache {
 
         for (id, title) in bugs {
             sorted_unique_ids.insert(id);
-            self.bug_details_by_id.insert(
+            self.bug_details_by_id.put(
                 id,
                 CachedDebbugsBugDetails {
                     title: title.map(ToString::to_string),
@@ -264,7 +280,7 @@ impl BugCache {
             );
         }
 
-        self.bug_ids_by_package.insert(
+        self.bug_ids_by_package.put(
             format!("src:{}", source_package),
             sorted_unique_ids.into_iter().collect(),
         );
@@ -280,7 +296,7 @@ impl BugCache {
 
         for (id, title) in bugs {
             sorted_unique_ids.insert(id);
-            self.bug_details_by_id.insert(
+            self.bug_details_by_id.put(
                 id,
                 CachedDebbugsBugDetails {
                     title: title.map(ToString::to_string),
@@ -293,7 +309,7 @@ impl BugCache {
             );
         }
 
-        self.bug_ids_by_package.insert(
+        self.bug_ids_by_package.put(
             binary_package.to_string(),
             sorted_unique_ids.into_iter().collect(),
         );

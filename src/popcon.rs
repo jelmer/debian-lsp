@@ -2,19 +2,25 @@
 //!
 //! Queries the `popcon` table to find install counts for packages.
 
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use lru::LruCache;
 use tokio::sync::RwLock;
 
 /// Thread-safe shared cache for popcon lookups.
 pub type SharedPopconCache = Arc<RwLock<PopconCache>>;
 
+/// Maximum number of distinct packages cached. Bounded so a long
+/// editor session that touches many unique packages doesn't keep
+/// growing the cache.
+const POPCON_CACHE_CAPACITY: usize = 4096;
+
 /// Cached popcon data from UDD.
 pub struct PopconCache {
     pool: crate::udd::SharedPool,
     /// Map from package name to install count. `None` means "looked up, not found".
-    inst_by_package: HashMap<String, Option<u32>>,
+    inst_by_package: LruCache<String, Option<u32>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -27,7 +33,9 @@ impl PopconCache {
     pub fn new(pool: crate::udd::SharedPool) -> Self {
         Self {
             pool,
-            inst_by_package: HashMap::new(),
+            inst_by_package: LruCache::new(
+                NonZeroUsize::new(POPCON_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
         }
     }
 
@@ -35,22 +43,23 @@ impl PopconCache {
     ///
     /// Returns `None` if the package is not found in popcon or the query fails.
     pub async fn get_inst_count(&mut self, package: &str) -> Option<u32> {
-        if !self.inst_by_package.contains_key(package) {
+        if !self.inst_by_package.contains(package) {
             self.fetch_inst_count(package).await;
         }
-        self.get_cached_inst_count(package)
+        self.inst_by_package.get(package).and_then(|v| *v)
     }
 
     /// Look up the install count from cache only, without fetching.
+    /// Does not promote the entry in the LRU.
     ///
     /// Returns `None` if the package has not been fetched yet or was not found.
     pub fn get_cached_inst_count(&self, package: &str) -> Option<u32> {
-        self.inst_by_package.get(package)?.as_ref().copied()
+        self.inst_by_package.peek(package).and_then(|v| *v)
     }
 
     /// Returns `true` if this package has been looked up (hit or miss).
     pub fn is_cached(&self, package: &str) -> bool {
-        self.inst_by_package.contains_key(package)
+        self.inst_by_package.contains(package)
     }
 
     async fn fetch_inst_count(&mut self, package: &str) {
@@ -70,10 +79,10 @@ impl PopconCache {
         match row {
             Some(PopconRow { insts: Some(n) }) => {
                 self.inst_by_package
-                    .insert(package.to_string(), u32::try_from(n).ok());
+                    .put(package.to_string(), u32::try_from(n).ok());
             }
             _ => {
-                self.inst_by_package.insert(package.to_string(), None);
+                self.inst_by_package.put(package.to_string(), None);
             }
         }
     }
@@ -82,13 +91,13 @@ impl PopconCache {
     #[cfg(test)]
     pub(crate) fn insert_cached(&mut self, package: &str, inst_count: u32) {
         self.inst_by_package
-            .insert(package.to_string(), Some(inst_count));
+            .put(package.to_string(), Some(inst_count));
     }
 
     /// Insert a cached "not found" entry for testing purposes.
     #[cfg(test)]
     pub(crate) fn insert_cached_missing(&mut self, package: &str) {
-        self.inst_by_package.insert(package.to_string(), None);
+        self.inst_by_package.put(package.to_string(), None);
     }
 }
 

@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use lru::LruCache;
 use tokio::sync::RwLock;
 
 mod debbugs;
@@ -15,17 +16,28 @@ pub type SharedBugCache = Arc<RwLock<BugCache>>;
 #[cfg(feature = "launchpad")]
 const LAUNCHPAD_CONSUMER_KEY: &str = "debian-lsp";
 
+/// Maximum number of distinct package keys cached. Each entry stores
+/// a `Vec<u32>` of bug IDs (typically <100), so the cap is generous;
+/// the LRU exists to bound long-session growth, not steady-state size.
+const BUG_IDS_CACHE_CAPACITY: usize = 1024;
+
+/// Maximum number of bug detail records cached. Each record holds a
+/// handful of `Option<String>` fields. Bugs are referenced repeatedly
+/// once seen, so the cap is sized to comfortably hold every bug from
+/// a few hundred packages without evictions.
+const BUG_DETAILS_CACHE_CAPACITY: usize = 32_768;
+
 /// Cached bug data used by changelog completions.
 pub struct BugCache {
     pool: crate::udd::SharedPool,
-    bug_ids_by_package: HashMap<String, Vec<u32>>,
-    bug_details_by_id: HashMap<u32, CachedDebbugsBugDetails>,
+    bug_ids_by_package: LruCache<String, Vec<u32>>,
+    bug_details_by_id: LruCache<u32, CachedDebbugsBugDetails>,
     #[cfg(feature = "launchpad")]
     launchpad_client: launchpadlib::r#async::Client,
     #[cfg(feature = "launchpad")]
-    launchpad_bug_ids_by_package: HashMap<String, Vec<u32>>,
+    launchpad_bug_ids_by_package: LruCache<String, Vec<u32>>,
     #[cfg(feature = "launchpad")]
-    launchpad_bug_details_by_id: HashMap<u32, CachedLaunchpadBugDetails>,
+    launchpad_bug_details_by_id: LruCache<u32, CachedLaunchpadBugDetails>,
 }
 
 /// Cached details for a single Debian bug report.
@@ -64,14 +76,22 @@ impl BugCache {
     pub fn new(pool: crate::udd::SharedPool) -> Self {
         Self {
             pool,
-            bug_ids_by_package: HashMap::new(),
-            bug_details_by_id: HashMap::new(),
+            bug_ids_by_package: LruCache::new(
+                NonZeroUsize::new(BUG_IDS_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
+            bug_details_by_id: LruCache::new(
+                NonZeroUsize::new(BUG_DETAILS_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
             #[cfg(feature = "launchpad")]
             launchpad_client: launchpadlib::r#async::Client::anonymous(LAUNCHPAD_CONSUMER_KEY),
             #[cfg(feature = "launchpad")]
-            launchpad_bug_ids_by_package: HashMap::new(),
+            launchpad_bug_ids_by_package: LruCache::new(
+                NonZeroUsize::new(BUG_IDS_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
             #[cfg(feature = "launchpad")]
-            launchpad_bug_details_by_id: HashMap::new(),
+            launchpad_bug_details_by_id: LruCache::new(
+                NonZeroUsize::new(BUG_DETAILS_CACHE_CAPACITY).expect("non-zero capacity"),
+            ),
         }
     }
 }
