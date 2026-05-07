@@ -523,8 +523,10 @@ impl LanguageServer for Backend {
 
         // Apply incremental content changes to the current text
         let mut workspace = self.workspace.lock().await;
-        let mut text = file_info
-            .map(|info| workspace.source_text(info.source_file))
+        // Owned String here because we splice content_changes into it
+        // before handing back to salsa via update_file.
+        let mut text: String = file_info
+            .map(|info| workspace.source_text(info.source_file).to_string())
             .unwrap_or_default();
 
         for change in &params.content_changes {
@@ -1004,9 +1006,12 @@ impl LanguageServer for Backend {
                     // Try to use the open file from the workspace first
                     let tests_control_uri = Uri::from_file_path(&tests_control_path);
                     let tests_text = if let Some(ref tc_uri) = tests_control_uri {
-                        files
-                            .get(tc_uri)
-                            .map(|info| (tc_uri.clone(), workspace.source_text(info.source_file)))
+                        files.get(tc_uri).map(|info| {
+                            (
+                                tc_uri.clone(),
+                                workspace.source_text(info.source_file).to_string(),
+                            )
+                        })
                     } else {
                         None
                     };
@@ -1408,7 +1413,7 @@ impl LanguageServer for Backend {
                         let formatted = deb822
                             .wrap_and_sort(None, Some(&wrap_paragraph))
                             .to_string();
-                        if formatted == source_text {
+                        if formatted.as_str() == &*source_text {
                             return Ok(None);
                         }
                         let full_range = text_range_to_lsp_range(
@@ -1438,7 +1443,7 @@ impl LanguageServer for Backend {
                 let formatted = deb822
                     .wrap_and_sort(None, Some(&wrap_paragraph))
                     .to_string();
-                if formatted == source_text {
+                if formatted.as_str() == &*source_text {
                     return Ok(None);
                 }
                 let full_range = text_range_to_lsp_range(
@@ -2224,7 +2229,7 @@ mod main_tests {
         // Should reuse the same SourceFile input
         assert_eq!(file1, file2);
         // Text should be updated
-        assert_eq!(workspace.source_text(file2), "Source: b\n");
+        assert_eq!(&*workspace.source_text(file2), "Source: b\n");
     }
 
     #[test]

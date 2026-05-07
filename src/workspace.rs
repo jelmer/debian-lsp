@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rowan::ast::AstNode;
 use salsa::Setter;
@@ -24,7 +25,11 @@ pub struct UnreleasedUploadInfo {
 #[derive(Debug)]
 pub struct SourceFile {
     pub url: Uri,
-    pub text: String,
+    /// Stored as `Arc<str>` so `Workspace::source_text` is a cheap
+    /// `Arc::clone` instead of an O(N) string clone — relevant for
+    /// large changelogs / copyright files where every detector run
+    /// would otherwise duplicate the whole buffer.
+    pub text: Arc<str>,
 }
 
 // Store the Parse type directly - it's thread-safe now!
@@ -121,7 +126,6 @@ pub fn parse_lintian_overrides(
     lintian_overrides::LintianOverrides::parse(&text)
 }
 
-
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -138,11 +142,12 @@ impl Workspace {
     }
 
     pub fn update_file(&mut self, url: Uri, text: String) -> SourceFile {
+        let arc: Arc<str> = Arc::from(text);
         if let Some(&existing) = self.files.get(&url) {
-            existing.set_text(self).to(text);
+            existing.set_text(self).to(arc);
             existing
         } else {
-            let sf = SourceFile::new(self, url.clone(), text);
+            let sf = SourceFile::new(self, url.clone(), arc);
             self.files.insert(url, sf);
             sf
         }
@@ -155,7 +160,11 @@ impl Workspace {
         parse_control(self, file)
     }
 
-    pub fn source_text(&self, file: SourceFile) -> String {
+    /// Return the buffer text of `file`. Cheap — clones an `Arc`,
+    /// not the underlying string. Callers that need an owned `String`
+    /// (e.g. to splice in incremental edits) should call
+    /// `.to_string()` on the result.
+    pub fn source_text(&self, file: SourceFile) -> Arc<str> {
         file.text(self).clone()
     }
 
@@ -349,7 +358,6 @@ impl Workspace {
     ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
         parse_lintian_overrides(self, file)
     }
-
 
     /// Find UNRELEASED entries in the given range that can be marked for upload
     pub fn find_unreleased_entries_in_range(
