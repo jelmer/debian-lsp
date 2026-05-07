@@ -18,6 +18,7 @@ use ::lintian_brush::workspace::iter_detectors;
 use ::lintian_brush::{FixerPreferences, Version};
 use debian_changelog::ChangeLog;
 use debian_control::lossless::Control;
+use debian_copyright::lossless::Copyright;
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, DeleteFile, Diagnostic,
@@ -217,7 +218,20 @@ fn locate_action_target(
     let rel = action_file(action)?;
     match action {
         Action::Deb822(deb) => {
-            let control = ws.parsed_control_for(rel)?;
+            // Find the target paragraph through whichever cached parse
+            // matches the file (control vs copyright). Each typed
+            // wrapper carries an `as_deb822()` we use for the read-only
+            // range probe — the typed setters are only needed for
+            // mutations, not for locating ranges.
+            let copyright_holder;
+            let control_holder;
+            let paragraph_in: &deb822_lossless::Deb822 = if rel == Path::new("debian/copyright") {
+                copyright_holder = ws.parsed_copyright_for(rel)?;
+                copyright_holder.as_deb822()
+            } else {
+                control_holder = ws.parsed_control_for(rel)?;
+                control_holder.as_deb822()
+            };
             let (selector, field) = match deb {
                 Deb822Action::SetField {
                     paragraph, field, ..
@@ -261,7 +275,7 @@ fn locate_action_target(
                     return None
                 }
             };
-            let paragraph = find_paragraph(&control, selector)?;
+            let paragraph = find_paragraph_in_deb822(paragraph_in, selector)?;
             if let Some(field) = field {
                 if let Some(entry) = find_entry_in_paragraph(&paragraph, &field) {
                     return Some(position::text_range_to_lsp_range(
@@ -506,14 +520,24 @@ fn action_to_text_edits(
 ) -> Vec<TextEdit> {
     match action {
         Action::Deb822(deb) => {
-            // Pull the cached `Control` parse for this file. Detectors only
-            // emit Deb822 actions against debian/control today; if we ever
-            // get one for debian/copyright we'd want a parallel branch for
-            // the copyright parse.
-            let Some(control) = ws.parsed_control_for(rel) else {
-                return Vec::new();
-            };
-            deb822_action_to_text_edits(deb, &control, original_text)
+            // Route to the right cached parse based on the target file.
+            // debian/copyright has its own typed wrappers (Header /
+            // FilesParagraph / LicenseParagraph) that honour DEP-5 field
+            // ordering and the License-field 1-space indent rule;
+            // bypassing them and editing through plain deb822 would lose
+            // those guarantees. Everything else (debian/control,
+            // debian/tests/control, ...) goes through the control path.
+            if rel == Path::new("debian/copyright") {
+                let Some(copyright) = ws.parsed_copyright_for(rel) else {
+                    return Vec::new();
+                };
+                copyright_action_to_text_edits(deb, copyright, original_text)
+            } else {
+                let Some(control) = ws.parsed_control_for(rel) else {
+                    return Vec::new();
+                };
+                deb822_action_to_text_edits(deb, &control, original_text)
+            }
         }
         Action::Filesystem(fs) => filesystem_action_to_text_edits(fs, original_text),
         Action::Yaml(yaml) => {
@@ -1438,6 +1462,252 @@ fn deb822_action_to_text_edits(
 /// Find the paragraph matching `selector` in `control`. Returns the
 /// underlying deb822 `Paragraph` (read-only) so callers can probe its
 /// entries' ranges.
+/// Translate a `Deb822Action` against `debian/copyright` into a single
+/// `TextEdit` that rewrites the affected paragraph in place.
+///
+/// We don't do byte-precise per-field edits here because the typed
+/// copyright wrappers (`Header`, `FilesParagraph`, `LicenseParagraph`)
+/// have to honour DEP-5's field ordering and the License-field 1-space
+/// indent rule — going through them is the only way to keep those
+/// guarantees. We mutate the cached green tree (which `tree()` returns
+/// in mutable form), snapshot the target paragraph's range *before*
+/// mutation, then emit one TextEdit with the post-mutation paragraph
+/// text. No reparsing.
+fn copyright_action_to_text_edits(
+    action: &Deb822Action,
+    copyright: Copyright,
+    original_text: &str,
+) -> Vec<TextEdit> {
+    // AppendParagraph and ReorderParagraphs don't target a single
+    // existing paragraph; route them through the generic helpers (which
+    // operate on raw text or on a Deb822 directly).
+    match action {
+        Deb822Action::AppendParagraph { fields, indent, .. } => {
+            return append_paragraph_edits(fields, *indent, original_text);
+        }
+        Deb822Action::ReorderParagraphs { .. } => {
+            // No detector emits this against debian/copyright in
+            // practice, and the copyright wrappers don't have a typed
+            // reorder API — leave it unimplemented for now rather than
+            // silently dropping it.
+            return Vec::new();
+        }
+        _ => {}
+    }
+
+    let selector = match action {
+        Deb822Action::SetField { paragraph, .. }
+        | Deb822Action::SetFieldWithIndent { paragraph, .. }
+        | Deb822Action::RemoveField { paragraph, .. }
+        | Deb822Action::RenameField { paragraph, .. }
+        | Deb822Action::RemoveParagraph { paragraph, .. }
+        | Deb822Action::NormalizeFieldSpacing { paragraph, .. } => paragraph,
+        // Relations / substvars apply only to debian/control; ignore
+        // these on debian/copyright so we don't emit spurious edits.
+        Deb822Action::DropRelation { .. }
+        | Deb822Action::ReplaceRelation { .. }
+        | Deb822Action::EnsureRelation { .. }
+        | Deb822Action::MoveRelation { .. }
+        | Deb822Action::EnsureSubstvar { .. }
+        | Deb822Action::DropSubstvar { .. } => return Vec::new(),
+        Deb822Action::AppendParagraph { .. } | Deb822Action::ReorderParagraphs { .. } => {
+            unreachable!("handled above")
+        }
+    };
+
+    // RemoveParagraph is structural — strip the paragraph plus its
+    // trailing blank line. Mirrors `remove_paragraph_edits` but against
+    // the copyright deb822.
+    if matches!(action, Deb822Action::RemoveParagraph { .. }) {
+        return remove_paragraph_edits_from_deb822(copyright.as_deb822(), selector, original_text);
+    }
+
+    // Locate the target paragraph and snapshot its current byte range
+    // BEFORE mutation. The range coordinates we report to the editor
+    // are against the unmodified buffer.
+    let Some(orig_paragraph) = find_paragraph_in_deb822(copyright.as_deb822(), selector) else {
+        return Vec::new();
+    };
+    let paragraph_range = orig_paragraph.text_range();
+    let start: usize = paragraph_range.start().into();
+    let end: usize = paragraph_range.end().into();
+    if end > original_text.len() || start > end {
+        return Vec::new();
+    }
+
+    // Apply the mutation through the matching typed wrapper so DEP-5
+    // field ordering and the License 1-space indent are honoured. Each
+    // arm renders the paragraph after mutation and falls through to the
+    // common edit-emit at the bottom.
+    let mutated = match selector {
+        ParagraphSelector::CopyrightHeader => {
+            let Some(mut header) = copyright.header() else {
+                return Vec::new();
+            };
+            match apply_typed_copyright_field_op(action, &mut header) {
+                Some(true) => header.as_deb822().to_string(),
+                _ => return Vec::new(),
+            }
+        }
+        ParagraphSelector::CopyrightFiles { glob } => {
+            let Some(mut files) = copyright
+                .iter_files()
+                .find(|f| f.as_deb822().get("Files").as_deref() == Some(glob.as_str()))
+            else {
+                return Vec::new();
+            };
+            match apply_typed_copyright_field_op(action, &mut files) {
+                Some(true) => files.as_deb822().to_string(),
+                _ => return Vec::new(),
+            }
+        }
+        ParagraphSelector::CopyrightLicense { name: license_name } => {
+            let Some(mut license) = copyright.iter_licenses().find(|l| {
+                l.as_deb822()
+                    .get("License")
+                    .and_then(|s| s.split_once('\n').map(|(n, _)| n.to_string()).or(Some(s)))
+                    .as_deref()
+                    == Some(license_name.as_str())
+            }) else {
+                return Vec::new();
+            };
+            match apply_typed_copyright_field_op(action, &mut license) {
+                Some(true) => license.as_deb822().to_string(),
+                _ => return Vec::new(),
+            }
+        }
+        // No typed wrapper for these selectors against debian/copyright;
+        // fall back to silent no-op.
+        ParagraphSelector::ByKey { .. }
+        | ParagraphSelector::Index { .. }
+        | ParagraphSelector::Source
+        | ParagraphSelector::Binary { .. } => return Vec::new(),
+    };
+
+    if original_text[start..end] == mutated {
+        return Vec::new();
+    }
+    let lsp_range = position::text_range_to_lsp_range(original_text, paragraph_range);
+    vec![TextEdit {
+        range: lsp_range,
+        new_text: mutated,
+    }]
+}
+
+/// Trait abstracting the `set_field` / `remove_field` / `get` operations
+/// that `Header` / `FilesParagraph` / `LicenseParagraph` share. Each
+/// typed wrapper bakes in its own field-ordering and indent rules — this
+/// trait lets `apply_typed_copyright_field_op` route through them
+/// uniformly. The trait methods are renamed to avoid recursing into the
+/// inherent methods on each impl.
+trait CopyrightFieldOps {
+    fn copyright_set(&mut self, name: &str, value: &str);
+    fn copyright_remove(&mut self, name: &str);
+    fn copyright_get(&self, name: &str) -> Option<String>;
+}
+
+impl CopyrightFieldOps for debian_copyright::lossless::Header {
+    fn copyright_set(&mut self, name: &str, value: &str) {
+        self.set_field(name, value);
+    }
+    fn copyright_remove(&mut self, name: &str) {
+        self.remove_field(name);
+    }
+    fn copyright_get(&self, name: &str) -> Option<String> {
+        self.as_deb822().get(name)
+    }
+}
+
+impl CopyrightFieldOps for debian_copyright::lossless::FilesParagraph {
+    fn copyright_set(&mut self, name: &str, value: &str) {
+        self.set_field(name, value);
+    }
+    fn copyright_remove(&mut self, name: &str) {
+        self.remove_field(name);
+    }
+    fn copyright_get(&self, name: &str) -> Option<String> {
+        self.as_deb822().get(name)
+    }
+}
+
+impl CopyrightFieldOps for debian_copyright::lossless::LicenseParagraph {
+    fn copyright_set(&mut self, name: &str, value: &str) {
+        self.set_field(name, value);
+    }
+    fn copyright_remove(&mut self, name: &str) {
+        self.remove_field(name);
+    }
+    fn copyright_get(&self, name: &str) -> Option<String> {
+        self.as_deb822().get(name)
+    }
+}
+
+/// Run a `Deb822Action` through a typed copyright paragraph's
+/// field-ops, returning `Some(true)` when a mutation was applied,
+/// `Some(false)` when the mutation was a no-op (and we should emit no
+/// edit), and `None` when the action's shape doesn't apply to copyright.
+fn apply_typed_copyright_field_op<T: CopyrightFieldOps>(
+    action: &Deb822Action,
+    target: &mut T,
+) -> Option<bool> {
+    match action {
+        Deb822Action::SetField { field, value, .. }
+        | Deb822Action::SetFieldWithIndent { field, value, .. } => {
+            // The typed setter already enforces DEP-5 indent rules
+            // (License gets 1-space); the action's IndentPattern is
+            // ignored on copyright.
+            if target.copyright_get(field).as_deref() == Some(value.as_str()) {
+                return Some(false);
+            }
+            target.copyright_set(field, value);
+            Some(true)
+        }
+        Deb822Action::RemoveField { field, .. } => {
+            if target.copyright_get(field).is_none() {
+                return Some(false);
+            }
+            target.copyright_remove(field);
+            Some(true)
+        }
+        Deb822Action::RenameField { from, to, .. } => {
+            // No typed `rename` on the copyright wrappers; do it as
+            // (read + set new + remove old) using only the trait API.
+            let value = target.copyright_get(from)?;
+            if target.copyright_get(to).is_some() {
+                // Refuse to clobber an existing destination field.
+                return Some(false);
+            }
+            target.copyright_set(to, &value);
+            target.copyright_remove(from);
+            Some(true)
+        }
+        // No typed equivalent on the copyright wrappers.
+        Deb822Action::NormalizeFieldSpacing { .. } => None,
+        _ => None,
+    }
+}
+
+/// Mirror of `remove_paragraph_edits` but against a `&Deb822` instead of
+/// a `&Control`. Used only by the copyright path.
+fn remove_paragraph_edits_from_deb822(
+    deb822: &deb822_lossless::Deb822,
+    selector: &ParagraphSelector,
+    original_text: &str,
+) -> Vec<TextEdit> {
+    let Some(paragraph) = find_paragraph_in_deb822(deb822, selector) else {
+        return Vec::new();
+    };
+    let para_range = paragraph.text_range();
+    let start: usize = para_range.start().into();
+    let end_after_blank = absorb_trailing_blank_line(original_text, para_range.end().into());
+    let text_range = rowan::TextRange::new((start as u32).into(), (end_after_blank as u32).into());
+    let lsp_range = position::text_range_to_lsp_range(original_text, text_range);
+    vec![TextEdit {
+        range: lsp_range,
+        new_text: String::new(),
+    }]
+}
+
 fn find_paragraph(
     control: &Control,
     selector: &ParagraphSelector,
@@ -1453,11 +1723,42 @@ fn find_paragraph(
             .as_deb822()
             .paragraphs()
             .find(|p| p.get(field).as_deref() == Some(value.as_str())),
-        // Copyright-only selectors don't apply to debian/control. The
-        // copyright entry-point isn't wired into this translator yet.
+        // Copyright-only selectors don't apply to debian/control.
         ParagraphSelector::CopyrightHeader
         | ParagraphSelector::CopyrightFiles { .. }
         | ParagraphSelector::CopyrightLicense { .. } => None,
+    }
+}
+
+/// Read-only paragraph lookup against any deb822 file. Used for locating
+/// source ranges (squiggle anchors); for mutations on debian/control we
+/// go through the typed `Source` / `Binary` accessors so the canonical
+/// debian-control field ordering is preserved.
+fn find_paragraph_in_deb822(
+    deb822: &deb822_lossless::Deb822,
+    selector: &ParagraphSelector,
+) -> Option<deb822_lossless::Paragraph> {
+    match selector {
+        ParagraphSelector::Source => deb822.paragraphs().find(|p| p.get("Source").is_some()),
+        ParagraphSelector::Binary { package } => deb822
+            .paragraphs()
+            .find(|p| p.get("Package").as_deref() == Some(package.as_str())),
+        ParagraphSelector::CopyrightHeader => deb822.paragraphs().next(),
+        ParagraphSelector::CopyrightFiles { glob } => deb822
+            .paragraphs()
+            .find(|p| p.get("Files").as_deref() == Some(glob.as_str())),
+        ParagraphSelector::CopyrightLicense { name } => deb822.paragraphs().find(|p| {
+            p.get("Files").is_none()
+                && !p.contains_key("Format")
+                && p.get("License")
+                    .and_then(|l| l.split_once('\n').map(|(s, _)| s.to_string()).or(Some(l)))
+                    .as_deref()
+                    == Some(name.as_str())
+        }),
+        ParagraphSelector::Index { index } => deb822.paragraphs().nth(*index),
+        ParagraphSelector::ByKey { field, value } => deb822
+            .paragraphs()
+            .find(|p| p.get(field).as_deref() == Some(value.as_str())),
     }
 }
 
@@ -2941,6 +3242,145 @@ mod tests {
         let applied = apply_text_edit_to_string(text, &edits[0]);
         assert!(!applied.contains("${shlibs:Depends}"));
         assert!(applied.contains("libc6"));
+    }
+
+    #[test]
+    fn copyright_set_field_in_header_rewrites_paragraph() {
+        let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+                    Upstream-Name: foo\n\
+                    \n\
+                    Files: *\n\
+                    Copyright: 2024 someone\n\
+                    License: GPL-3+\n";
+        let copyright: Copyright = text.parse().unwrap();
+        let action = Deb822Action::SetField {
+            file: PathBuf::from("debian/copyright"),
+            paragraph: ParagraphSelector::CopyrightHeader,
+            field: "Upstream-Contact".into(),
+            value: "team@example.com".into(),
+        };
+        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        assert_eq!(
+            applied,
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+             Upstream-Name: foo\n\
+             Upstream-Contact: team@example.com\n\
+             \n\
+             Files: *\n\
+             Copyright: 2024 someone\n\
+             License: GPL-3+\n"
+        );
+    }
+
+    #[test]
+    fn copyright_set_field_no_op_when_value_unchanged() {
+        let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+                    Upstream-Name: foo\n";
+        let copyright: Copyright = text.parse().unwrap();
+        let action = Deb822Action::SetField {
+            file: PathBuf::from("debian/copyright"),
+            paragraph: ParagraphSelector::CopyrightHeader,
+            field: "Upstream-Name".into(),
+            value: "foo".into(),
+        };
+        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn copyright_remove_field_in_files_paragraph() {
+        let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+                    \n\
+                    Files: *\n\
+                    Copyright: 2024 someone\n\
+                    License: GPL-3+\n\
+                    Comment: stale\n";
+        let copyright: Copyright = text.parse().unwrap();
+        let action = Deb822Action::RemoveField {
+            file: PathBuf::from("debian/copyright"),
+            paragraph: ParagraphSelector::CopyrightFiles { glob: "*".into() },
+            field: "Comment".into(),
+        };
+        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        assert_eq!(
+            applied,
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+             \n\
+             Files: *\n\
+             Copyright: 2024 someone\n\
+             License: GPL-3+\n"
+        );
+    }
+
+    #[test]
+    fn copyright_set_license_field_uses_one_space_indent() {
+        // DEP-5 mandates a single-space continuation indent for License
+        // text. The typed `set_field` enforces it; we verify here by
+        // setting a multi-line License value.
+        let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+                    \n\
+                    License: GPL-3+\n\
+                    \n\
+                    License: BSD-3-clause\n";
+        let copyright: Copyright = text.parse().unwrap();
+        let action = Deb822Action::SetField {
+            file: PathBuf::from("debian/copyright"),
+            paragraph: ParagraphSelector::CopyrightLicense {
+                name: "BSD-3-clause".into(),
+            },
+            field: "License".into(),
+            value: "BSD-3-clause\nRedistribution and use in source\nand binary forms are OK."
+                .into(),
+        };
+        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        // Continuation lines must be indented by exactly one space.
+        assert_eq!(
+            applied,
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+             \n\
+             License: GPL-3+\n\
+             \n\
+             License: BSD-3-clause\n \
+             Redistribution and use in source\n \
+             and binary forms are OK.\n"
+        );
+    }
+
+    #[test]
+    fn copyright_remove_paragraph_drops_files_block() {
+        let text = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+                    \n\
+                    Files: doomed/*\n\
+                    Copyright: 2024 someone\n\
+                    License: GPL-3+\n\
+                    \n\
+                    Files: *\n\
+                    Copyright: 2024 someone else\n\
+                    License: MIT\n";
+        let copyright: Copyright = text.parse().unwrap();
+        let action = Deb822Action::RemoveParagraph {
+            file: PathBuf::from("debian/copyright"),
+            paragraph: ParagraphSelector::CopyrightFiles {
+                glob: "doomed/*".into(),
+            },
+        };
+        let edits = copyright_action_to_text_edits(&action, copyright, text);
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        assert_eq!(
+            applied,
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\
+             \n\
+             Files: *\n\
+             Copyright: 2024 someone else\n\
+             License: MIT\n"
+        );
     }
 
     #[test]
