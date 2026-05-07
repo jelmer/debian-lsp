@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use text_size::{TextRange, TextSize};
 use tower_lsp_server::ls_types::{Position, Range};
 
@@ -119,41 +117,6 @@ impl LineIndex {
         let end = self.try_position_to_offset(text, range.end)?;
         Some(TextRange::new(start, end))
     }
-}
-
-/// Cheap clone-friendly handle to a [`LineIndex`].
-pub type SharedLineIndex = Arc<LineIndex>;
-
-// -----------------------------------------------------------------
-// Free-function shims.
-//
-// Each one builds a fresh `LineIndex` per call and immediately
-// throws it away — same cost as the pre-LineIndex code. Hot paths
-// should fetch the salsa-cached index via
-// `Workspace::get_line_index` and call the [`LineIndex`] /
-// [`Source`] methods directly. These shims exist while the
-// migration is in progress; once every caller goes through
-// `Source<'_>` they should be removed.
-// -----------------------------------------------------------------
-
-/// Convert TextSize (byte offset) to LSP Position (line, UTF-16 code unit offset)
-pub fn offset_to_position(text: &str, offset: TextSize) -> Position {
-    LineIndex::new(text).offset_to_position(text, offset)
-}
-
-/// Convert TextRange to LSP Range
-pub fn text_range_to_lsp_range(text: &str, range: TextRange) -> Range {
-    LineIndex::new(text).text_range_to_lsp_range(text, range)
-}
-
-/// Convert LSP Position (line, UTF-16 code unit offset) to TextSize (byte offset)
-pub fn try_position_to_offset(text: &str, position: Position) -> Option<TextSize> {
-    LineIndex::new(text).try_position_to_offset(text, position)
-}
-
-/// Convert LSP Range to TextRange
-pub fn try_lsp_range_to_text_range(text: &str, range: &Range) -> Option<TextRange> {
-    LineIndex::new(text).try_lsp_range_to_text_range(text, range)
 }
 
 /// Read-only view over a buffer plus its line index.
