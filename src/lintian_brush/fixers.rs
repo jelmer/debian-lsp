@@ -1,8 +1,8 @@
 //! Glue between debian-lsp's `code_action` handler and lintian-brush's
 //! detector registry.
 //!
-//! Detectors live in `lintian_brush::workspace::iter_detectors()`. Each one
-//! takes our [`LspDebianWorkspace`] and returns
+//! Detectors live in `lintian_brush::workspace::iter_detector_registrations()`.
+//! Each one takes our [`LspDebianWorkspace`] and returns
 //! [`lintian_brush::diagnostic::Diagnostic`]s carrying serialisable
 //! [`lintian_brush::diagnostic::Action`]s. We translate the actions into
 //! LSP `TextEdit`s and surface each diagnostic as a `CodeAction`.
@@ -15,7 +15,7 @@ use ::lintian_brush::diagnostic::{
     FilesystemAction, IndentPattern, ParagraphSelector, WatchAction, YamlAction, YamlPathComponent,
 };
 use ::lintian_brush::workspace::{
-    iter_detectors, ChangelogAspect, DetectorCost, Trigger, WatchAspect,
+    iter_detector_registrations, ChangelogAspect, DetectorCost, Trigger, WatchAspect,
 };
 use ::lintian_brush::{FixerPreferences, Version};
 use debian_changelog::ChangeLog;
@@ -67,16 +67,21 @@ fn phase_allow_net(phase: RunPhase) -> bool {
     matches!(phase, RunPhase::Explicit)
 }
 
-/// Decide whether `detector` should run for an edit on `rel` whose
-/// changed text spans `changed_ranges` (or `None` if the entire file
-/// is in scope, e.g. on file-open).
+/// Decide whether a detector with the given `triggers` should run
+/// for an edit on `rel` whose changed text spans `changed_ranges`
+/// (or `None` if the entire file is in scope, e.g. on file-open).
+///
+/// Takes the static triggers slice off `DetectorRegistration` so we
+/// can decide *before* instantiating the detector — keeps us from
+/// allocating ~150 `Box<dyn Detector>` values per keystroke just to
+/// throw most of them away.
 ///
 /// Filtering is conservative: a detector with no declared triggers
 /// always runs, and a detector with at least one trigger that *might*
 /// match runs even if other triggers definitely don't. We never block
 /// a detector that the registry hasn't told us is irrelevant.
-fn detector_matches(
-    detector: &dyn ::lintian_brush::workspace::Detector,
+fn triggers_match(
+    triggers: &'static [Trigger],
     rel: &Path,
     deb822: Option<&deb822_lossless::Deb822>,
     changelog: Option<&ChangeLog>,
@@ -84,7 +89,6 @@ fn detector_matches(
     watch: Option<&debian_watch::parse::ParsedWatchFile>,
     changed_ranges: Option<&[rowan::TextRange]>,
 ) -> bool {
-    let triggers = detector.triggers();
     if triggers.is_empty() {
         // No declared triggers — be conservative and run it.
         return true;
@@ -449,10 +453,14 @@ pub fn run_fixers_for_uri(
     // practice) stays cheap.
     let max_cost = phase_max_cost(phase);
     let mut actions = Vec::new();
-    for detector in iter_detectors() {
-        if detector.cost() > max_cost {
+    for reg in iter_detector_registrations() {
+        if reg.cost > max_cost {
             continue;
         }
+        // Only instantiate the detector once we've decided to run it —
+        // skipping ~150 Box<dyn Detector> allocations per call when
+        // most detectors are gated out by cost.
+        let detector = (reg.create)();
         let diags = match detector.detect(&ws, &preferences) {
             Ok(d) => d,
             Err(_) => continue,
@@ -480,7 +488,7 @@ pub fn run_fixers_for_uri(
                 continue;
             };
             actions.push(build_action(
-                detector.lintian_tags(),
+                reg.lintian_tags,
                 &plan.label,
                 edit,
                 diagnostics,
@@ -538,12 +546,12 @@ pub fn run_diagnostics_for_uri(
     let max_cost = phase_max_cost(phase);
 
     let mut out = Vec::new();
-    for detector in iter_detectors() {
-        if detector.cost() > max_cost {
+    for reg in iter_detector_registrations() {
+        if reg.cost > max_cost {
             continue;
         }
-        if !detector_matches(
-            detector.as_ref(),
+        if !triggers_match(
+            reg.triggers,
             &rel,
             deb822_parse.as_ref(),
             changelog_parse.as_ref(),
@@ -553,6 +561,8 @@ pub fn run_diagnostics_for_uri(
         ) {
             continue;
         }
+        // Only instantiate the detector once we've decided to run it.
+        let detector = (reg.create)();
         let diags = match detector.detect(&ws, &preferences) {
             Ok(d) => d,
             Err(_) => continue,
