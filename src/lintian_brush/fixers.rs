@@ -900,50 +900,19 @@ fn render_bullet_block(new_lines: &[String]) -> String {
     out
 }
 
-/// Find the byte offset where a quilt patch's DEP-3 header ends, i.e.
-/// the start of the first `---` / `diff ` / `Index:` line. Mirrors the
-/// applier's `dep3_header_end`.
-fn dep3_header_end(content: &str) -> usize {
-    let mut offset = 0;
-    for line in content.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.starts_with("---")
-            || trimmed.starts_with("diff ")
-            || trimmed.starts_with("Index:")
-        {
-            return offset;
-        }
-        offset += line.len();
-    }
-    content.len()
-}
-
-/// Parse the DEP-3 header portion of a patch file into a deb822 paragraph,
-/// returning both the parse and the byte length of the header. The header
-/// is the substring before the first `---` / `diff ` / `Index:` line.
-fn parse_dep3_header(content: &str) -> Option<(deb822_lossless::Paragraph, usize)> {
-    let header_end = dep3_header_end(content);
-    let header_str = &content[..header_end];
-    // The header is one paragraph; parse the whole substring as deb822
-    // and pull out the (sole) paragraph.
-    let parsed = deb822_lossless::Deb822::parse(header_str);
-    let deb822 = parsed.tree();
-    let para = deb822.paragraphs().next()?;
-    Some((para, header_end))
-}
-
 fn dep3_action_to_text_edits(action: &Dep3Action, original_text: &str) -> Vec<TextEdit> {
-    let Some((paragraph, _header_end)) = parse_dep3_header(original_text) else {
+    let Some((header, _header_end)) = crate::dep3::parse_dep3_header(original_text) else {
         // Empty header — no anchor for SetField/RemoveField/RenameField.
         // For SetField we *could* insert at offset 0; mirror the applier
         // by treating empty header as "no edit" until the user wants it.
         return Vec::new();
     };
+    let paragraph = header.as_deb822();
     match action {
         Dep3Action::SetField { field, value, .. } => {
             // Reuse the deb822 set-field logic by calling
             // `find_entry_in_paragraph` directly on the parsed paragraph.
-            if let Some(entry) = find_entry_in_paragraph(&paragraph, field) {
+            if let Some(entry) = find_entry_in_paragraph(paragraph, field) {
                 if entry.value().as_str() == value {
                     return Vec::new();
                 }
@@ -971,7 +940,7 @@ fn dep3_action_to_text_edits(action: &Dep3Action, original_text: &str) -> Vec<Te
             }
         }
         Dep3Action::RemoveField { field, .. } => {
-            let Some(entry) = find_entry_in_paragraph(&paragraph, field) else {
+            let Some(entry) = find_entry_in_paragraph(paragraph, field) else {
                 return Vec::new();
             };
             let lsp_range = position::text_range_to_lsp_range(original_text, entry.text_range());
@@ -985,7 +954,7 @@ fn dep3_action_to_text_edits(action: &Dep3Action, original_text: &str) -> Vec<Te
             to_field,
             ..
         } => {
-            let Some(entry) = find_entry_in_paragraph(&paragraph, from_field) else {
+            let Some(entry) = find_entry_in_paragraph(paragraph, from_field) else {
                 return Vec::new();
             };
             let Some(key_range) = entry.key_range() else {
@@ -1001,14 +970,15 @@ fn dep3_action_to_text_edits(action: &Dep3Action, original_text: &str) -> Vec<Te
 }
 
 fn dep3_action_range(action: &Dep3Action, anchor_text: &str) -> Option<Range> {
-    let (paragraph, _) = parse_dep3_header(anchor_text)?;
+    let (header, _) = crate::dep3::parse_dep3_header(anchor_text)?;
+    let paragraph = header.as_deb822();
     let field = match action {
         Dep3Action::SetField { field, .. } | Dep3Action::RemoveField { field, .. } => {
             field.as_str()
         }
         Dep3Action::RenameField { from_field, .. } => from_field.as_str(),
     };
-    let entry = find_entry_in_paragraph(&paragraph, field)?;
+    let entry = find_entry_in_paragraph(paragraph, field)?;
     Some(position::text_range_to_lsp_range(
         anchor_text,
         entry.text_range(),
