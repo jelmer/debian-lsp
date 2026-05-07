@@ -97,6 +97,16 @@ pub fn parse_patches_series(
     patchkit::edit::series::parse(&text)
 }
 
+#[salsa::tracked]
+pub fn parse_lintian_overrides(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
+    let text = file.text(db);
+    lintian_overrides::LintianOverrides::parse(&text)
+}
+
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -302,6 +312,19 @@ impl Workspace {
     ) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
         parse_patches_series(self, file)
     }
+
+    /// Salsa-cached parse of a `debian/source/lintian-overrides` or
+    /// `debian/<pkg>.lintian-overrides` file. The parser is
+    /// error-resilient — `parse.tree()` returns a usable tree even on
+    /// malformed input, so consumers should walk it directly instead
+    /// of dropping the document on `ok()`.
+    pub fn get_parsed_lintian_overrides(
+        &self,
+        file: SourceFile,
+    ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
+        parse_lintian_overrides(self, file)
+    }
+
 
     /// Find UNRELEASED entries in the given range that can be marked for upload
     pub fn find_unreleased_entries_in_range(

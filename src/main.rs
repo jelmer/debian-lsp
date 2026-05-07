@@ -680,10 +680,11 @@ impl LanguageServer for Backend {
             Some((FileType::LintianOverrides, source_file)) => {
                 let workspace = self.workspace.lock().await;
                 let source_text = workspace.source_text(source_file);
+                let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 drop(workspace);
                 let mut tag_cache = self.lintian_tag_cache.write().await;
                 let tags = tag_cache.get_tags().await;
-                lintian_overrides::get_completions(&source_text, position, tags)
+                lintian_overrides::get_completions(&parsed, &source_text, position, tags)
             }
             Some((FileType::SourceOptions, source_file)) => {
                 let workspace = self.workspace.lock().await;
@@ -1095,13 +1096,14 @@ impl LanguageServer for Backend {
             FileType::SourceFormat => vec![],
             FileType::SourceOptions => source_options::generate_semantic_tokens(&source_text),
             FileType::LintianOverrides => {
-                let parsed = lintian_overrides::LintianOverrides::parse(&source_text);
-                match parsed.ok() {
-                    Ok(overrides) => {
-                        lintian_overrides::generate_semantic_tokens(&overrides, &source_text)
-                    }
-                    Err(_) => vec![],
-                }
+                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                // Walk the resilient tree even if there were parse
+                // errors — lintian-overrides always produces a usable
+                // green tree, and dropping it would mean an editor
+                // sees no token highlights while the user is typing
+                // a malformed line.
+                let overrides = parsed.tree();
+                lintian_overrides::generate_semantic_tokens(&overrides, &source_text)
             }
             FileType::PatchesSeries => {
                 let parsed = workspace.get_parsed_patches_series(file.source_file);
