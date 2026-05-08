@@ -50,6 +50,9 @@ mod vcswatch;
 mod watch;
 mod workspace;
 
+#[cfg(test)]
+mod lsp_integration_tests;
+
 use position::{LineIndex, Source};
 use std::collections::HashMap;
 use tower_lsp_server::ls_types::notification::Notification;
@@ -266,21 +269,58 @@ impl Backend {
     /// file as changed", appropriate for `did_open` and the CLI `check`
     /// command. With the lintian-brush feature off both arguments are
     /// ignored.
-    fn collect_diagnostics(
-        uri: &Uri,
+    ///
+    /// Async because the lintian-brush detector pass runs on a
+    /// `spawn_blocking` thread (see `lintian_brush_diagnostics`).
+    async fn collect_diagnostics(
+        uri: Uri,
+        source_file: workspace::SourceFile,
+        file_type: FileType,
+        workspace: Workspace,
+        open_files: HashMap<Uri, FileInfo>,
+        phase: RunPhase,
+        changed_ranges: Option<Vec<rowan::TextRange>>,
+    ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
+        let builtin = Self::builtin_diagnostics(source_file, file_type, &workspace);
+
+        #[cfg(feature = "lintian-brush")]
+        let lb = Self::lintian_brush_diagnostics(
+            uri,
+            file_type,
+            workspace,
+            open_files,
+            phase,
+            changed_ranges,
+        )
+        .await?;
+        #[cfg(not(feature = "lintian-brush"))]
+        let lb: Option<Vec<Diagnostic>> = {
+            let _ = (uri, workspace, open_files, phase, changed_ranges);
+            None
+        };
+
+        Ok(match (builtin, lb) {
+            (None, None) => None,
+            (Some(b), None) => Some(b),
+            (None, Some(l)) => Some(l),
+            (Some(mut b), Some(l)) => {
+                b.extend(l);
+                Some(b)
+            }
+        })
+    }
+
+    /// Per-file-type built-in diagnostics. Returns `None` for file
+    /// types we have no built-in handler for *and* that the
+    /// lintian-brush translator can't target either — those file
+    /// types should leave previously-published diagnostics in place
+    /// (`None`) rather than clearing them with an empty publish.
+    fn builtin_diagnostics(
         source_file: workspace::SourceFile,
         file_type: FileType,
         workspace: &Workspace,
-        open_files: &HashMap<Uri, FileInfo>,
-        phase: RunPhase,
-        changed_ranges: Option<&[rowan::TextRange]>,
     ) -> Option<Vec<Diagnostic>> {
-        // Per-file-type built-in diagnostics. Returns None for file
-        // types we have no built-in handler for *and* that the
-        // lintian-brush translator can't target either — those file
-        // types should leave previously-published diagnostics in place
-        // (None) rather than clearing them with an empty publish.
-        let builtin: Option<Vec<Diagnostic>> = match file_type {
+        match file_type {
             FileType::Control => {
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -306,15 +346,28 @@ impl Backend {
             | FileType::LintianOverrides
             | FileType::PatchesSeries
             | FileType::DebcargoToml => None,
-        };
+        }
+    }
 
-        // With the lintian-brush feature on, surface detector hits as
-        // diagnostics on any file the translator knows how to anchor
-        // on. The same detectors back the code-action path in
-        // `run_fixers_for_uri`, so the diagnostic and the quick-fix
-        // carry matching `code` values and the editor pairs them up.
-        #[cfg(feature = "lintian-brush")]
-        let lb: Option<Vec<Diagnostic>> = if matches!(
+    /// Run the lintian-brush detector pass for `uri` and return its
+    /// diagnostics. Returns `None` if `file_type` is one the translator
+    /// can't target.
+    ///
+    /// Some detectors call `Runtime::new() + block_on` internally (for
+    /// UDD queries, `git ls-remote`, etc.). Doing that on a thread that
+    /// already drives a tokio runtime panics, so the whole detector
+    /// pass runs on a `spawn_blocking` worker. `Workspace` clones
+    /// cheaply (Arc on salsa storage) and the open-files map is small.
+    #[cfg(feature = "lintian-brush")]
+    async fn lintian_brush_diagnostics(
+        uri: Uri,
+        file_type: FileType,
+        workspace: Workspace,
+        open_files: HashMap<Uri, FileInfo>,
+        phase: RunPhase,
+        changed_ranges: Option<Vec<rowan::TextRange>>,
+    ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
+        if !matches!(
             file_type,
             FileType::Control
                 | FileType::Copyright
@@ -324,29 +377,24 @@ impl Backend {
                 | FileType::TestsControl
                 | FileType::Patch
         ) {
-            Some(lintian_brush::fixers::run_diagnostics_for_uri(
-                uri,
-                workspace,
-                open_files,
-                phase,
-                changed_ranges,
-            ))
-        } else {
-            None
-        };
-        #[cfg(not(feature = "lintian-brush"))]
-        let lb: Option<Vec<Diagnostic>> = None;
-        let _ = (uri, open_files, phase, changed_ranges);
-
-        match (builtin, lb) {
-            (None, None) => None,
-            (Some(b), None) => Some(b),
-            (None, Some(l)) => Some(l),
-            (Some(mut b), Some(l)) => {
-                b.extend(l);
-                Some(b)
-            }
+            return Ok(None);
         }
+        let diags = tokio::task::spawn_blocking(move || {
+            lintian_brush::fixers::run_diagnostics_for_uri(
+                &uri,
+                &workspace,
+                &open_files,
+                phase,
+                changed_ranges.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| {
+            let msg = format!("lintian-brush detector task panicked: {:?}", e);
+            tracing::error!("{}", msg);
+            tower_lsp_server::jsonrpc::Error::internal_error(msg)
+        })?;
+        Ok(Some(diags))
     }
 
     /// Find the `debian/` directory by walking up from the given URI.
@@ -670,19 +718,32 @@ impl LanguageServer for Backend {
             self.prefetch_upstream_guesses(&params.text_document.uri);
         }
 
-        let diagnostics = Self::collect_diagnostics(
-            &params.text_document.uri,
+        // Snapshot the open-files map; the detector pass owns it on
+        // its blocking worker so we don't keep the lock for the
+        // duration.
+        let open_files_snapshot = files.clone();
+        drop(files);
+
+        let diagnostics = match Self::collect_diagnostics(
+            params.text_document.uri.clone(),
             source_file,
             file_type,
-            &workspace,
-            &files,
+            workspace,
+            open_files_snapshot,
             // File-open: scope is the whole file, no range filter, and
             // we're willing to do filesystem / subprocess work since
             // initial scan is rare.
             RunPhase::Open,
             None,
-        );
-        drop(files);
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                self.client.log_message(MessageType::ERROR, &e).await;
+                None
+            }
+        };
 
         if let Some(diagnostics) = diagnostics {
             self.client
@@ -783,21 +844,31 @@ impl LanguageServer for Backend {
         // For did_change we run only `Cheap` detectors so every
         // keystroke stays responsive. A full replacement (no range)
         // means we have nothing to narrow on, so pass `None`.
-        let ranges_arg: Option<&[rowan::TextRange]> = if full_replacement {
+        let ranges_arg: Option<Vec<rowan::TextRange>> = if full_replacement {
             None
         } else {
-            Some(&changed_ranges)
+            Some(changed_ranges)
         };
-        let diagnostics = Self::collect_diagnostics(
-            &params.text_document.uri,
+        let open_files_snapshot = files.clone();
+        drop(files);
+
+        let diagnostics = match Self::collect_diagnostics(
+            params.text_document.uri.clone(),
             source_file,
             file_type,
-            &workspace,
-            &files,
+            workspace,
+            open_files_snapshot,
             RunPhase::Keystroke,
             ranges_arg,
-        );
-        drop(files);
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                self.client.log_message(MessageType::ERROR, &e).await;
+                None
+            }
+        };
 
         if let Some(diagnostics) = diagnostics {
             self.client
@@ -1216,16 +1287,41 @@ impl LanguageServer for Backend {
         // Surface lintian-brush detector quick-fixes against any file
         // the translator can target. Anchored on `uri`; built-in
         // handlers above keep producing actions on their own URIs too.
+        //
+        // The detector pass runs on a blocking worker — see
+        // `lintian_brush_diagnostics` for why.
         #[cfg(feature = "lintian-brush")]
-        actions.extend(lintian_brush::fixers::run_fixers_for_uri(
-            &params.text_document.uri,
-            &workspace,
-            &files,
-            &params.context.diagnostics,
-            // Code actions are an explicit user request, so let
-            // detectors do everything including network checks.
-            RunPhase::Explicit,
-        ));
+        {
+            let open_files_snapshot = files.clone();
+            drop(files);
+            let uri = params.text_document.uri.clone();
+            let diagnostics = params.context.diagnostics.clone();
+            let lb_actions = match tokio::task::spawn_blocking(move || {
+                lintian_brush::fixers::run_fixers_for_uri(
+                    &uri,
+                    &workspace,
+                    &open_files_snapshot,
+                    &diagnostics,
+                    Some(params.range),
+                    // Code actions are an explicit user request, so let
+                    // detectors do everything including network checks.
+                    RunPhase::Explicit,
+                )
+            })
+            .await
+            {
+                Ok(actions) => actions,
+                Err(e) => {
+                    let msg = format!("lintian-brush fixer task panicked: {:?}", e);
+                    tracing::error!("{}", msg);
+                    self.client.log_message(MessageType::ERROR, msg).await;
+                    Vec::new()
+                }
+            };
+            actions.extend(lb_actions);
+        }
+        #[cfg(not(feature = "lintian-brush"))]
+        drop(files);
 
         // Filter actions based on client's requested kinds
         if let Some(requested_kinds) = requested_kinds {
@@ -2227,6 +2323,10 @@ impl LanguageServer for Backend {
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Run the server over stdio.
+    #[arg(long)]
+    stdio: bool,
 }
 
 /// Subcommands for debian-lsp.
@@ -2290,7 +2390,7 @@ fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// and any recognized Debian files found within are checked.
 ///
 /// Returns the number of errors found (for the exit code).
-fn run_check(paths: &[std::path::PathBuf]) -> i32 {
+async fn run_check(paths: &[std::path::PathBuf]) -> i32 {
     let mut workspace = Workspace::new();
     let mut error_count: i32 = 0;
 
@@ -2355,19 +2455,26 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
         // companion buffer state — pass an empty open-files map.
         let empty_files: HashMap<Uri, FileInfo> = HashMap::new();
         let diagnostics = match Backend::collect_diagnostics(
-            &uri,
+            uri.clone(),
             source_file,
             file_type,
-            &workspace,
-            &empty_files,
+            workspace.clone(),
+            empty_files,
             // The CLI is a one-shot scan — the user is asking
             // explicitly for issues, so let detectors do whatever they
             // need to including network access.
             RunPhase::Explicit,
             None,
-        ) {
-            Some(d) => d,
-            None => continue,
+        )
+        .await
+        {
+            Ok(Some(d)) => d,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("{}: error: {}", path.display(), e);
+                error_count += 1;
+                continue;
+            }
         };
 
         let display_path = path.display();
@@ -2394,7 +2501,7 @@ async fn main() {
 
     match cli.command {
         Some(Command::Check { paths }) => {
-            let errors = run_check(&paths);
+            let errors = run_check(&paths).await;
             std::process::exit(if errors > 0 { 1 } else { 0 });
         }
         None => {

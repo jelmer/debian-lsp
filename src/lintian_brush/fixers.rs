@@ -38,7 +38,7 @@ pub use crate::phase::RunPhase;
 /// Maximum [`DetectorCost`] this phase will run.
 fn phase_max_cost(phase: RunPhase) -> DetectorCost {
     match phase {
-        RunPhase::Keystroke => DetectorCost::Cheap,
+        RunPhase::Keystroke => DetectorCost::Filesystem,
         RunPhase::Open => DetectorCost::Subprocess,
         RunPhase::Explicit => DetectorCost::Network,
     }
@@ -413,15 +413,15 @@ pub fn run_fixers_for_uri(
     workspace: &Workspace,
     open_files: &HashMap<Uri, FileInfo>,
     diagnostics: &[Diagnostic],
+    cursor_range: Option<Range>,
     phase: RunPhase,
 ) -> Vec<CodeActionOrCommand> {
     let Some(base_path) = base_path_for_debian_file(uri) else {
         return Vec::new();
     };
-
-    // Read package + version from debian/changelog (open buffer or disk).
-    // The trait permits both as `None`; detectors that genuinely need them
-    // handle the absence themselves.
+    let Some(rel) = package_relative_path(&base_path, uri) else {
+        return Vec::new();
+    };
     let (package, version) = match resolve_package_version(&base_path, workspace, open_files) {
         Some((p, v)) => (Some(p), Some(v)),
         None => (None, None),
@@ -434,11 +434,19 @@ pub fn run_fixers_for_uri(
 
     let ws = LspDebianWorkspace::new(
         workspace,
-        base_path,
+        base_path.clone(),
         package,
         version,
         relevant_open_files(open_files),
     );
+
+    let Some(rel) = package_relative_path(&base_path, uri) else {
+        return Vec::new();
+    };
+
+    let original = ws.current_text(&rel).unwrap_or_default();
+    let original_idx = crate::position::LineIndex::new(&original);
+    let original_src = crate::position::Source::new(&original, &original_idx);
 
     // We don't apply trigger-based filtering for code-action
     // invocation: the user is asking "show me everything that needs
@@ -468,29 +476,74 @@ pub fn run_fixers_for_uri(
                     continue;
                 }
             }
-            // Each detector may carry multiple alternative ActionPlans.
-            // Use the first plan whose actions we can fully translate;
-            // skip the diagnostic entirely if none translate.
-            let Some(plan) = diag
-                .plans
+
+            let lb_range = diagnostic_range(&diag, &ws, &rel, original_src);
+
+            // If a cursor range was provided, only show actions that overlap with it.
+            // This prevents the "wrong paragraph" bug where all fixes for the whole
+            // file are shown at every position.
+            if let Some(cursor) = cursor_range {
+                if !ranges_overlap_lsp(cursor, lb_range) {
+                    continue;
+                }
+            }
+
+            // Link to provided diagnostics that match the tag and range.
+            // We use the actual tag from the issue, not reg.lintian_tags,
+            // because some detectors emit tags not in their registration.
+            let tag = diag.issue.as_ref().and_then(|i| i.tag.as_deref());
+            let matching_lsp_diags: Vec<_> = diagnostics
                 .iter()
-                .find(|p| p.actions.iter().all(is_action_translatable))
-            else {
-                continue;
-            };
-            let Some(edit) = plan_to_workspace_edit(plan, &ws) else {
-                continue;
-            };
-            actions.push(build_action(
-                reg.lintian_tags,
-                &plan.label,
-                edit,
-                diagnostics,
-            ));
+                .filter(|d| {
+                    let tag_matches = tag.map(|t| diagnostic_matches_tag(d, t)).unwrap_or(false);
+                    // Use overlap for linking too, to be more robust than exact match.
+                    tag_matches && ranges_overlap_lsp(d.range, lb_range)
+                })
+                .cloned()
+                .collect();
+
+            // Each detector may carry multiple alternative ActionPlans.
+            // Offer all plans whose actions we can fully translate.
+            for plan in &diag.plans {
+                if !plan.actions.iter().all(is_action_translatable) {
+                    continue;
+                }
+                let Some(edit) = plan_to_workspace_edit(plan, &ws) else {
+                    continue;
+                };
+                actions.push(build_action_with_diagnostics(
+                    &plan.label,
+                    edit,
+                    matching_lsp_diags.clone(),
+                ));
+            }
         }
     }
 
     actions
+}
+
+fn ranges_overlap_lsp(a: Range, b: Range) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+fn build_action_with_diagnostics(
+    title: &str,
+    edit: WorkspaceEdit,
+    diagnostics: Vec<Diagnostic>,
+) -> CodeActionOrCommand {
+    let action = CodeAction {
+        title: title.to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(edit),
+        diagnostics: if diagnostics.is_empty() {
+            None
+        } else {
+            Some(diagnostics)
+        },
+        ..Default::default()
+    };
+    CodeActionOrCommand::CodeAction(action)
 }
 
 /// Run every registered lintian-brush detector and surface the resulting
@@ -2275,7 +2328,8 @@ fn set_field_edits(
             range: lsp_range,
             new_text: value.to_string(),
         }]
-    } else {
+    }
+ else {
         // Field is missing — insert at the end of the paragraph. The
         // paragraph's text_range() ends just after its last entry's
         // trailing newline, so we insert there. (A future improvement
@@ -3175,13 +3229,10 @@ fn resolve_package_version(
     // diagnostic and code-action paths both call it. Fall back to a
     // disk read + one-shot parse only when the file isn't tracked.
     let parsed = if let Some(info) = open_files.get(&changelog_uri) {
-        workspace
-            .get_parsed_changelog(info.source_file)
-            .to_result()
-            .ok()?
+        workspace.get_parsed_changelog(info.source_file).tree()
     } else {
         let text = std::fs::read_to_string(&changelog_path).ok()?;
-        debian_changelog::ChangeLog::read_relaxed(text.as_bytes()).ok()?
+        debian_changelog::ChangeLog::parse_relaxed(&text)
     };
     let entry = parsed.iter().next()?;
     let package = entry.package()?;
@@ -3194,31 +3245,6 @@ fn relevant_open_files(open_files: &HashMap<Uri, FileInfo>) -> HashMap<Uri, Sour
         .iter()
         .map(|(uri, info)| (uri.clone(), info.source_file))
         .collect()
-}
-
-fn build_action(
-    tags: &[&str],
-    title: &str,
-    edit: WorkspaceEdit,
-    diagnostics: &[Diagnostic],
-) -> CodeActionOrCommand {
-    let related: Vec<Diagnostic> = diagnostics
-        .iter()
-        .filter(|d| tags.iter().any(|t| diagnostic_matches_tag(d, t)))
-        .cloned()
-        .collect();
-    let action = CodeAction {
-        title: title.to_string(),
-        kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(edit),
-        diagnostics: if related.is_empty() {
-            None
-        } else {
-            Some(related)
-        },
-        ..Default::default()
-    };
-    CodeActionOrCommand::CodeAction(action)
 }
 
 fn diagnostic_matches_tag(diag: &Diagnostic, tag: &str) -> bool {
@@ -3285,8 +3311,10 @@ mod tests {
             &workspace,
             &open_files,
             &[],
+            None,
             RunPhase::Explicit,
         );
+
 
         let qa_action = actions
             .iter()
@@ -3642,8 +3670,10 @@ mod tests {
             &workspace,
             &open_files,
             &[],
+            None,
             RunPhase::Explicit,
         );
+
 
         let pycompat_uri = Uri::from_file_path(debian.join("pycompat")).unwrap();
         let action = actions

@@ -190,19 +190,12 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
 
     fn parsed_changelog(&self) -> Result<ChangeLog, FixerError> {
         if let Some(sf) = self.source_file_for(Path::new("debian/changelog")) {
-            return self
-                .workspace
-                .get_parsed_changelog(sf)
-                .to_result()
-                .map_err(|e| {
-                    FixerError::Other(format!("Failed to parse debian/changelog: {}", e))
-                });
+            return Ok(self.workspace.get_parsed_changelog(sf).tree());
         }
         let text = self
             .current_text(Path::new("debian/changelog"))
             .ok_or(FixerError::NoChanges)?;
-        ChangeLog::read_relaxed(text.as_bytes())
-            .map_err(|e| FixerError::Other(format!("Failed to parse debian/changelog: {}", e)))
+        Ok(ChangeLog::parse_relaxed(&text))
     }
 
     fn parsed_copyright(&self) -> Result<Copyright, FixerError> {

@@ -60,15 +60,10 @@ lintian-brush = { path = "../lintian-brush/lintian-brush", optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tower-service = "0.3"
+tower-test = "0.4"
 
 [[bin]]
 name = "debian-lsp"
 test = true
-
-# Redirect debian-watch to the local checkout so the path-dep on it
-# doesn't pull in a parallel copy via lintian-brush's crates.io
-# resolution. Drop this once the new range helpers are published.
-[patch.crates-io]
-debian-watch = { path = "../debian-watch-rs" }
