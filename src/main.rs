@@ -787,7 +787,7 @@ impl LanguageServer for Backend {
         // requests can take the lock concurrently — a salsa `Storage`
         // clone is a cheap Arc bump and shares the cache with the
         // original.
-        let (workspace, source_file, changed_ranges, full_replacement) = {
+        let (workspace, source_file) = {
             let mut workspace = self.workspace.lock().await;
             // Owned String here because we splice content_changes into it
             // before handing back to salsa via update_file.
@@ -795,8 +795,6 @@ impl LanguageServer for Backend {
                 .map(|info| workspace.source_text(info.source_file).to_string())
                 .unwrap_or_default();
 
-            let mut changed_ranges: Vec<rowan::TextRange> = Vec::new();
-            let mut full_replacement = false;
             for change in &params.content_changes {
                 if let Some(range) = &change.range {
                     // The text mutates as we apply each change, so we
@@ -812,16 +810,10 @@ impl LanguageServer for Backend {
                         let start: usize = text_range.start().into();
                         let end: usize = text_range.end().into();
                         text.replace_range(start..end, &change.text);
-                        let new_end = start + change.text.len();
-                        changed_ranges.push(rowan::TextRange::new(
-                            (start as u32).into(),
-                            (new_end as u32).into(),
-                        ));
                     }
                 } else {
-                    // Full replacement: scope is the whole file.
+                    // Full replacement.
                     text = change.text.clone();
-                    full_replacement = true;
                 }
             }
 
@@ -833,22 +825,14 @@ impl LanguageServer for Backend {
                     file_type,
                 },
             );
-            (
-                workspace.clone(),
-                source_file,
-                changed_ranges,
-                full_replacement,
-            )
+            (workspace.clone(), source_file)
         };
 
-        // For did_change we run only `Cheap` detectors so every
-        // keystroke stays responsive. A full replacement (no range)
-        // means we have nothing to narrow on, so pass `None`.
-        let ranges_arg: Option<Vec<rowan::TextRange>> = if full_replacement {
-            None
-        } else {
-            Some(changed_ranges)
-        };
+        // For did_change we run only Keystroke-cost detectors so every
+        // edit stays responsive. changed_ranges is intentionally not passed
+        // to the detector: narrowing by touched fields would skip detectors
+        // for unchanged fields, producing a partial diagnostic list that
+        // replaces — and wipes — diagnostics for the rest of the file.
         let open_files_snapshot = files.clone();
         drop(files);
 
@@ -859,7 +843,7 @@ impl LanguageServer for Backend {
             workspace,
             open_files_snapshot,
             RunPhase::Keystroke,
-            ranges_arg,
+            None,
         )
         .await
         {
