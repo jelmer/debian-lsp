@@ -419,7 +419,7 @@ pub fn run_fixers_for_uri(
     let Some(base_path) = base_path_for_debian_file(uri) else {
         return Vec::new();
     };
-    let Some(rel) = package_relative_path(&base_path, uri) else {
+    let Some(_rel) = package_relative_path(&base_path, uri) else {
         return Vec::new();
     };
     let (package, version) = match resolve_package_version(&base_path, workspace, open_files) {

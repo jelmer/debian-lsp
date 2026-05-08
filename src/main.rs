@@ -392,7 +392,7 @@ impl Backend {
         .map_err(|e| {
             let msg = format!("lintian-brush detector task panicked: {:?}", e);
             tracing::error!("{}", msg);
-            tower_lsp_server::jsonrpc::Error::internal_error(msg)
+            tower_lsp_server::jsonrpc::Error::internal_error()
         })?;
         Ok(Some(diags))
     }
