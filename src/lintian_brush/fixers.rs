@@ -2305,6 +2305,68 @@ fn find_entry_in_paragraph(
         .find(|e| e.key().as_deref() == Some(field))
 }
 
+/// Find the byte offset at which to insert a new `field` entry into
+/// `paragraph`, respecting the canonical field order for the paragraph type.
+///
+/// Returns the offset just after the last trailing newline of the entry that
+/// should precede the new field, or the start of the first entry that should
+/// follow it, or the end of the paragraph if no ordering constraint applies.
+fn insert_offset_for_field(
+    paragraph: &deb822_lossless::Paragraph,
+    field: &str,
+    selector: &ParagraphSelector,
+) -> usize {
+    let field_order: &[&str] = match selector {
+        ParagraphSelector::Source => &debian_control::lossless::SOURCE_FIELD_ORDER,
+        ParagraphSelector::Binary { .. } => &debian_control::lossless::BINARY_FIELD_ORDER,
+        _ => &[],
+    };
+
+    if field_order.is_empty() {
+        return paragraph.text_range().end().into();
+    }
+
+    let new_pos = field_order.iter().position(|f| f.eq_ignore_ascii_case(field));
+
+    // Walk the existing entries and find the last one whose canonical position
+    // is before `new_pos`, and the first one whose position is after it.
+    let mut insert_after: Option<usize> = None; // byte end of predecessor entry
+    let mut insert_before: Option<usize> = None; // byte start of successor entry
+
+    for entry in paragraph.entries() {
+        let Some(key) = entry.key() else { continue };
+        let existing_pos = field_order
+            .iter()
+            .position(|f| f.eq_ignore_ascii_case(&key));
+        let cmp = match (new_pos, existing_pos) {
+            (Some(n), Some(e)) => n.cmp(&e),
+            // New field not in order list → goes at end; no successor.
+            (None, _) => std::cmp::Ordering::Greater,
+            // Existing field not in order list → treat as after new field.
+            (Some(_), None) => std::cmp::Ordering::Less,
+        };
+        match cmp {
+            std::cmp::Ordering::Greater => {
+                // existing comes before new field
+                insert_after = Some(entry.text_range().end().into());
+            }
+            std::cmp::Ordering::Less => {
+                // existing comes after new field; record the earliest such
+                if insert_before.map_or(true, |b| entry.text_range().start() < (b as u32).into()) {
+                    insert_before = Some(entry.text_range().start().into());
+                }
+            }
+            std::cmp::Ordering::Equal => {} // same field, shouldn't happen
+        }
+    }
+
+    // Prefer inserting just after the last predecessor; if none, before the
+    // first successor; if neither, at the end of the paragraph.
+    insert_after
+        .or(insert_before)
+        .unwrap_or_else(|| paragraph.text_range().end().into())
+}
+
 fn set_field_edits(
     control: &Control,
     selector: &ParagraphSelector,
@@ -2328,23 +2390,12 @@ fn set_field_edits(
             range: lsp_range,
             new_text: value.to_string(),
         }]
-    }
- else {
-        // Field is missing — insert at the end of the paragraph. The
-        // paragraph's text_range() ends just after its last entry's
-        // trailing newline, so we insert there. (A future improvement
-        // would consult canonical field ordering from
-        // debian-control's SOURCE_FIELD_ORDER.)
-        let para_range = paragraph.text_range();
-        let insertion: usize = para_range.end().into();
+    } else {
+        let insertion = insert_offset_for_field(&paragraph, field, selector);
         let pos = original_src.offset_to_position((insertion as u32).into());
-        let new_entry_text = format!("{}: {}\n", field, value);
         vec![TextEdit {
-            range: Range {
-                start: pos,
-                end: pos,
-            },
-            new_text: new_entry_text,
+            range: Range { start: pos, end: pos },
+            new_text: format!("{}: {}\n", field, value),
         }]
     }
 }
@@ -2635,6 +2686,14 @@ fn ensure_substvar_edits(
     substvar: &str,
     original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
+    let Some(paragraph) = find_paragraph(control, selector) else {
+        return Vec::new();
+    };
+    if find_entry_in_paragraph(&paragraph, field).is_none() {
+        // Field absent — insert it containing just the substvar, respecting
+        // canonical field ordering for the paragraph type.
+        return set_field_edits(control, selector, field, substvar, original_src);
+    }
     relations_field_edits(control, selector, field, original_src, |relations| {
         if relations.substvars().any(|s| s.trim() == substvar.trim()) {
             return false;
@@ -3823,6 +3882,30 @@ mod tests {
             src_of(text, &idx),
         );
         assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn ensure_substvar_inserts_field_when_absent() {
+        // No Depends field — must insert "Depends: ${misc:Depends}" in
+        // canonical BINARY_FIELD_ORDER position (after Architecture, before
+        // Description).
+        let text = "Source: foo\n\nPackage: bar\nArchitecture: any\nDescription: A package\n some text\n";
+        let parse = Control::parse(text);
+        let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
+        let edits = ensure_substvar_edits(
+            &control,
+            &ParagraphSelector::Binary { package: "bar".into() },
+            "Depends",
+            "${misc:Depends}",
+            src_of(text, &idx),
+        );
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        assert_eq!(
+            applied,
+            "Source: foo\n\nPackage: bar\nArchitecture: any\nDepends: ${misc:Depends}\nDescription: A package\n some text\n"
+        );
     }
 
     #[test]
