@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/jelmer/debian-lsp"
 keywords = ["lsp", "debian", "control", "language-server"]
 categories = ["development-tools", "text-editors"]
+include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/README.md", "nvim-lspconfig/README.md", "src/**", "tests/**", "examples/**", "Cargo.toml", "README.md", "nvim-lspconfig/README.md", "nvim-lspconfig/lsp/debian_lsp.lua"]
 
 [features]
 default = ["launchpad"]
