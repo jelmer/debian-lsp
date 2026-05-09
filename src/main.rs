@@ -446,6 +446,7 @@ impl LanguageServer for Backend {
                     commands: vec![
                         control::code_lens::OPEN_URL_COMMAND.to_string(),
                         changelog::ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
+                        control::ADD_BINARY_PACKAGE_COMMAND.to_string(),
                     ],
                     ..Default::default()
                 }),
@@ -865,11 +866,12 @@ impl LanguageServer for Backend {
                     actions.push(action);
                 }
 
-                // Add binary package action
-                if let Some(action) =
-                    control::get_add_binary_package_action(&params.text_document.uri, src, &parsed)
-                {
-                    actions.push(action);
+                // "Add binary package" is document-level and should only
+                // appear via the command palette, not the lightbulb.
+                if params.context.trigger_kind != Some(CodeActionTriggerKind::AUTOMATIC) {
+                    actions.push(control::get_add_binary_package_command(
+                        &params.text_document.uri,
+                    ));
                 }
 
                 // Add field casing fixes
@@ -1902,6 +1904,25 @@ impl LanguageServer for Backend {
                     };
                     if let Some(edit) = workspace_edit {
                         let _ = self.client.apply_edit(edit).await;
+                    }
+                }
+            }
+        } else if params.command == control::ADD_BINARY_PACKAGE_COMMAND {
+            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = uri_str.parse::<Uri>() {
+                    let workspace = self.workspace_clone().await;
+                    let files = self.files.lock().await;
+                    if let Some(file_info) = files.get(&uri) {
+                        let source_text = workspace.source_text(file_info.source_file);
+                        let idx = workspace.get_line_index(file_info.source_file);
+                        let src = Source::new(&source_text, &idx);
+                        let parsed = workspace.get_parsed_control(file_info.source_file);
+                        drop(files);
+                        if let Some(edit) =
+                            control::build_add_binary_package_edit(&uri, src, &parsed)
+                        {
+                            let _ = self.client.apply_edit(edit).await;
+                        }
                     }
                 }
             }

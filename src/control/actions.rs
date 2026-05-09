@@ -3,6 +3,8 @@ use crate::workspace::FieldCasingIssue;
 use text_size::TextRange;
 use tower_lsp_server::ls_types::*;
 
+pub const ADD_BINARY_PACKAGE_COMMAND: &str = "debian-lsp.addBinaryPackage";
+
 /// Format an entire control file using wrap-and-sort
 ///
 /// # Arguments
@@ -96,31 +98,20 @@ pub fn get_wrap_and_sort_action(
     Some(CodeActionOrCommand::CodeAction(action))
 }
 
-/// Generate a code action to add a new binary package stanza
+/// Build the workspace edit that appends a new binary package stanza.
 ///
-/// Populates the new binary package with defaults from the source paragraph.
-///
-/// # Arguments
-/// * `uri` - The URI of the control file
-/// * `src.text` - The source text of the file
-/// * `parsed` - The parsed control file
-///
-/// # Returns
-/// A code action to append a new binary package stanza, or None if parsing fails
-pub fn get_add_binary_package_action(
+/// Used both by the command handler (`execute_command`) and tests.
+pub fn build_add_binary_package_edit(
     uri: &Uri,
     src: Source<'_>,
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
-) -> Option<CodeActionOrCommand> {
+) -> Option<WorkspaceEdit> {
     let control = parsed.clone().to_result().ok()?;
     let source = control.source()?;
-
     let source_name = source.name()?;
 
-    // Build the new binary paragraph text
     let mut new_control = debian_control::lossless::Control::new();
     let mut binary = new_control.add_binary(&source_name);
-
     binary
         .as_mut_deb822()
         .set("Depends", "${shlibs:Depends}, ${misc:Depends}");
@@ -133,31 +124,38 @@ pub fn get_add_binary_package_action(
         .as_deb822()
         .to_string();
 
-    // Insert at end of file, preceded by a blank line separator
     let end_offset = src.text.len() as u32;
     let end_position = src.offset_to_position(end_offset.into());
 
-    let edit = TextEdit {
-        range: Range {
-            start: end_position,
-            end: end_position,
-        },
-        new_text: format!("\n{}", binary_text),
-    };
-
-    let workspace_edit = WorkspaceEdit {
-        changes: Some(vec![(uri.clone(), vec![edit])].into_iter().collect()),
+    Some(WorkspaceEdit {
+        changes: Some(
+            vec![(
+                uri.clone(),
+                vec![TextEdit {
+                    range: Range {
+                        start: end_position,
+                        end: end_position,
+                    },
+                    new_text: format!("\n{}", binary_text),
+                }],
+            )]
+            .into_iter()
+            .collect(),
+        ),
         ..Default::default()
-    };
+    })
+}
 
-    let action = CodeAction {
+/// Return a palette command entry for "Add binary package".
+///
+/// This is intentionally a `Command` (not a `CodeAction`) so that VS Code
+/// only surfaces it via the command palette, not the automatic lightbulb.
+pub fn get_add_binary_package_command(uri: &Uri) -> CodeActionOrCommand {
+    CodeActionOrCommand::Command(Command {
         title: "Add binary package".to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(workspace_edit),
-        ..Default::default()
-    };
-
-    Some(CodeActionOrCommand::CodeAction(action))
+        command: ADD_BINARY_PACKAGE_COMMAND.to_string(),
+        arguments: Some(vec![serde_json::json!(uri.as_str())]),
+    })
 }
 
 /// Generate field casing fix actions for a control file
@@ -331,18 +329,10 @@ maintainer: Test User <test@example.com>
         let src = Source::new(input, &idx);
         let uri: Uri = "file:///debian/control".parse().unwrap();
 
-        let action = get_add_binary_package_action(&uri, src, &parsed);
-        assert!(action.is_some());
+        let edit = build_add_binary_package_edit(&uri, src, &parsed);
+        assert!(edit.is_some());
 
-        let CodeActionOrCommand::CodeAction(action) = action.unwrap() else {
-            panic!("Expected CodeAction");
-        };
-
-        assert_eq!(action.title, "Add binary package");
-        assert_eq!(action.kind, Some(CodeActionKind::REFACTOR));
-
-        let workspace_edit = action.edit.expect("Should have an edit");
-        let changes = workspace_edit.changes.expect("Should have changes");
+        let changes = edit.unwrap().changes.expect("Should have changes");
         let edits = changes.get(&uri).expect("Should have edits for the URI");
         assert_eq!(edits.len(), 1);
 
