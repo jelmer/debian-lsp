@@ -29,7 +29,7 @@ const BUG_DETAILS_CACHE_CAPACITY: usize = 32_768;
 
 /// Cached bug data used by changelog completions.
 pub struct BugCache {
-    pool: crate::udd::SharedPool,
+    pub pool: crate::udd::SharedPool,
     bug_ids_by_package: LruCache<String, Vec<u32>>,
     bug_details_by_id: LruCache<u32, CachedDebbugsBugDetails>,
     /// Last UDD connection error, set by fetch methods and drained by callers
@@ -64,7 +64,7 @@ struct CachedLaunchpadBugDetails {
 }
 
 #[derive(sqlx::FromRow)]
-struct BugRow {
+pub struct BugRow {
     id: i32,
     title: Option<String>,
     severity: Option<String>,
