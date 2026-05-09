@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use ::lintian_brush::diagnostic::{
     Action, ActionPlan, ChangelogAction, Deb822Action, Dep3Action, Diagnostic as LbDiagnostic,
-    FilesystemAction, IndentPattern, ParagraphSelector, WatchAction, YamlAction, YamlPathComponent,
+    FilesystemAction, IndentPattern, LintianOverridesAction, MaintscriptAction, MakefileAction,
+    OverrideLineSelector, ParagraphSelector, WatchAction, YamlAction, YamlPathComponent,
 };
 use ::lintian_brush::workspace::{
     iter_detector_registrations, ChangelogAspect, DetectorCost, Trigger, WatchAspect,
@@ -854,16 +855,18 @@ fn locate_action_target(
             let watch = ws.parsed_watch_for(rel)?;
             watch_action_range(w, &watch, anchor_src)
         }
-        // Action kinds not yet wired into the LSP translator. These are
-        // filtered out of `is_action_translatable` so they shouldn't
-        // reach this code path in practice, but we keep the arm
-        // exhaustive to prevent silent fall-through if upstream adds new
-        // variants.
+        Action::Makefile(m) => {
+            let makefile = ws.parsed_rules_for(rel)?;
+            makefile_action_range(m, &makefile, anchor_src)
+        }
+        Action::LintianOverrides(ov) => {
+            lintian_overrides_action_range(ov, anchor_src)
+        }
+        Action::Maintscript(ms) => maintscript_action_range(ms, anchor_src),
+        // Unwired action kinds — keep the arm exhaustive so upstream additions
+        // produce a compile error rather than silent fall-through.
         Action::Systemd(_)
         | Action::DesktopIni(_)
-        | Action::Makefile(_)
-        | Action::LintianOverrides(_)
-        | Action::Maintscript(_)
         | Action::Debcargo(_)
         | Action::RunCommand(_) => None,
     }
@@ -967,14 +970,8 @@ fn is_action_translatable(action: &Action) -> bool {
         // Salsa doesn't track these file types.
         Action::Systemd(_) | Action::DesktopIni(_) => false,
         Action::Dep3(_) | Action::Watch(_) => true,
-        // TODO: debian/rules *is* cached by the salsa workspace, so the
-        // translator could be extended to surface Makefile actions as
-        // TextEdits. Filtered out for now so the user doesn't see code
-        // actions whose dispatcher would `unimplemented!()`.
-        Action::Makefile(_) => false,
-        // Line-oriented files; no salsa parse, but the open-buffer text
-        // is available. Not yet wired in.
-        Action::LintianOverrides(_) | Action::Maintscript(_) => false,
+        Action::Makefile(_) => true,
+        Action::LintianOverrides(_) | Action::Maintscript(_) => true,
         // TOML; no cached parse.
         Action::Debcargo(_) => false,
         // No LSP primitive for "run an external command".
@@ -1106,19 +1103,16 @@ fn action_to_text_edits(
             };
             watch_action_to_text_edits(w, watch, original_src)
         }
-        // TODO: debian/rules *is* cacheable in the salsa workspace
-        // (`get_parsed_rules`). Wiring it to byte-precise TextEdits is a
-        // separate change; until then the detector output is filtered
-        // out by `is_action_translatable`.
-        Action::Makefile(_) => {
-            unimplemented!("Makefile actions not yet wired into the LSP translator")
+        Action::Makefile(m) => {
+            let Some(makefile) = ws.parsed_rules_for(rel) else {
+                return Vec::new();
+            };
+            makefile_action_to_text_edits(m, &makefile, original_src)
         }
-        Action::LintianOverrides(_) => {
-            unimplemented!("LintianOverrides actions not yet wired into the LSP translator")
+        Action::LintianOverrides(ov) => {
+            lintian_overrides_action_to_text_edits(ov, original_src)
         }
-        Action::Maintscript(_) => {
-            unimplemented!("Maintscript actions not yet wired into the LSP translator")
-        }
+        Action::Maintscript(ms) => maintscript_action_to_text_edits(ms, original_src),
         Action::Debcargo(_) => {
             unimplemented!("Debcargo actions not yet wired into the LSP translator")
         }
@@ -3215,15 +3209,33 @@ fn action_file(action: &Action) -> Option<&Path> {
             | WatchAction::SetEntryUrl { file, .. }
             | WatchAction::ConvertEntryToTemplate { file, .. } => file,
         },
-        // These action kinds aren't yet wired into the LSP translator
-        // (see `is_action_translatable` for the full list and rationale).
-        // Returning `None` here matches the dispatch in
-        // `locate_action_target` / `action_to_text_edits`.
+        Action::Makefile(a) => match a {
+            MakefileAction::ReplaceRecipe { file, .. }
+            | MakefileAction::RemoveRecipe { file, .. }
+            | MakefileAction::SetVariable { file, .. }
+            | MakefileAction::SetVariableOperator { file, .. }
+            | MakefileAction::RemoveVariable { file, .. }
+            | MakefileAction::RemoveRule { file, .. }
+            | MakefileAction::RemovePhonyTarget { file, .. }
+            | MakefileAction::RenameRuleTarget { file, .. }
+            | MakefileAction::AddRule { file, .. }
+            | MakefileAction::AddPhonyTarget { file, .. }
+            | MakefileAction::AddInclude { file, .. }
+            | MakefileAction::ReplaceVariableWithInclude { file, .. }
+            | MakefileAction::InsertIncludeBeforeVariable { file, .. } => file,
+        },
+        Action::LintianOverrides(a) => match a {
+            LintianOverridesAction::DropLine { file, .. }
+            | LintianOverridesAction::RenameTag { file, .. }
+            | LintianOverridesAction::SetLineInfo { file, .. } => file,
+        },
+        Action::Maintscript(a) => match a {
+            MaintscriptAction::DropEntry { file, .. } => file,
+        },
+        // These action kinds aren't wired into the LSP translator
+        // (see `is_action_translatable` for rationale).
         Action::Systemd(_)
         | Action::DesktopIni(_)
-        | Action::Makefile(_)
-        | Action::LintianOverrides(_)
-        | Action::Maintscript(_)
         | Action::Debcargo(_)
         | Action::RunCommand(_) => return None,
     })
@@ -3308,6 +3320,376 @@ fn relevant_open_files(open_files: &HashMap<Uri, FileInfo>) -> HashMap<Uri, Sour
 
 fn diagnostic_matches_tag(diag: &Diagnostic, tag: &str) -> bool {
     matches!(&diag.code, Some(NumberOrString::String(s)) if s == tag)
+}
+
+/// Translate a [`MakefileAction`] into `TextEdit`s against `original_src`.
+///
+/// Clones the salsa-cached `Makefile` tree, applies the mutation, then emits a
+/// whole-document replacement when the text changed. Makefile files are
+/// typically short so the full replacement is safe and keeps the translator
+/// simple.
+fn makefile_action_to_text_edits(
+    action: &MakefileAction,
+    makefile: &makefile_lossless::Makefile,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    match action {
+        MakefileAction::ReplaceRecipe {
+            target,
+            recipe,
+            new_recipe,
+            ..
+        } => {
+            let mf = makefile.clone();
+            for mut rule in mf.rules_by_target(target) {
+                let recipes: Vec<String> = rule.recipes().collect();
+                if let Some(idx) = recipes.iter().position(|r| r == recipe) {
+                    if rule.replace_command(idx, new_recipe) {
+                        break;
+                    }
+                }
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::RemoveRecipe { target, recipe, .. } => {
+            let mf = makefile.clone();
+            for mut rule in mf.rules_by_target(target) {
+                let recipes: Vec<String> = rule.recipes().collect();
+                if let Some(idx) = recipes.iter().position(|r| r == recipe) {
+                    if rule.remove_command(idx) {
+                        break;
+                    }
+                }
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::SetVariable { name, value, .. } => {
+            let mf = makefile.clone();
+            if let Some(mut var) = mf.find_variable(name).next() {
+                var.set_value(value);
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::SetVariableOperator {
+            name, operator, ..
+        } => {
+            let mf = makefile.clone();
+            if let Some(mut var) = mf.find_variable(name).next() {
+                var.set_assignment_operator(operator);
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::RemoveVariable { name, .. } => {
+            let mf = makefile.clone();
+            if let Some(mut var) = mf.find_variable(name).next() {
+                var.remove();
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::RemoveRule { target, .. } => {
+            let mut mf = makefile.clone();
+            let idx = mf
+                .rules()
+                .enumerate()
+                .find(|(_, r)| r.targets().any(|t| t == target.as_str()))
+                .map(|(i, _)| i);
+            if let Some(i) = idx {
+                let _ = mf.remove_rule(i);
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::RemovePhonyTarget { target, .. } => {
+            let mut mf = makefile.clone();
+            let _ = mf.remove_phony_target(target);
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::RenameRuleTarget {
+            from_target,
+            to_target,
+            ..
+        } => {
+            let mf = makefile.clone();
+            for mut rule in mf.rules().collect::<Vec<_>>() {
+                let _ = rule.rename_target(from_target, to_target);
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::AddRule {
+            target,
+            prerequisites,
+            ..
+        } => {
+            let mut mf = makefile.clone();
+            let prereqs: Vec<&str> = prerequisites.iter().map(String::as_str).collect();
+            let mut rule = mf.add_rule(target);
+            let _ = rule.set_prerequisites(prereqs);
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::AddPhonyTarget { target, .. } => {
+            let mut mf = makefile.clone();
+            let _ = mf.add_phony_target(target);
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::AddInclude { path, .. } => {
+            let mut mf = makefile.clone();
+            mf.add_include(path);
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::ReplaceVariableWithInclude { name, path, .. } => {
+            let mut mf = makefile.clone();
+            let var_idx = mf
+                .variable_definitions()
+                .enumerate()
+                .find(|(_, v)| v.name().as_deref() == Some(name.as_str()))
+                .map(|(i, _)| i);
+            if let Some(idx) = var_idx {
+                let _ = mf.insert_include(idx, path);
+                let _ = mf.find_variable(name).next().map(|mut v| v.remove());
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+        MakefileAction::InsertIncludeBeforeVariable {
+            path,
+            before_variable,
+            ..
+        } => {
+            let mut mf = makefile.clone();
+            let var_idx = mf
+                .variable_definitions()
+                .enumerate()
+                .find(|(_, v)| v.name().as_deref() == Some(before_variable.as_str()))
+                .map(|(i, _)| i);
+            if let Some(idx) = var_idx {
+                let _ = mf.insert_include(idx, path);
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
+    }
+}
+
+fn makefile_diff_edits(
+    before: &makefile_lossless::Makefile,
+    after: &makefile_lossless::Makefile,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    let before_text = before.to_string();
+    let after_text = after.to_string();
+    if before_text == after_text {
+        return Vec::new();
+    }
+    vec![TextEdit {
+        range: full_document_range(original_src.text),
+        new_text: after_text,
+    }]
+}
+
+fn makefile_action_range(
+    action: &MakefileAction,
+    makefile: &makefile_lossless::Makefile,
+    anchor_src: crate::position::Source<'_>,
+) -> Option<Range> {
+    match action {
+        MakefileAction::ReplaceRecipe { target, recipe, .. }
+        | MakefileAction::RemoveRecipe { target, recipe, .. } => {
+            let rule = makefile.rules_by_target(target).next()?;
+            let node = rule.recipe_nodes().find(|r| r.text() == *recipe)?;
+            Some(anchor_src.text_range_to_lsp_range(node.text_range()))
+        }
+        MakefileAction::SetVariable { name, .. }
+        | MakefileAction::SetVariableOperator { name, .. }
+        | MakefileAction::RemoveVariable { name, .. }
+        | MakefileAction::ReplaceVariableWithInclude { name, .. }
+        | MakefileAction::InsertIncludeBeforeVariable {
+            before_variable: name,
+            ..
+        } => {
+            use rowan::ast::AstNode as _;
+            let var = makefile.find_variable(name).next()?;
+            Some(anchor_src.text_range_to_lsp_range(var.syntax().text_range()))
+        }
+        MakefileAction::RemoveRule { target, .. }
+        | MakefileAction::RenameRuleTarget {
+            from_target: target,
+            ..
+        }
+        | MakefileAction::AddRule { target, .. }
+        | MakefileAction::AddPhonyTarget { target, .. }
+        | MakefileAction::RemovePhonyTarget { target, .. } => {
+            use rowan::ast::AstNode as _;
+            let rule = makefile.rules_by_target(target).next()?;
+            Some(anchor_src.text_range_to_lsp_range(rule.syntax().text_range()))
+        }
+        MakefileAction::AddInclude { .. } => None,
+    }
+}
+
+fn lintian_overrides_action_to_text_edits(
+    action: &LintianOverridesAction,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    use lintian_overrides::LintianOverrides;
+    let text = original_src.text;
+    let Ok(parsed) = LintianOverrides::parse(text).ok() else {
+        return Vec::new();
+    };
+    match action {
+        LintianOverridesAction::DropLine { selector, .. } => {
+            let Some(line) = find_override_line(&parsed, selector) else {
+                return Vec::new();
+            };
+            let range = line_node_range_with_newline(text, line.text_range());
+            vec![TextEdit {
+                range: original_src.text_range_to_lsp_range(range),
+                new_text: String::new(),
+            }]
+        }
+        LintianOverridesAction::RenameTag {
+            from_tag, to_tag, ..
+        } => {
+            let lines: Vec<_> = parsed
+                .lines()
+                .filter(|l| l.tag().as_ref().map(|t| t.text()) == Some(from_tag.as_str()))
+                .collect();
+            let mut edits = Vec::new();
+            for line in lines {
+                if let Some(tag_range) = line.tag_range() {
+                    edits.push(TextEdit {
+                        range: original_src.text_range_to_lsp_range(tag_range),
+                        new_text: to_tag.clone(),
+                    });
+                }
+            }
+            edits
+        }
+        LintianOverridesAction::SetLineInfo {
+            selector, new_info, ..
+        } => {
+            let Some(line) = find_override_line(&parsed, selector) else {
+                return Vec::new();
+            };
+            if let Some(info_range) = line.info_range() {
+                vec![TextEdit {
+                    range: original_src.text_range_to_lsp_range(info_range),
+                    new_text: new_info.clone(),
+                }]
+            } else if new_info.is_empty() {
+                Vec::new()
+            } else {
+                // No existing info — append after the tag.
+                let Some(tag_range) = line.tag_range() else {
+                    return Vec::new();
+                };
+                let insertion = rowan::TextRange::new(tag_range.end(), tag_range.end());
+                vec![TextEdit {
+                    range: original_src.text_range_to_lsp_range(insertion),
+                    new_text: format!(" {}", new_info),
+                }]
+            }
+        }
+    }
+}
+
+fn find_override_line(
+    parsed: &lintian_overrides::LintianOverrides,
+    selector: &OverrideLineSelector,
+) -> Option<lintian_overrides::OverrideLine> {
+    parsed.lines().find(|l| {
+        l.tag().as_ref().map(|t| t.text()) == Some(selector.tag.as_str())
+            && l.info().as_deref() == selector.info.as_deref()
+            && l.package().as_deref() == selector.package.as_deref()
+    })
+}
+
+/// Extend a node's byte range to include the trailing newline, if present.
+/// This ensures `DropLine` deletes the whole line rather than leaving a blank
+/// line behind.
+fn line_node_range_with_newline(text: &str, range: rowan::TextRange) -> rowan::TextRange {
+    let end: usize = range.end().into();
+    if text.as_bytes().get(end) == Some(&b'\n') {
+        rowan::TextRange::new(range.start(), (end + 1).try_into().unwrap_or(range.end()))
+    } else {
+        range
+    }
+}
+
+fn lintian_overrides_action_range(
+    action: &LintianOverridesAction,
+    anchor_src: crate::position::Source<'_>,
+) -> Option<Range> {
+    use lintian_overrides::LintianOverrides;
+    let parsed = LintianOverrides::parse(anchor_src.text).ok().ok()?;
+    match action {
+        LintianOverridesAction::DropLine { selector, .. }
+        | LintianOverridesAction::SetLineInfo { selector, .. } => {
+            let line = find_override_line(&parsed, selector)?;
+            Some(anchor_src.text_range_to_lsp_range(line.text_range()))
+        }
+        LintianOverridesAction::RenameTag { from_tag, .. } => {
+            let line = parsed
+                .lines()
+                .find(|l| l.tag().as_ref().map(|t| t.text()) == Some(from_tag.as_str()))?;
+            let range = line.tag_range()?;
+            Some(anchor_src.text_range_to_lsp_range(range))
+        }
+    }
+}
+
+fn maintscript_action_to_text_edits(
+    action: &MaintscriptAction,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    match action {
+        MaintscriptAction::DropEntry { entry, .. } => {
+            let Some(range) = find_maintscript_entry_range(original_src.text, entry) else {
+                return Vec::new();
+            };
+            vec![TextEdit {
+                range: original_src.text_range_to_lsp_range(range),
+                new_text: String::new(),
+            }]
+        }
+    }
+}
+
+fn maintscript_action_range(
+    action: &MaintscriptAction,
+    anchor_src: crate::position::Source<'_>,
+) -> Option<Range> {
+    match action {
+        MaintscriptAction::DropEntry { entry, .. } => {
+            let range = find_maintscript_entry_range(anchor_src.text, entry)?;
+            Some(anchor_src.text_range_to_lsp_range(range))
+        }
+    }
+}
+
+/// Find the byte range of the first maintscript entry whose trimmed text
+/// matches `entry`, including any immediately-preceding comment lines and the
+/// trailing newline.
+fn find_maintscript_entry_range(text: &str, entry: &str) -> Option<rowan::TextRange> {
+    let entry_trimmed = entry.trim();
+    let mut line_start = 0usize;
+    let mut comment_start: Option<usize> = None;
+
+    for line in text.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        let trimmed = line.trim_end_matches('\n').trim();
+        if trimmed.starts_with('#') {
+            if comment_start.is_none() {
+                comment_start = Some(line_start);
+            }
+        } else if trimmed == entry_trimmed {
+            let block_start = comment_start.unwrap_or(line_start);
+            return Some(rowan::TextRange::new(
+                (block_start as u32).into(),
+                (line_end as u32).into(),
+            ));
+        } else {
+            comment_start = None;
+        }
+        line_start = line_end;
+    }
+    None
 }
 
 #[cfg(test)]
