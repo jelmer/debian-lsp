@@ -478,7 +478,14 @@ pub fn run_fixers_for_uri(
                 }
             }
 
-            let lb_range = diagnostic_range(&diag, &ws, &rel, original_src);
+            // Locate the specific range within the anchor file that this
+            // diagnostic targets.  If no action in any plan targets the
+            // anchor file, this diagnostic doesn't belong here and we
+            // skip it — falling back to full_document_range would cause
+            // the action to appear on every line of the file.
+            let Some(lb_range) = diagnostic_range_in_file(&diag, &ws, &rel, original_src) else {
+                continue;
+            };
 
             // If a cursor range was provided, only show actions that overlap with it.
             // This prevents the "wrong paragraph" bug where all fixes for the whole
@@ -729,6 +736,29 @@ fn diag_touches_file(diag: &LbDiagnostic, rel: &Path) -> bool {
 /// one that targets `anchor_rel` and produces a precise source range;
 /// fall back to a whole-document range if nothing more specific is
 /// available.
+/// Like `diagnostic_range`, but returns `None` when no action targets
+/// the anchor file rather than falling back to the full document range.
+/// Used for code-action filtering to avoid showing cross-file actions
+/// on every line of the wrong file.
+fn diagnostic_range_in_file(
+    diag: &LbDiagnostic,
+    ws: &LspDebianWorkspace<'_>,
+    anchor_rel: &Path,
+    anchor_src: crate::position::Source<'_>,
+) -> Option<Range> {
+    for plan in &diag.plans {
+        for action in &plan.actions {
+            if action_file(action) != Some(anchor_rel) {
+                continue;
+            }
+            if let Some(range) = locate_action_target(action, ws, anchor_src) {
+                return Some(range);
+            }
+        }
+    }
+    None
+}
+
 fn diagnostic_range(
     diag: &LbDiagnostic,
     ws: &LspDebianWorkspace<'_>,
