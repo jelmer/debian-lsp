@@ -865,11 +865,23 @@ impl LanguageServer for Backend {
                     actions.push(action);
                 }
 
-                // Add binary package action
-                if let Some(action) =
-                    control::get_add_binary_package_action(&params.text_document.uri, src, &parsed)
-                {
-                    actions.push(action);
+                // Add binary package action — a document-level refactor, so
+                // only emit it when the client explicitly requests REFACTOR
+                // actions (or imposes no filter).
+                let only = params.context.only.as_deref().unwrap_or(&[]);
+                let wants_refactor = only.is_empty()
+                    || only.iter().any(|k| {
+                        k == &CodeActionKind::REFACTOR
+                            || CodeActionKind::REFACTOR.as_str().starts_with(k.as_str())
+                    });
+                if wants_refactor {
+                    if let Some(action) = control::get_add_binary_package_action(
+                        &params.text_document.uri,
+                        src,
+                        &parsed,
+                    ) {
+                        actions.push(action);
+                    }
                 }
 
                 // Add field casing fixes
