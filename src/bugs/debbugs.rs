@@ -30,9 +30,12 @@ impl BugCache {
         let rows: Vec<BugRow> = match sqlx::query_as(
             "SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
                     (SELECT string_agg(t.tag, ', ') FROM bugs_tags t WHERE t.id = b.id) AS tags \
-             FROM bugs b \
-             WHERE b.source = $1 \
-             ORDER BY b.id",
+             FROM bugs b WHERE b.source = $1 \
+             UNION ALL \
+             SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
+                    (SELECT string_agg(t.tag, ', ') FROM archived_bugs_tags t WHERE t.id = b.id) AS tags \
+             FROM archived_bugs b WHERE b.source = $1 \
+             ORDER BY id",
         )
         .bind(source_package)
         .fetch_all(&*self.pool)
@@ -137,8 +140,12 @@ impl BugCache {
         match sqlx::query_as(
             "SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
                     (SELECT string_agg(t.tag, ', ') FROM bugs_tags t WHERE t.id = b.id) AS tags \
-             FROM bugs b \
-             WHERE b.id = $1",
+             FROM bugs b WHERE b.id = $1 \
+             UNION ALL \
+             SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
+                    (SELECT string_agg(t.tag, ', ') FROM archived_bugs_tags t WHERE t.id = b.id) AS tags \
+             FROM archived_bugs b WHERE b.id = $1 \
+             LIMIT 1",
         )
         .bind(id as i32)
         .fetch_optional(&**pool)
@@ -217,9 +224,12 @@ impl BugCache {
         let rows: Vec<BugRow> = match sqlx::query_as(
             "SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
                     (SELECT string_agg(t.tag, ', ') FROM bugs_tags t WHERE t.id = b.id) AS tags \
-             FROM bugs b \
-             WHERE b.package = $1 \
-             ORDER BY b.id",
+             FROM bugs b WHERE b.package = $1 \
+             UNION ALL \
+             SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
+                    (SELECT string_agg(t.tag, ', ') FROM archived_bugs_tags t WHERE t.id = b.id) AS tags \
+             FROM archived_bugs b WHERE b.package = $1 \
+             ORDER BY id",
         )
         .bind(binary_package)
         .fetch_all(&*self.pool)
@@ -359,5 +369,26 @@ mod tests {
             summaries.iter().any(|s| s.title.is_some()),
             "at least some bugs should have titles"
         );
+    }
+
+    #[tokio::test]
+    #[ignore] // requires network access to UDD
+    async fn test_query_bug_by_id_from_udd() {
+        let pool = crate::udd::shared_pool();
+        // Pick a known open lintian bug; if it gets closed pick a different one.
+        let summaries = {
+            let mut cache = BugCache::new(pool.clone());
+            cache.get_bug_summaries_with_prefix("lintian", "").await
+        };
+        let open = summaries
+            .iter()
+            .find(|s| !s.done)
+            .expect("lintian should have an open bug");
+        let id = open.id;
+        let row = BugCache::query_bug_by_id(&pool, id)
+            .await
+            .unwrap_or_else(|| panic!("query_bug_by_id returned None for open bug #{id}"));
+        assert_eq!(row.id as u32, id);
+        assert!(row.title.is_some(), "open bug #{id} should have a title");
     }
 }
