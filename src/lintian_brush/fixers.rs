@@ -525,6 +525,19 @@ pub fn run_fixers_for_uri(
                     matching_lsp_diags.clone(),
                 ));
             }
+
+            // For any diagnostic with a LintianIssue, also offer a
+            // "suppress with lintian override" action.
+            if let Some(issue) = &diag.issue {
+                if let Some(action) = build_suppress_override_action(
+                    issue,
+                    &base_path,
+                    &ws,
+                    matching_lsp_diags.clone(),
+                ) {
+                    actions.push(action);
+                }
+            }
         }
     }
 
@@ -533,6 +546,117 @@ pub fn run_fixers_for_uri(
 
 fn ranges_overlap_lsp(a: Range, b: Range) -> bool {
     a.start < b.end && b.start < a.end
+}
+
+/// Build a "suppress with lintian override" code action for a LintianIssue.
+///
+/// Inserts an override line into `debian/source/lintian-overrides`,
+/// creating the file if it doesn't exist yet.
+fn build_suppress_override_action(
+    issue: &::lintian_brush::LintianIssue,
+    base_path: &Path,
+    ws: &LspDebianWorkspace<'_>,
+    diagnostics: Vec<Diagnostic>,
+) -> Option<CodeActionOrCommand> {
+    let tag = issue.tag.as_deref()?;
+
+    // Build the override line text.
+    let line = match (issue.package.as_deref(), issue.package_type.as_ref()) {
+        (Some(pkg), Some(pt)) => format!("{} {}: {}", pkg, pt, tag),
+        (Some(pkg), None) => format!("{} source: {}", pkg, tag),
+        _ => tag.to_string(),
+    };
+    let line = match issue.info.as_deref() {
+        Some(info) if !info.is_empty() => format!("{} {}\n", line, info),
+        _ => format!("{}\n", line),
+    };
+
+    let overrides_rel = Path::new("debian/source/lintian-overrides");
+    let overrides_path = base_path.join(overrides_rel);
+
+    // Determine the URI for the overrides file.
+    let overrides_uri: Uri = Uri::from_file_path(&overrides_path)?;
+
+    let existing_text = ws.current_text(overrides_rel).unwrap_or_default();
+    let existing_text: &str = &existing_text;
+
+    let (edit, create_op) = if existing_text.is_empty() {
+        // File doesn't exist (or is empty) — create it with just the new line.
+        let edit = TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: overrides_uri.clone(),
+                version: None,
+            },
+            edits: vec![OneOf::Left(TextEdit {
+                range: Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 0 },
+                },
+                new_text: line,
+            })],
+        };
+        let create = DocumentChangeOperation::Op(ResourceOp::Create(
+            tower_lsp_server::ls_types::CreateFile {
+                uri: overrides_uri.clone(),
+                options: None,
+                annotation_id: None,
+            },
+        ));
+        (edit, Some(create))
+    } else {
+        // File exists — append at the end.
+        let line_count = existing_text.lines().count() as u32;
+        let last_char = existing_text
+            .lines()
+            .last()
+            .map(|l| l.len() as u32)
+            .unwrap_or(0);
+        let end_pos = if existing_text.ends_with('\n') {
+            Position { line: line_count, character: 0 }
+        } else {
+            Position { line: line_count.saturating_sub(1), character: last_char }
+        };
+        let new_text = if existing_text.ends_with('\n') {
+            line
+        } else {
+            format!("\n{}", line)
+        };
+        let edit = TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: overrides_uri.clone(),
+                version: None,
+            },
+            edits: vec![OneOf::Left(TextEdit {
+                range: Range { start: end_pos, end: end_pos },
+                new_text,
+            })],
+        };
+        (edit, None)
+    };
+
+    let mut document_changes = Vec::new();
+    if let Some(create) = create_op {
+        document_changes.push(create);
+    }
+    document_changes.push(DocumentChangeOperation::Edit(edit));
+
+    let workspace_edit = WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(document_changes)),
+        ..Default::default()
+    };
+
+    let action = CodeAction {
+        title: format!("Suppress {} with lintian override", tag),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(workspace_edit),
+        diagnostics: if diagnostics.is_empty() {
+            None
+        } else {
+            Some(diagnostics)
+        },
+        ..Default::default()
+    };
+    Some(CodeActionOrCommand::CodeAction(action))
 }
 
 fn build_action_with_diagnostics(
@@ -3816,6 +3940,68 @@ mod tests {
             applied,
             "Source: foo\nMaintainer: Debian QA Group <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
         );
+    }
+
+    /// A diagnostic with a LintianIssue should produce a "suppress" override
+    /// action in addition to the fix action.
+    #[test]
+    fn suppress_override_action_is_offered() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let debian = tmp.path().join("debian");
+        std::fs::create_dir(&debian).unwrap();
+        std::fs::write(
+            debian.join("control"),
+            "Source: foo\nMaintainer: QA Folks <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
+        )
+        .unwrap();
+        std::fs::write(
+            debian.join("changelog"),
+            "foo (1.0) unstable; urgency=medium\n\n  * Initial.\n\n -- A B <a@b>  Mon, 01 Jan 2024 00:00:00 +0000\n",
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::new();
+        let control_path = debian.join("control");
+        let control_uri = Uri::from_file_path(&control_path).unwrap();
+        let source_file = workspace.update_file(
+            control_uri.clone(),
+            std::fs::read_to_string(&control_path).unwrap(),
+        );
+        let mut open_files = HashMap::new();
+        open_files.insert(
+            control_uri.clone(),
+            FileInfo { source_file, file_type: FileType::Control },
+        );
+
+        let actions = run_fixers_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            &[],
+            None,
+            RunPhase::Explicit,
+        );
+
+        let suppress = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(act)
+                    if act.title.starts_with("Suppress ") && act.title.contains("override") =>
+                {
+                    Some(act)
+                }
+                _ => None,
+            })
+            .expect("expected a 'Suppress ... with lintian override' action");
+
+        // The edit should target the overrides file.
+        let overrides_uri =
+            Uri::from_file_path(tmp.path().join("debian/source/lintian-overrides")).unwrap();
+        let edits = first_text_edits_for(suppress.edit.as_ref().unwrap(), &overrides_uri)
+            .expect("suppress action must target the overrides file");
+        assert_eq!(edits.len(), 1);
+        // The inserted text should contain the lintian tag.
+        assert_eq!(edits[0].new_text, "faulty-debian-qa-group-phrase Maintainer QA Folks -> Debian QA Group\n");
     }
 
     /// Pull the `Vec<TextEdit>` for `uri` out of a `WorkspaceEdit`'s
