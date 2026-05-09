@@ -132,7 +132,10 @@ pub fn build_add_binary_package_edit(
             vec![(
                 uri.clone(),
                 vec![TextEdit {
-                    range: Range { start: end_position, end: end_position },
+                    range: Range {
+                        start: end_position,
+                        end: end_position,
+                    },
                     new_text: format!("\n{}", binary_text),
                 }],
             )]
