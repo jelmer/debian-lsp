@@ -136,10 +136,7 @@ impl BugCache {
 
     /// Query UDD for a single bug without touching the cache. Returns the raw
     /// row so the caller can insert it after re-acquiring the lock.
-    pub async fn query_bug_by_id(
-        pool: &crate::udd::SharedPool,
-        id: u32,
-    ) -> Option<BugRow> {
+    pub async fn query_bug_by_id(pool: &crate::udd::SharedPool, id: u32) -> Option<BugRow> {
         match sqlx::query_as(
             "SELECT b.id, b.title, b.severity::text, b.done, b.forwarded, b.submitter, \
                     (SELECT string_agg(t.tag, ', ') FROM bugs_tags t WHERE t.id = b.id) AS tags \
@@ -383,7 +380,10 @@ mod tests {
             let mut cache = BugCache::new(pool.clone());
             cache.get_bug_summaries_with_prefix("lintian", "").await
         };
-        let open = summaries.iter().find(|s| !s.done).expect("lintian should have an open bug");
+        let open = summaries
+            .iter()
+            .find(|s| !s.done)
+            .expect("lintian should have an open bug");
         let id = open.id;
         let row = BugCache::query_bug_by_id(&pool, id)
             .await
