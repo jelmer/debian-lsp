@@ -865,6 +865,17 @@ impl LanguageServer for Backend {
         }
     }
 
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let mut files = self.files.lock().await;
+        files.remove(&params.text_document.uri);
+        drop(files);
+        // Clear diagnostics so stale squiggles don't linger after the file
+        // is closed.
+        self.client
+            .publish_diagnostics(params.text_document.uri, vec![], None)
+            .await;
+    }
+
     async fn will_save_wait_until(
         &self,
         params: WillSaveTextDocumentParams,
