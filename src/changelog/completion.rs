@@ -941,7 +941,10 @@ foo (1.0-1) unstable; urgency=medium
         )
         .await
         .expect("bug context should return Some");
-        assert!(!is_incomplete, "cache was pre-populated, result should be complete");
+        assert!(
+            !is_incomplete,
+            "cache was pre-populated, result should be complete"
+        );
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));
@@ -1009,7 +1012,10 @@ foo (1.0-1) unstable; urgency=medium
         )
         .await
         .expect("bug context should return Some");
-        assert!(!is_incomplete, "cache was pre-populated, result should be complete");
+        assert!(
+            !is_incomplete,
+            "cache was pre-populated, result should be complete"
+        );
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));

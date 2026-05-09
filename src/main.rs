@@ -1849,20 +1849,31 @@ impl LanguageServer for Backend {
                         files.get(&uri).and_then(|file_info| {
                             let parsed = workspace.get_parsed_changelog(file_info.source_file);
                             let changelog = parsed.tree();
-                            changelog::generate_new_changelog_entry(&changelog).ok().map(|new_entry| {
-                                WorkspaceEdit {
+                            changelog::generate_new_changelog_entry(&changelog)
+                                .ok()
+                                .map(|new_entry| WorkspaceEdit {
                                     changes: Some(
-                                        vec![(uri.clone(), vec![TextEdit {
-                                            range: Range {
-                                                start: Position { line: 0, character: 0 },
-                                                end: Position { line: 0, character: 0 },
-                                            },
-                                            new_text: new_entry,
-                                        }])].into_iter().collect(),
+                                        vec![(
+                                            uri.clone(),
+                                            vec![TextEdit {
+                                                range: Range {
+                                                    start: Position {
+                                                        line: 0,
+                                                        character: 0,
+                                                    },
+                                                    end: Position {
+                                                        line: 0,
+                                                        character: 0,
+                                                    },
+                                                },
+                                                new_text: new_entry,
+                                            }],
+                                        )]
+                                        .into_iter()
+                                        .collect(),
                                     ),
                                     ..Default::default()
-                                }
-                            })
+                                })
                         })
                     };
                     if let Some(edit) = workspace_edit {
