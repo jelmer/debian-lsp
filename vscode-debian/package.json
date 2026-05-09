@@ -42,6 +42,18 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "debian-lsp.addBinaryPackage",
+        "title": "Add Binary Package",
+        "category": "Debian"
+      },
+      {
+        "command": "debian-lsp.addChangelogEntry",
+        "title": "Add New Changelog Entry",
+        "category": "Debian"
+      }
+    ],
     "languages": [
       {
         "id": "debcontrol",

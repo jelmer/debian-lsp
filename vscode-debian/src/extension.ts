@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { workspace, window, StatusBarAlignment, StatusBarItem, ExtensionContext } from 'vscode';
+import { workspace, window, commands, StatusBarAlignment, StatusBarItem, ExtensionContext } from 'vscode';
 import {
   LanguageClient,
   LanguageClientOptions,
@@ -92,6 +92,28 @@ export function activate(context: ExtensionContext) {
       statusBarItem.hide();
     }
   }, null, context.subscriptions);
+
+  // Register command palette commands that delegate to the LSP server.
+  context.subscriptions.push(
+    commands.registerCommand('debian-lsp.addBinaryPackage', () => {
+      const uri = window.activeTextEditor?.document.uri.toString();
+      if (uri) {
+        client.sendRequest('workspace/executeCommand', {
+          command: 'debian-lsp.addBinaryPackage',
+          arguments: [uri],
+        });
+      }
+    }),
+    commands.registerCommand('debian-lsp.addChangelogEntry', () => {
+      const uri = window.activeTextEditor?.document.uri.toString();
+      if (uri) {
+        client.sendRequest('workspace/executeCommand', {
+          command: 'debian-lsp.addChangelogEntry',
+          arguments: [uri],
+        });
+      }
+    }),
+  );
 
   // Start the client (this will also launch the server)
   client.start();

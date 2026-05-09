@@ -132,8 +132,7 @@ pub async fn get_async_bug_completions(
             summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
             summaries
                 .into_iter()
-                .enumerate()
-                .map(|(idx, summary)| remote_debian_bug_completion(&summary, idx, normalized_prefix))
+                .map(|summary| remote_debian_bug_completion(&summary, normalized_prefix))
                 .collect()
         }
         BugTracker::Launchpad => {
@@ -146,10 +145,7 @@ pub async fn get_async_bug_completions(
             summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
             summaries
                 .into_iter()
-                .enumerate()
-                .map(|(idx, summary)| {
-                    remote_launchpad_bug_completion(&summary, idx, normalized_prefix)
-                })
+                .map(|summary| remote_launchpad_bug_completion(&summary, normalized_prefix))
                 .collect()
         }
     };
@@ -519,17 +515,26 @@ fn merge_unique_completions(
     second: Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
     let mut seen = BTreeSet::new();
-    first
+    let mut items: Vec<CompletionItem> = first
         .into_iter()
         .chain(second)
         .filter(|item| seen.insert(item.label.clone()))
-        .collect()
+        .collect();
+    // Re-assign sort_text after merging so open bugs always precede closed
+    // ones regardless of source. Closed items carry CompletionItemTag::DEPRECATED.
+    for item in &mut items {
+        let closed = item
+            .tags
+            .as_deref()
+            .is_some_and(|tags| tags.contains(&CompletionItemTag::DEPRECATED));
+        item.sort_text = Some(format!("{}:{}", if closed { 1 } else { 0 }, item.label));
+    }
+    items
 }
 
 /// Build a completion item from a Debian bug summary.
 fn remote_debian_bug_completion(
     summary: &DebbugsBugSummary,
-    idx: usize,
     normalized_prefix: &str,
 ) -> CompletionItem {
     let id_str = summary.id.to_string();
@@ -544,7 +549,6 @@ fn remote_debian_bug_completion(
         documentation: Some(Documentation::String(debian_bug_summary_documentation(
             summary,
         ))),
-        sort_text: Some(format!("{:06}", idx)),
         tags: if summary.done {
             Some(vec![CompletionItemTag::DEPRECATED])
         } else {
@@ -563,7 +567,6 @@ fn remote_debian_bug_completion(
 /// Build a completion item from a Launchpad bug summary.
 fn remote_launchpad_bug_completion(
     summary: &LaunchpadBugSummary,
-    idx: usize,
     normalized_prefix: &str,
 ) -> CompletionItem {
     let id_str = summary.id.to_string();
@@ -578,7 +581,6 @@ fn remote_launchpad_bug_completion(
         documentation: Some(Documentation::String(launchpad_bug_summary_documentation(
             summary,
         ))),
-        sort_text: Some(format!("{:06}", idx)),
         tags: if summary.done {
             Some(vec![CompletionItemTag::DEPRECATED])
         } else {
