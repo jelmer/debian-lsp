@@ -330,9 +330,27 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
     }
 
     fn should_fix(&self, issue: &LintianIssue) -> bool {
-        // Reads `debian/source/lintian-overrides` etc. from disk. Open
-        // overrides buffers aren't honoured yet — fine for the spike, since
-        // overrides are rarely edited live.
-        issue.should_fix(&self.base_path)
+        use ::lintian_brush::lintian_overrides::OverrideLineMatch as _;
+        use lintian_overrides::{find_override_files, LintianOverrides};
+
+        for path in find_override_files(&self.base_path) {
+            let rel = match path.strip_prefix(&self.base_path) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            // Prefer the open buffer; fall back to disk.
+            let text = self
+                .current_text(rel)
+                .unwrap_or_else(|| std::sync::Arc::from(""));
+            let Ok(parsed) = LintianOverrides::parse(&text).ok() else {
+                continue;
+            };
+            for line in parsed.lines() {
+                if line.matches_issue(issue) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
