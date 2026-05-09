@@ -34,20 +34,53 @@ pub async fn get_hover(
 
     match &bug {
         Bug::Debian(id) => {
-            let summary = bug_cache.write().await.get_debian_bug_summary(*id).await;
+            let summary = debian_bug_summary(bug_cache, *id).await;
             Some(match summary {
                 Some(s) => make_debian_hover(&s),
                 None => make_fallback_hover(&bug),
             })
         }
         Bug::Launchpad(id) => {
-            let summary = bug_cache.write().await.get_launchpad_bug_summary(*id).await;
+            let summary = launchpad_bug_summary(bug_cache, *id).await;
             Some(match summary {
                 Some(s) => make_launchpad_hover(&s),
                 None => make_fallback_hover(&bug),
             })
         }
     }
+}
+
+/// Look up a Debian bug summary without holding the cache lock across the
+/// network call. Checks the in-memory cache first; if absent, clones the
+/// pool, drops the lock, queries UDD, then re-acquires to insert.
+async fn debian_bug_summary(
+    bug_cache: &SharedBugCache,
+    id: u32,
+) -> Option<crate::bugs::DebbugsBugSummary> {
+    // Fast path: already cached.
+    if let Some(s) = bug_cache.write().await.get_cached_debian_bug_summary(id) {
+        return Some(s);
+    }
+    // Slow path: fetch from UDD. The write guard is dropped here before the
+    // network await so other callers aren't blocked.
+    let pool = bug_cache.read().await.pool.clone();
+    let row = crate::bugs::BugCache::query_bug_by_id(&pool, id).await?;
+    let mut cache = bug_cache.write().await;
+    cache.insert_bug_row(id, row);
+    cache.get_cached_debian_bug_summary(id)
+}
+
+#[cfg(feature = "launchpad")]
+async fn launchpad_bug_summary(bug_cache: &SharedBugCache, id: u32) -> Option<LaunchpadBugSummary> {
+    bug_cache.write().await.get_launchpad_bug_summary(id).await
+}
+
+#[cfg(not(feature = "launchpad"))]
+async fn launchpad_bug_summary(
+    _bug_cache: &SharedBugCache,
+    _id: u32,
+) -> Option<LaunchpadBugSummary> {
+    None
 }
 
 /// Minimal hover shown when bug details are not available.
