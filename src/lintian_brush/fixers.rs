@@ -2013,10 +2013,9 @@ fn copyright_action_to_text_edits(
             return append_paragraph_edits(fields, *indent, original_src);
         }
         Deb822Action::ReorderParagraphs { .. } => {
-            // No detector emits this against debian/copyright in
-            // practice, and the copyright wrappers don't have a typed
-            // reorder API — leave it unimplemented for now rather than
-            // silently dropping it.
+            // reorder_paragraphs_edits operates on Control, not Copyright.
+            // Returning empty here causes plan_to_workspace_edit to return
+            // None, so the code action is not offered.
             return Vec::new();
         }
         _ => {}
