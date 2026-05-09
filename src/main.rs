@@ -715,14 +715,19 @@ impl LanguageServer for Backend {
                 let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_changelog(source_file);
                 drop(workspace);
-                if let Some(bug_completions) =
+                if let Some((items, is_incomplete)) =
                     changelog::get_async_bug_completions(&parsed, src, position, &self.bug_cache)
                         .await
                 {
-                    bug_completions
-                } else {
-                    changelog::get_completions(&parsed, src, position)
+                    if items.is_empty() {
+                        return Ok(None);
+                    }
+                    return Ok(Some(CompletionResponse::List(CompletionList {
+                        is_incomplete,
+                        items,
+                    })));
                 }
+                changelog::get_completions(&parsed, src, position)
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
