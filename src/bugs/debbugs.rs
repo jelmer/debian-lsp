@@ -41,6 +41,7 @@ impl BugCache {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!(source_package, error = %e, "UDD bug query failed");
+                self.last_udd_error = Some(e.to_string());
                 return;
             }
         };
@@ -147,6 +148,7 @@ impl BugCache {
             Ok(row) => row,
             Err(e) => {
                 tracing::warn!(id, error = %e, "UDD single bug query failed");
+                self.last_udd_error = Some(e.to_string());
                 return;
             }
         };
@@ -221,6 +223,7 @@ impl BugCache {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!(binary_package, error = %e, "UDD binary bug query failed");
+                self.last_udd_error = Some(e.to_string());
                 return;
             }
         };

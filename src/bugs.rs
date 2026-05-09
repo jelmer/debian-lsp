@@ -32,6 +32,9 @@ pub struct BugCache {
     pool: crate::udd::SharedPool,
     bug_ids_by_package: LruCache<String, Vec<u32>>,
     bug_details_by_id: LruCache<u32, CachedDebbugsBugDetails>,
+    /// Last UDD connection error, set by fetch methods and drained by callers
+    /// that want to surface it (e.g. via `window/showMessage`).
+    pub last_udd_error: Option<String>,
     #[cfg(feature = "launchpad")]
     launchpad_client: launchpadlib::r#async::Client,
     #[cfg(feature = "launchpad")]
@@ -82,6 +85,7 @@ impl BugCache {
             bug_details_by_id: LruCache::new(
                 NonZeroUsize::new(BUG_DETAILS_CACHE_CAPACITY).expect("non-zero capacity"),
             ),
+            last_udd_error: None,
             #[cfg(feature = "launchpad")]
             launchpad_client: launchpadlib::r#async::Client::anonymous(LAUNCHPAD_CONSUMER_KEY),
             #[cfg(feature = "launchpad")]

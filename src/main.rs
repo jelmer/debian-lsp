@@ -297,10 +297,23 @@ impl Backend {
         let package_name = changelog.iter().next().and_then(|entry| entry.package());
         if let Some(package_name) = package_name {
             let bug_cache = self.bug_cache.clone();
+            let client = self.client.clone();
             tokio::spawn(async move {
-                let mut cache = bug_cache.write().await;
-                cache.prefetch_bugs_for_package(&package_name).await;
-                cache
+                {
+                    let mut cache = bug_cache.write().await;
+                    cache.prefetch_bugs_for_package(&package_name).await;
+                    if let Some(err) = cache.last_udd_error.take() {
+                        client
+                            .show_message(
+                                MessageType::WARNING,
+                                format!("UDD connection failed: {err}"),
+                            )
+                            .await;
+                    }
+                }
+                bug_cache
+                    .write()
+                    .await
                     .prefetch_launchpad_bugs_for_package(&package_name)
                     .await;
             });
