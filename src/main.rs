@@ -639,6 +639,7 @@ impl LanguageServer for Backend {
                         control::code_lens::OPEN_URL_COMMAND.to_string(),
                         changelog::ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
                         control::ADD_BINARY_PACKAGE_COMMAND.to_string(),
+                        changelog::ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
                     ],
                     ..Default::default()
                 }),
@@ -899,17 +900,6 @@ impl LanguageServer for Backend {
 
         let edit = changelog::generate_timestamp_update_edit(&changelog, src);
         Ok(edit.map(|e| vec![e]))
-    }
-
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let mut files = self.files.lock().await;
-        files.remove(&params.text_document.uri);
-        drop(files);
-        // Clear diagnostics so stale squiggles don't linger after the file
-        // is closed.
-        self.client
-            .publish_diagnostics(params.text_document.uri, vec![], None)
-            .await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -2304,6 +2294,36 @@ impl LanguageServer for Backend {
                         {
                             let _ = self.client.apply_edit(edit).await;
                         }
+                    }
+                }
+            }
+        } else if params.command == changelog::ADD_CHANGELOG_ENTRY_COMMAND {
+            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = uri_str.parse::<Uri>() {
+                    let workspace = self.workspace_clone().await;
+                    let workspace_edit = {
+                        let files = self.files.lock().await;
+                        files.get(&uri).and_then(|file_info| {
+                            let parsed = workspace.get_parsed_changelog(file_info.source_file);
+                            let changelog = parsed.tree();
+                            changelog::generate_new_changelog_entry(&changelog).ok().map(|new_entry| {
+                                WorkspaceEdit {
+                                    changes: Some(
+                                        vec![(uri.clone(), vec![TextEdit {
+                                            range: Range {
+                                                start: Position { line: 0, character: 0 },
+                                                end: Position { line: 0, character: 0 },
+                                            },
+                                            new_text: new_entry,
+                                        }])].into_iter().collect(),
+                                    ),
+                                    ..Default::default()
+                                }
+                            })
+                        })
+                    };
+                    if let Some(edit) = workspace_edit {
+                        let _ = self.client.apply_edit(edit).await;
                     }
                 }
             }
