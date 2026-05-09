@@ -10,7 +10,6 @@ pub mod detection;
 pub mod diagnostics;
 pub mod fields;
 pub mod hover;
-pub mod parsing;
 pub mod semantic;
 pub mod symbols;
 
@@ -19,6 +18,5 @@ pub use detection::is_in_dep3_header;
 pub use diagnostics::get_diagnostics;
 pub use fields::get_standard_field_name;
 pub use hover::get_hover;
-pub use parsing::parse_dep3_header;
 pub use semantic::generate_semantic_tokens;
 pub use symbols::generate_document_symbols;
