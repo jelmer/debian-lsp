@@ -71,10 +71,7 @@ async fn debian_bug_summary(
 }
 
 #[cfg(feature = "launchpad")]
-async fn launchpad_bug_summary(
-    bug_cache: &SharedBugCache,
-    id: u32,
-) -> Option<LaunchpadBugSummary> {
+async fn launchpad_bug_summary(bug_cache: &SharedBugCache, id: u32) -> Option<LaunchpadBugSummary> {
     bug_cache.write().await.get_launchpad_bug_summary(id).await
 }
 
