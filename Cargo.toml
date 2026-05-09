@@ -22,7 +22,7 @@ chrono = "0.4"
 debian-changelog = "0.2.18"
 debian-control = { version = "0.3.7" }
 debian-copyright = { version = "0.1.47", features = ["lossless"] }
-debian-watch = { version = "0.4.6", features = ["linebased", "deb822"] }
+debian-watch = { version = "0.4.10", features = ["linebased", "deb822"] }
 dep3 = "0.2.2"
 distro-info = "0.4"
 rowan = "0.16.1"
