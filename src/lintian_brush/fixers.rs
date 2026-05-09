@@ -527,15 +527,19 @@ pub fn run_fixers_for_uri(
             }
 
             // For any diagnostic with a LintianIssue, also offer a
-            // "suppress with lintian override" action.
+            // "suppress with lintian override" action via the standard
+            // plan translation path.
             if let Some(issue) = &diag.issue {
-                if let Some(action) = build_suppress_override_action(
-                    issue,
-                    &base_path,
-                    &ws,
-                    matching_lsp_diags.clone(),
-                ) {
-                    actions.push(action);
+                if let Some(plan) =
+                    ::lintian_brush::diagnostic::override_action_plan(issue)
+                {
+                    if let Some(edit) = plan_to_workspace_edit(&plan, &ws) {
+                        actions.push(build_action_with_diagnostics(
+                            &plan.label,
+                            edit,
+                            matching_lsp_diags.clone(),
+                        ));
+                    }
                 }
             }
         }
@@ -548,116 +552,6 @@ fn ranges_overlap_lsp(a: Range, b: Range) -> bool {
     a.start < b.end && b.start < a.end
 }
 
-/// Build a "suppress with lintian override" code action for a LintianIssue.
-///
-/// Inserts an override line into `debian/source/lintian-overrides`,
-/// creating the file if it doesn't exist yet.
-fn build_suppress_override_action(
-    issue: &::lintian_brush::LintianIssue,
-    base_path: &Path,
-    ws: &LspDebianWorkspace<'_>,
-    diagnostics: Vec<Diagnostic>,
-) -> Option<CodeActionOrCommand> {
-    let tag = issue.tag.as_deref()?;
-
-    // Build the override line text.
-    let line = match (issue.package.as_deref(), issue.package_type.as_ref()) {
-        (Some(pkg), Some(pt)) => format!("{} {}: {}", pkg, pt, tag),
-        (Some(pkg), None) => format!("{} source: {}", pkg, tag),
-        _ => tag.to_string(),
-    };
-    let line = match issue.info.as_deref() {
-        Some(info) if !info.is_empty() => format!("{} {}\n", line, info),
-        _ => format!("{}\n", line),
-    };
-
-    let overrides_rel = Path::new("debian/source/lintian-overrides");
-    let overrides_path = base_path.join(overrides_rel);
-
-    // Determine the URI for the overrides file.
-    let overrides_uri: Uri = Uri::from_file_path(&overrides_path)?;
-
-    let existing_text = ws.current_text(overrides_rel).unwrap_or_default();
-    let existing_text: &str = &existing_text;
-
-    let (edit, create_op) = if existing_text.is_empty() {
-        // File doesn't exist (or is empty) — create it with just the new line.
-        let edit = TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier {
-                uri: overrides_uri.clone(),
-                version: None,
-            },
-            edits: vec![OneOf::Left(TextEdit {
-                range: Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 0 },
-                },
-                new_text: line,
-            })],
-        };
-        let create = DocumentChangeOperation::Op(ResourceOp::Create(
-            tower_lsp_server::ls_types::CreateFile {
-                uri: overrides_uri.clone(),
-                options: None,
-                annotation_id: None,
-            },
-        ));
-        (edit, Some(create))
-    } else {
-        // File exists — append at the end.
-        let line_count = existing_text.lines().count() as u32;
-        let last_char = existing_text
-            .lines()
-            .last()
-            .map(|l| l.len() as u32)
-            .unwrap_or(0);
-        let end_pos = if existing_text.ends_with('\n') {
-            Position { line: line_count, character: 0 }
-        } else {
-            Position { line: line_count.saturating_sub(1), character: last_char }
-        };
-        let new_text = if existing_text.ends_with('\n') {
-            line
-        } else {
-            format!("\n{}", line)
-        };
-        let edit = TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier {
-                uri: overrides_uri.clone(),
-                version: None,
-            },
-            edits: vec![OneOf::Left(TextEdit {
-                range: Range { start: end_pos, end: end_pos },
-                new_text,
-            })],
-        };
-        (edit, None)
-    };
-
-    let mut document_changes = Vec::new();
-    if let Some(create) = create_op {
-        document_changes.push(create);
-    }
-    document_changes.push(DocumentChangeOperation::Edit(edit));
-
-    let workspace_edit = WorkspaceEdit {
-        document_changes: Some(DocumentChanges::Operations(document_changes)),
-        ..Default::default()
-    };
-
-    let action = CodeAction {
-        title: format!("Suppress {} with lintian override", tag),
-        kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(workspace_edit),
-        diagnostics: if diagnostics.is_empty() {
-            None
-        } else {
-            Some(diagnostics)
-        },
-        ..Default::default()
-    };
-    Some(CodeActionOrCommand::CodeAction(action))
-}
 
 fn build_action_with_diagnostics(
     title: &str,
@@ -3378,7 +3272,8 @@ fn action_file(action: &Action) -> Option<&Path> {
             | MakefileAction::InsertIncludeBeforeVariable { file, .. } => file,
         },
         Action::LintianOverrides(a) => match a {
-            LintianOverridesAction::DropLine { file, .. }
+            LintianOverridesAction::AddLine { file, .. }
+            | LintianOverridesAction::DropLine { file, .. }
             | LintianOverridesAction::RenameTag { file, .. }
             | LintianOverridesAction::SetLineInfo { file, .. } => file,
         },
@@ -3686,6 +3581,53 @@ fn lintian_overrides_action_to_text_edits(
         return Vec::new();
     };
     match action {
+        LintianOverridesAction::AddLine {
+            package, tag, info, ..
+        } => {
+            let already_present = parsed.lines().any(|line| {
+                if line.is_comment() || line.is_empty() {
+                    return false;
+                }
+                let line_tag = match line.tag() {
+                    Some(t) => t.text().to_string(),
+                    None => return false,
+                };
+                if line_tag != *tag {
+                    return false;
+                }
+                let line_pkg = line
+                    .package_spec()
+                    .as_ref()
+                    .and_then(|s| s.package_name());
+                if line_pkg.as_deref() != package.as_deref() {
+                    return false;
+                }
+                line.info().as_deref() == info.as_deref()
+            });
+            if already_present {
+                return Vec::new();
+            }
+            let mut new_line = String::new();
+            if !text.is_empty() && !text.ends_with('\n') {
+                new_line.push('\n');
+            }
+            if let Some(pkg) = package {
+                new_line.push_str(pkg);
+                new_line.push_str(": ");
+            }
+            new_line.push_str(tag);
+            if let Some(i) = info {
+                new_line.push(' ');
+                new_line.push_str(i);
+            }
+            new_line.push('\n');
+            let end = rowan::TextSize::of(text);
+            let insertion = rowan::TextRange::new(end, end);
+            vec![TextEdit {
+                range: original_src.text_range_to_lsp_range(insertion),
+                new_text: new_line,
+            }]
+        }
         LintianOverridesAction::DropLine { selector, .. } => {
             let Some(line) = find_override_line(&parsed, selector) else {
                 return Vec::new();
@@ -3772,6 +3714,7 @@ fn lintian_overrides_action_range(
     use lintian_overrides::LintianOverrides;
     let parsed = LintianOverrides::parse(anchor_src.text).ok().ok()?;
     match action {
+        LintianOverridesAction::AddLine { .. } => None,
         LintianOverridesAction::DropLine { selector, .. }
         | LintianOverridesAction::SetLineInfo { selector, .. } => {
             let line = find_override_line(&parsed, selector)?;
@@ -3986,13 +3929,13 @@ mod tests {
             .iter()
             .find_map(|a| match a {
                 CodeActionOrCommand::CodeAction(act)
-                    if act.title.starts_with("Suppress ") && act.title.contains("override") =>
+                    if act.title.starts_with("Add lintian override for ") =>
                 {
                     Some(act)
                 }
                 _ => None,
             })
-            .expect("expected a 'Suppress ... with lintian override' action");
+            .expect("expected an 'Add lintian override for ...' action");
 
         // The edit should target the overrides file.
         let overrides_uri =
