@@ -866,11 +866,13 @@ impl LanguageServer for Backend {
                     actions.push(action);
                 }
 
-                // "Add binary package" is document-level; surface it as a
-                // palette Command so it doesn't appear in the lightbulb.
-                actions.push(control::get_add_binary_package_command(
-                    &params.text_document.uri,
-                ));
+                // "Add binary package" is document-level and should only
+                // appear via the command palette, not the lightbulb.
+                if params.context.trigger_kind != Some(CodeActionTriggerKind::AUTOMATIC) {
+                    actions.push(control::get_add_binary_package_command(
+                        &params.text_document.uri,
+                    ));
+                }
 
                 // Add field casing fixes
                 let issues =
