@@ -430,7 +430,10 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec![control::code_lens::OPEN_URL_COMMAND.to_string()],
+                    commands: vec![
+                        control::code_lens::OPEN_URL_COMMAND.to_string(),
+                        changelog::ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
+                    ],
                     ..Default::default()
                 }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
@@ -726,14 +729,19 @@ impl LanguageServer for Backend {
                 let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_changelog(source_file);
                 drop(workspace);
-                if let Some(bug_completions) =
+                if let Some((items, is_incomplete)) =
                     changelog::get_async_bug_completions(&parsed, src, position, &self.bug_cache)
                         .await
                 {
-                    bug_completions
-                } else {
-                    changelog::get_completions(&parsed, src, position)
+                    if items.is_empty() {
+                        return Ok(None);
+                    }
+                    return Ok(Some(CompletionResponse::List(CompletionList {
+                        is_incomplete,
+                        items,
+                    })));
                 }
+                changelog::get_completions(&parsed, src, position)
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
@@ -888,47 +896,11 @@ impl LanguageServer for Backend {
                 ));
             }
             FileType::Changelog => {
-                // Add action to create a new changelog entry (file-wide action)
-                let parsed = workspace.get_parsed_changelog(file_info.source_file);
-                let changelog = parsed.tree();
-                match changelog::generate_new_changelog_entry(&changelog) {
-                    Ok(new_entry) => {
-                        // Insert the new entry at the beginning of the file
-                        let edit = TextEdit {
-                            range: Range {
-                                start: Position {
-                                    line: 0,
-                                    character: 0,
-                                },
-                                end: Position {
-                                    line: 0,
-                                    character: 0,
-                                },
-                            },
-                            new_text: new_entry,
-                        };
-
-                        let workspace_edit = WorkspaceEdit {
-                            changes: Some(
-                                vec![(params.text_document.uri.clone(), vec![edit])]
-                                    .into_iter()
-                                    .collect(),
-                            ),
-                            ..Default::default()
-                        };
-
-                        let action = CodeAction {
-                            title: "Add new changelog entry".to_string(),
-                            kind: Some(CodeActionKind::SOURCE),
-                            edit: Some(workspace_edit),
-                            ..Default::default()
-                        };
-
-                        actions.push(CodeActionOrCommand::CodeAction(action));
-                    }
-                    Err(_) => {
-                        // If we can't generate a new entry, don't add the action
-                    }
+                // Add new changelog entry: document-level, palette only.
+                if params.context.trigger_kind != Some(CodeActionTriggerKind::AUTOMATIC) {
+                    actions.push(changelog::get_add_changelog_entry_command(
+                        &params.text_document.uri,
+                    ));
                 }
 
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
@@ -1877,6 +1849,47 @@ impl LanguageServer for Backend {
                             selection: None,
                         })
                         .await;
+                }
+            }
+        } else if params.command == changelog::ADD_CHANGELOG_ENTRY_COMMAND {
+            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = uri_str.parse::<Uri>() {
+                    let workspace = self.workspace_clone().await;
+                    let workspace_edit = {
+                        let files = self.files.lock().await;
+                        files.get(&uri).and_then(|file_info| {
+                            let parsed = workspace.get_parsed_changelog(file_info.source_file);
+                            let changelog = parsed.tree();
+                            changelog::generate_new_changelog_entry(&changelog)
+                                .ok()
+                                .map(|new_entry| WorkspaceEdit {
+                                    changes: Some(
+                                        vec![(
+                                            uri.clone(),
+                                            vec![TextEdit {
+                                                range: Range {
+                                                    start: Position {
+                                                        line: 0,
+                                                        character: 0,
+                                                    },
+                                                    end: Position {
+                                                        line: 0,
+                                                        character: 0,
+                                                    },
+                                                },
+                                                new_text: new_entry,
+                                            }],
+                                        )]
+                                        .into_iter()
+                                        .collect(),
+                                    ),
+                                    ..Default::default()
+                                })
+                        })
+                    };
+                    if let Some(edit) = workspace_edit {
+                        let _ = self.client.apply_edit(edit).await;
+                    }
                 }
             }
         }

@@ -333,6 +333,11 @@ impl BugCache {
         Some(distribution)
     }
 
+    /// Return whether Launchpad bug data for a package is already in the cache.
+    pub fn is_launchpad_package_cached(&self, package: &str) -> bool {
+        self.launchpad_bug_ids_by_package.contains(package)
+    }
+
     /// Pre-fetch Launchpad bug IDs and their details for an Ubuntu source package.
     pub async fn prefetch_launchpad_bugs_for_package(&mut self, package: &str) {
         self.fetch_launchpad_bugs_for_package(package).await;
@@ -377,6 +382,11 @@ impl BugCache {
         _prefix: &str,
     ) -> Vec<LaunchpadBugSummary> {
         Vec::new()
+    }
+
+    /// Return whether Launchpad bug data for a package is already in the cache.
+    pub fn is_launchpad_package_cached(&self, _package: &str) -> bool {
+        false
     }
 
     /// Pre-fetch Launchpad bug IDs and their details for an Ubuntu source package.

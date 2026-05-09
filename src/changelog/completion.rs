@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use debian_changelog::bugs::BugTracker;
 use rowan::ast::AstNode;
 use text_size::{TextRange, TextSize};
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentation, Position};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, CompletionItemTag, Documentation, Position,
+};
 
 use super::fields::{get_debian_distributions, URGENCY_LEVELS};
 use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
@@ -68,13 +70,16 @@ pub fn get_completions(
 /// (`Closes: #...` and `LP: #...`) using local changelog data and
 /// cached tracker lookups.
 ///
-/// Returns `None` when the cursor is not in bug-number context.
+/// Returns `None` when the cursor is not in bug-number context. When the
+/// tracker cache is cold the local-only completions are returned immediately
+/// with `is_incomplete = true` so the client re-requests once the background
+/// prefetch has warmed the cache.
 pub async fn get_async_bug_completions(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
     src: Source<'_>,
     position: Position,
     bug_cache: &SharedBugCache,
-) -> Option<Vec<CompletionItem>> {
+) -> Option<(Vec<CompletionItem>, bool)> {
     // Keep all CST-backed values in a short scope and drop them before await
     // so this future remains Send for tower-lsp.
     let (tracker, package_name, value_prefix, local) = {
@@ -96,47 +101,56 @@ pub async fn get_async_bug_completions(
         (tracker, package_name, value_prefix, local)
     };
 
-    let remote_completions = if let Some(package_name) = package_name {
-        let normalized_prefix = value_prefix.trim();
-        match tracker {
-            BugTracker::Debian => {
-                let mut summaries = bug_cache
-                    .write()
-                    .await
-                    .get_bug_summaries_with_prefix(&package_name, &value_prefix)
-                    .await;
-                // Sort: open bugs first, then by bug ID descending (highest/newest first).
-                summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
-                summaries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, summary)| {
-                        remote_debian_bug_completion(&summary, idx, normalized_prefix)
-                    })
-                    .collect()
-            }
-            BugTracker::Launchpad => {
-                let mut summaries = bug_cache
-                    .write()
-                    .await
-                    .get_launchpad_bug_summaries_with_prefix(&package_name, &value_prefix)
-                    .await;
-                // Sort: open bugs first, then by bug ID descending (highest/newest first).
-                summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
-                summaries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, summary)| {
-                        remote_launchpad_bug_completion(&summary, idx, normalized_prefix)
-                    })
-                    .collect()
-            }
-        }
-    } else {
-        Vec::new()
+    let Some(package_name) = package_name else {
+        return Some((local, false));
     };
 
-    Some(merge_unique_completions(remote_completions, local))
+    // Check whether the tracker cache is already warm for this package.
+    // If cold, return local results immediately and let the client re-request
+    // once the background prefetch completes.
+    let cache_warm = {
+        let cache = bug_cache.read().await;
+        match tracker {
+            BugTracker::Debian => cache.is_source_package_cached(&package_name),
+            BugTracker::Launchpad => cache.is_launchpad_package_cached(&package_name),
+        }
+    };
+
+    if !cache_warm {
+        return Some((local, true));
+    }
+
+    let normalized_prefix = value_prefix.trim();
+    let remote_completions = match tracker {
+        BugTracker::Debian => {
+            let mut summaries = bug_cache
+                .write()
+                .await
+                .get_bug_summaries_with_prefix(&package_name, &value_prefix)
+                .await;
+            // Sort: open bugs first, then by bug ID descending (highest/newest first).
+            summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
+            summaries
+                .into_iter()
+                .map(|summary| remote_debian_bug_completion(&summary, normalized_prefix))
+                .collect()
+        }
+        BugTracker::Launchpad => {
+            let mut summaries = bug_cache
+                .write()
+                .await
+                .get_launchpad_bug_summaries_with_prefix(&package_name, &value_prefix)
+                .await;
+            // Sort: open bugs first, then by bug ID descending (highest/newest first).
+            summaries.sort_by(|a, b| a.done.cmp(&b.done).then(b.id.cmp(&a.id)));
+            summaries
+                .into_iter()
+                .map(|summary| remote_launchpad_bug_completion(&summary, normalized_prefix))
+                .collect()
+        }
+    };
+
+    Some((merge_unique_completions(remote_completions, local), false))
 }
 
 fn get_cursor_context(
@@ -421,6 +435,10 @@ fn get_package_completions(
 }
 
 /// Suggest Debian bug references found in changelog history.
+///
+/// These bugs appeared in `Closes:` lines in past entries, so they were
+/// closed at release time. Mark them struck-through so the user can
+/// distinguish them from currently-open bugs once UDD data arrives.
 fn get_local_debian_bug_completions(
     changelog: &debian_changelog::ChangeLog,
     prefix: &str,
@@ -443,6 +461,7 @@ fn get_local_debian_bug_completions(
             label: format!("#{}", id),
             kind: Some(CompletionItemKind::REFERENCE),
             detail: Some("Debian bug (from changelog history)".to_string()),
+            tags: Some(vec![CompletionItemTag::DEPRECATED]),
             insert_text: Some(
                 id.strip_prefix(normalized_prefix)
                     .unwrap_or(&id)
@@ -454,6 +473,10 @@ fn get_local_debian_bug_completions(
 }
 
 /// Suggest Launchpad bug references found in changelog history.
+///
+/// These bugs appeared in `LP:` lines in past entries, so they were
+/// closed at release time. Mark them struck-through so the user can
+/// distinguish them from currently-open bugs once Launchpad data arrives.
 fn get_local_launchpad_bug_completions(
     changelog: &debian_changelog::ChangeLog,
     prefix: &str,
@@ -476,6 +499,7 @@ fn get_local_launchpad_bug_completions(
             label: format!("#{}", id),
             kind: Some(CompletionItemKind::REFERENCE),
             detail: Some("Launchpad bug (from changelog history)".to_string()),
+            tags: Some(vec![CompletionItemTag::DEPRECATED]),
             insert_text: Some(
                 id.strip_prefix(normalized_prefix)
                     .unwrap_or(&id)
@@ -491,17 +515,26 @@ fn merge_unique_completions(
     second: Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
     let mut seen = BTreeSet::new();
-    first
+    let mut items: Vec<CompletionItem> = first
         .into_iter()
         .chain(second)
         .filter(|item| seen.insert(item.label.clone()))
-        .collect()
+        .collect();
+    // Re-assign sort_text after merging so open bugs always precede closed
+    // ones regardless of source. Closed items carry CompletionItemTag::DEPRECATED.
+    for item in &mut items {
+        let closed = item
+            .tags
+            .as_deref()
+            .is_some_and(|tags| tags.contains(&CompletionItemTag::DEPRECATED));
+        item.sort_text = Some(format!("{}:{}", if closed { 1 } else { 0 }, item.label));
+    }
+    items
 }
 
 /// Build a completion item from a Debian bug summary.
 fn remote_debian_bug_completion(
     summary: &DebbugsBugSummary,
-    idx: usize,
     normalized_prefix: &str,
 ) -> CompletionItem {
     let id_str = summary.id.to_string();
@@ -516,7 +549,11 @@ fn remote_debian_bug_completion(
         documentation: Some(Documentation::String(debian_bug_summary_documentation(
             summary,
         ))),
-        sort_text: Some(format!("{:06}", idx)),
+        tags: if summary.done {
+            Some(vec![CompletionItemTag::DEPRECATED])
+        } else {
+            None
+        },
         insert_text: Some(
             id_str
                 .strip_prefix(normalized_prefix)
@@ -530,7 +567,6 @@ fn remote_debian_bug_completion(
 /// Build a completion item from a Launchpad bug summary.
 fn remote_launchpad_bug_completion(
     summary: &LaunchpadBugSummary,
-    idx: usize,
     normalized_prefix: &str,
 ) -> CompletionItem {
     let id_str = summary.id.to_string();
@@ -545,7 +581,11 @@ fn remote_launchpad_bug_completion(
         documentation: Some(Documentation::String(launchpad_bug_summary_documentation(
             summary,
         ))),
-        sort_text: Some(format!("{:06}", idx)),
+        tags: if summary.done {
+            Some(vec![CompletionItemTag::DEPRECATED])
+        } else {
+            None
+        },
         insert_text: Some(
             id_str
                 .strip_prefix(normalized_prefix)
@@ -893,7 +933,7 @@ foo (1.0-1) unstable; urgency=medium
 
         let offset = text.find("Closes: #12").unwrap() + "Closes: #12".len();
         let idx = crate::position::LineIndex::new(text);
-        let completions = get_async_bug_completions(
+        let (completions, is_incomplete) = get_async_bug_completions(
             &parsed,
             Source::new(text, &idx),
             position_at(text, offset),
@@ -901,6 +941,10 @@ foo (1.0-1) unstable; urgency=medium
         )
         .await
         .expect("bug context should return Some");
+        assert!(
+            !is_incomplete,
+            "cache was pre-populated, result should be complete"
+        );
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));
@@ -960,7 +1004,7 @@ foo (1.0-1) unstable; urgency=medium
 
         let offset = text.find("LP: #12").unwrap() + "LP: #12".len();
         let idx = crate::position::LineIndex::new(text);
-        let completions = get_async_bug_completions(
+        let (completions, is_incomplete) = get_async_bug_completions(
             &parsed,
             Source::new(text, &idx),
             position_at(text, offset),
@@ -968,6 +1012,10 @@ foo (1.0-1) unstable; urgency=medium
         )
         .await
         .expect("bug context should return Some");
+        assert!(
+            !is_incomplete,
+            "cache was pre-populated, result should be complete"
+        );
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
 
         assert!(labels.contains(&"#123456"));
@@ -979,14 +1027,14 @@ foo (1.0-1) unstable; urgency=medium
                 && item
                     .detail
                     .as_deref()
-                    .is_some_and(|detail| detail.contains("New regression in foo"))
+                    .is_some_and(|detail: &str| detail.contains("New regression in foo"))
         }));
         assert!(completions.iter().any(|item| {
             item.label == "#123456"
                 && item
                     .detail
                     .as_deref()
-                    .is_some_and(|detail| detail.contains("Older fix from Launchpad"))
+                    .is_some_and(|detail: &str| detail.contains("Older fix from Launchpad"))
         }));
     }
 
@@ -1009,7 +1057,7 @@ foo (1.0-1) unstable; urgency=medium
         let bug_cache = crate::bugs::new_shared_bug_cache(crate::udd::shared_pool());
         let offset = text.find("Closes: #\n").unwrap() + "Closes: #".len();
         let idx = crate::position::LineIndex::new(text);
-        let completions = get_async_bug_completions(
+        let (completions, is_incomplete) = get_async_bug_completions(
             &parsed,
             Source::new(text, &idx),
             position_at(text, offset),
@@ -1017,6 +1065,7 @@ foo (1.0-1) unstable; urgency=medium
         )
         .await
         .expect("bug context should return Some");
+        assert!(is_incomplete, "cache is cold, result should be incomplete");
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"#654321"),

@@ -193,6 +193,12 @@ impl BugCache {
         )
     }
 
+    /// Return whether bug data for a source package is already in the cache.
+    pub fn is_source_package_cached(&self, source_package: &str) -> bool {
+        let key = format!("src:{}", source_package);
+        self.bug_ids_by_package.contains(&key)
+    }
+
     /// Pre-fetch open bug IDs and their details for a source package.
     ///
     /// Call this in the background so the data is cached before the user
