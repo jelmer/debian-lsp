@@ -27,6 +27,7 @@ mod changelog;
 mod control;
 mod copyright;
 mod deb822;
+mod debcargo;
 mod dep3;
 mod distros;
 mod lintian_overrides;
@@ -96,6 +97,8 @@ enum FileType {
     /// A quilt patch file under debian/patches/ (e.g. *.patch / *.diff /
     /// no-extension entries listed in series).
     Patch,
+    /// debian/debcargo.toml file (debcargo configuration)
+    DebcargoToml,
 }
 
 impl FileType {
@@ -125,6 +128,8 @@ impl FileType {
             Some(Self::PatchesSeries)
         } else if patches_series::is_patch_file(uri) {
             Some(Self::Patch)
+        } else if debcargo::is_debcargo_toml(uri) {
+            Some(Self::DebcargoToml)
         } else {
             None
         }
@@ -201,7 +206,8 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::PatchesSeries => None,
+            | FileType::PatchesSeries
+            | FileType::DebcargoToml => None,
         }
     }
 
@@ -812,6 +818,11 @@ impl LanguageServer for Backend {
                 let (parsed, header_end) = workspace.get_parsed_dep3_header(source_file);
                 dep3::get_completions(&parsed.tree(), header_end, src, position)
             }
+            Some((FileType::DebcargoToml, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                debcargo::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -1181,6 +1192,7 @@ impl LanguageServer for Backend {
                 let (parsed, _) = workspace.get_parsed_dep3_header(file.source_file);
                 dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
+            FileType::DebcargoToml => debcargo::generate_semantic_tokens(&source_text, src),
         };
 
         if tokens.is_empty() {
@@ -1757,6 +1769,7 @@ impl LanguageServer for Backend {
                 let (parsed, header_end) = workspace.get_parsed_dep3_header(file.source_file);
                 Ok(dep3::get_hover(&parsed.tree(), header_end, src, position))
             }
+            FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
             _ => Ok(None),
         }
     }
