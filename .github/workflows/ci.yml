@@ -108,10 +108,24 @@ jobs:
       - name: Package extension
         run: npm run package
 
+  zed-debian-check:
+    name: zed-debian checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Check zed-debian crate
+        run: cargo check -p zed-debian --verbose
+
   integration:
     name: Integration test
     runs-on: ubuntu-latest
-    needs: [rust-check, coc-debian-check, vscode-debian-check]
+    needs: [rust-check, coc-debian-check, vscode-debian-check, zed-debian-check]
     steps:
       - uses: actions/checkout@v6
 
@@ -138,6 +152,9 @@ jobs:
           npm install
           npm run compile
 
+      - name: Build zed-debian extension
+        run: cargo build -p zed-debian --target wasm32-wasip2
+
       - name: Test LSP server binary
         run: |
           # Test that the binary runs and responds to basic LSP protocol
@@ -153,3 +170,4 @@ jobs:
           test -f ./coc-debian/package.json
           test -f ./vscode-debian/out/extension.js
           test -f ./vscode-debian/package.json
+          test -f ./target/wasm32-wasip2/debug/zed_debian.wasm
