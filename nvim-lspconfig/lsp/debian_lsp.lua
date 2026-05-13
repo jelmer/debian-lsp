@@ -34,6 +34,16 @@
 --- vim.o.foldexpr = 'v:lua.vim.lsp.foldexpr()'
 --- ```
 
+vim.filetype.add({
+  pattern = {
+    ['.*/debian/source/options$'] = 'debsourceoptions',
+    ['.*/debian/source/local%-options$'] = 'debsourceoptions',
+    ['.*/debian/watch$'] = 'debwatch',
+    ['.*/debian/upstream/metadata$'] = 'debupstream',
+    ['.*/debian/tests/control$'] = 'autopkgtest',
+  },
+})
+
 ---@type vim.lsp.Config
 return {
   cmd = { 'debian-lsp' },
