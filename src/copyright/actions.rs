@@ -144,7 +144,6 @@ pub fn get_field_casing_actions(
     for issue in issues {
         let lsp_range = src.text_range_to_lsp_range(issue.field_range);
 
-        // Check if there's a matching diagnostic in the context
         let matching_diagnostics = diagnostics
             .iter()
             .filter(|d| {
@@ -154,7 +153,13 @@ pub fn get_field_casing_actions(
             .cloned()
             .collect::<Vec<_>>();
 
-        // Create a code action to fix the casing
+        // When the client specified diagnostics it wants fixes for, only
+        // emit actions that match one of them — otherwise VS Code shows
+        // this quickfix for every squiggle in the vicinity.
+        if !diagnostics.is_empty() && matching_diagnostics.is_empty() {
+            continue;
+        }
+
         let edit = TextEdit {
             range: lsp_range,
             new_text: issue.standard_name.clone(),
@@ -280,7 +285,8 @@ upstream-name: test
             },
         ];
 
-        let actions = get_field_casing_actions(&uri, src, issues, &[]);
+        // Empty diagnostics: all issues in range are returned.
+        let actions = get_field_casing_actions(&uri, src, issues.clone(), &[]);
 
         assert_eq!(actions.len(), 2);
 
@@ -296,6 +302,59 @@ upstream-name: test
             action.title,
             "Fix field casing: upstream-name -> Upstream-Name"
         );
+    }
+
+    #[test]
+    fn test_field_casing_actions_filters_to_context_diagnostics() {
+        // Two casing issues, but context only contains a diagnostic for the
+        // first one.  The server must return only the matching action and link
+        // the diagnostic object to it.
+        let input = r#"format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+upstream-name: test
+"#;
+
+        let idx = crate::position::LineIndex::new(input);
+        let src = Source::new(input, &idx);
+        let uri: Uri = "file:///debian/copyright".parse().unwrap();
+        let issues = vec![
+            FieldCasingIssue {
+                field_name: "format".to_string(),
+                standard_name: "Format".to_string(),
+                field_range: TextRange::new(0.into(), 6.into()),
+            },
+            FieldCasingIssue {
+                field_name: "upstream-name".to_string(),
+                standard_name: "Upstream-Name".to_string(),
+                field_range: TextRange::new(76.into(), 89.into()),
+            },
+        ];
+
+        // Only the "format" diagnostic is in context.
+        let format_diag = Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 6,
+                },
+            },
+            code: Some(NumberOrString::String("field-casing".to_string())),
+            message: "Field name should be 'Format'".to_string(),
+            ..Default::default()
+        };
+        let actions = get_field_casing_actions(&uri, src, issues, &[format_diag.clone()]);
+
+        // Only the "format" action is returned.
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(ref action) = actions[0] else {
+            panic!("Expected CodeAction");
+        };
+        assert_eq!(action.title, "Fix field casing: format -> Format");
+        // The action is linked back to the provided diagnostic.
+        assert_eq!(action.diagnostics, Some(vec![format_diag]));
     }
 
     #[test]

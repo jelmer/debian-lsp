@@ -132,6 +132,7 @@ impl LineIndex {
     /// For an edit near the start of a 100KB changelog this beats a
     /// full rebuild (which has to scan all 100KB) substantially; for
     /// an edit at the end the two are similar.
+    #[allow(dead_code)]
     pub fn splice(&mut self, byte_range: std::ops::Range<usize>, new_text: &str) {
         let start = TextSize::try_from(byte_range.start).unwrap();
         let end = TextSize::try_from(byte_range.end).unwrap();

@@ -1,7 +1,38 @@
-use toml_edit::Document;
+use toml_edit::DocumentMut;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
-use super::fields::{MULTI_ARCH_VALUES, PACKAGE_KEYS, SOURCE_KEYS, TOP_LEVEL_KEYS};
+use super::fields::{
+    PackageValueType, SourceValueType, TopLevelValueType, MULTI_ARCH_VALUES, PACKAGE_KEYS,
+    SOURCE_KEYS, TOP_LEVEL_KEYS,
+};
+
+/// Render the value-side of a `key = value` insertion for a debcargo.toml
+/// key, given its declared value type. Stays plain-text (no LSP snippet
+/// placeholders) so clients without snippet support still get a usable
+/// insertion.
+fn top_level_value_snippet(value_type: &TopLevelValueType) -> &'static str {
+    match value_type {
+        TopLevelValueType::Bool => "",
+        TopLevelValueType::String => "\"\"",
+        TopLevelValueType::StringArray => "[]",
+    }
+}
+
+fn source_value_snippet(value_type: &SourceValueType) -> &'static str {
+    match value_type {
+        SourceValueType::Bool => "",
+        SourceValueType::String => "\"\"",
+        SourceValueType::StringArray => "[]",
+    }
+}
+
+fn package_value_snippet(value_type: &PackageValueType) -> &'static str {
+    match value_type {
+        PackageValueType::Bool => "",
+        PackageValueType::String => "\"\"",
+        PackageValueType::StringArray => "[]",
+    }
+}
 
 /// Context for where the cursor is in a debcargo.toml file.
 enum CursorContext {
@@ -77,8 +108,8 @@ fn determine_context(text: &str, position: Position) -> CursorContext {
 
 /// Parse the document with toml_edit for structural information (e.g.
 /// filtering out keys already present). Returns `None` for invalid TOML.
-fn try_parse(text: &str) -> Option<Document> {
-    text.parse::<Document>().ok()
+fn try_parse(text: &str) -> Option<DocumentMut> {
+    text.parse::<DocumentMut>().ok()
 }
 
 /// Get completions for a debcargo.toml file at the given position.
@@ -98,7 +129,11 @@ pub fn get_completions(text: &str, position: Position) -> Vec<CompletionItem> {
                     label: k.name.to_string(),
                     kind: Some(CompletionItemKind::PROPERTY),
                     detail: Some(k.description.to_string()),
-                    insert_text: Some(format!("{} = ", k.name)),
+                    insert_text: Some(format!(
+                        "{} = {}",
+                        k.name,
+                        top_level_value_snippet(&k.value_type)
+                    )),
                     ..Default::default()
                 })
                 .collect()
@@ -117,7 +152,11 @@ pub fn get_completions(text: &str, position: Position) -> Vec<CompletionItem> {
                     label: k.name.to_string(),
                     kind: Some(CompletionItemKind::PROPERTY),
                     detail: Some(k.description.to_string()),
-                    insert_text: Some(format!("{} = ", k.name)),
+                    insert_text: Some(format!(
+                        "{} = {}",
+                        k.name,
+                        source_value_snippet(&k.value_type)
+                    )),
                     ..Default::default()
                 })
                 .collect()
@@ -128,7 +167,11 @@ pub fn get_completions(text: &str, position: Position) -> Vec<CompletionItem> {
                 label: k.name.to_string(),
                 kind: Some(CompletionItemKind::PROPERTY),
                 detail: Some(k.description.to_string()),
-                insert_text: Some(format!("{} = ", k.name)),
+                insert_text: Some(format!(
+                    "{} = {}",
+                    k.name,
+                    package_value_snippet(&k.value_type)
+                )),
                 ..Default::default()
             })
             .collect(),
@@ -211,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn test_completions_have_insert_text_with_equals() {
+    fn test_completions_have_insert_text_shaped_by_value_type() {
         let items = get_completions("", Position::new(0, 0));
         let insert_texts: Vec<&str> = items
             .iter()
@@ -219,11 +262,32 @@ mod tests {
             .collect();
         let expected: Vec<String> = TOP_LEVEL_KEYS
             .iter()
-            .map(|k| format!("{} = ", k.name))
+            .map(|k| format!("{} = {}", k.name, top_level_value_snippet(&k.value_type)))
             .collect();
         assert_eq!(
             insert_texts,
             expected.iter().map(|s| s.as_str()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_top_level_bool_insert_text_has_no_value() {
+        let items = get_completions("", Position::new(0, 0));
+        let bin = items.iter().find(|c| c.label == "bin").unwrap();
+        assert_eq!(bin.insert_text.as_deref(), Some("bin = "));
+    }
+
+    #[test]
+    fn test_top_level_string_insert_text_has_quoted_value() {
+        let items = get_completions("", Position::new(0, 0));
+        let summary = items.iter().find(|c| c.label == "summary").unwrap();
+        assert_eq!(summary.insert_text.as_deref(), Some("summary = \"\""));
+    }
+
+    #[test]
+    fn test_top_level_string_array_insert_text_has_empty_array() {
+        let items = get_completions("", Position::new(0, 0));
+        let excludes = items.iter().find(|c| c.label == "excludes").unwrap();
+        assert_eq!(excludes.insert_text.as_deref(), Some("excludes = []"));
     }
 }

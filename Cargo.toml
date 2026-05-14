@@ -33,7 +33,7 @@ deb822-fast = "0.2"
 lintian-overrides = { version = "0.1.2" }
 deb822-lossless = { version = "0.5.15" }
 yaml-edit = { version = "0.2.0" }
-toml_edit = "0.22"
+toml_edit = "0.25"
 upstream-ontologist = { version = "0.3.17", default-features = false, features = ["cargo", "debian"] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
