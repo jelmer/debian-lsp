@@ -1,21 +1,18 @@
-//! Adapter from the salsa-backed [`Workspace`] to lintian-brush's
-//! [`FixerWorkspace`] trait.
+//! Adapter from the salsa-backed [`crate::workspace::Workspace`] to the
+//! `debian_workspace::Workspace` trait that detector hosts (lintian-brush,
+//! multiarch-hints, ...) program against.
 //!
-//! Detectors call `ws.parsed_control()` / `ws.read_file(...)`; we serve those
-//! reads from the open buffers in the editor when possible, falling back to
-//! disk otherwise. Detectors don't mutate anything — they emit
-//! [`lintian_brush::diagnostic::Action`] values that the integration glue
-//! ([`crate::lintian_brush::fixers`]) translates into LSP `TextEdit`s.
-//!
-//! As a result this adapter is read-only: the [`Editor`] / write paths on
-//! the trait return `Other` errors. They aren't used by any detector.
+//! Reads are served from the open editor buffers when possible, falling
+//! back to disk otherwise. The adapter is read-only: the [`Editor`] /
+//! write paths on the trait return `Other` errors — detectors emit
+//! [`debian_workspace::action::Action`] values for hosts to translate into
+//! LSP edits via [`crate::debian_workspace::translate`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ::debian_workspace::workspace::Editor;
 use ::debian_workspace::{Error as FixerError, Version, Workspace as FixerWorkspace};
-use ::lintian_brush::LintianIssue;
 use debian_changelog::ChangeLog;
 use debian_control::lossless::Control;
 use debian_copyright::lossless::Copyright;
@@ -29,9 +26,7 @@ use crate::workspace::Workspace;
 pub struct LspDebianWorkspace<'a> {
     workspace: &'a Workspace,
     /// Absolute path to the package root (the directory containing
-    /// `debian/`). Used to resolve relative paths to URIs and to feed
-    /// `LintianIssue::should_fix`, which reads
-    /// `debian/source/lintian-overrides` from disk.
+    /// `debian/`). Used to resolve relative paths to URIs.
     base_path: PathBuf,
     /// Source package name, taken from `debian/changelog`. `None` when the
     /// changelog can't be read.
@@ -78,9 +73,9 @@ impl<'a> LspDebianWorkspace<'a> {
         }
     }
 
-    /// Return the in-editor or on-disk text of `rel`. Used by
-    /// [`crate::lintian_brush::fixers`] to resolve `Action::Filesystem::ReplaceText`
-    /// ranges against the right text.
+    /// Return the in-editor or on-disk text of `rel`. Used by the
+    /// translator to resolve `Action::Filesystem::ReplaceText` ranges
+    /// against the right text.
     ///
     /// Cheap when the file is open — clones an `Arc` rather than the
     /// full buffer. Falls back to a disk read for files we know only
@@ -99,6 +94,12 @@ impl<'a> LspDebianWorkspace<'a> {
     /// Resolve a package-relative path to an editor URI.
     pub fn resolve_uri(&self, rel: &Path) -> Option<Uri> {
         Uri::from_file_path(self.base_path.join(rel))
+    }
+
+    /// Absolute path to the package root (the directory containing
+    /// `debian/`).
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
     }
 
     /// Look up the open `SourceFile` (if any) backing a package-relative
@@ -335,35 +336,5 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         Err(FixerError::Other(
             "LspDebianWorkspace is read-only; emit Actions instead".into(),
         ))
-    }
-}
-
-impl<'a> LspDebianWorkspace<'a> {
-    /// Honour open lintian-overrides buffers as well as on-disk overrides.
-    /// `LintianIssue::should_fix` reads only from disk; this variant
-    /// consults the open editor buffer first so a freshly-typed override
-    /// suppresses its diagnostic before save.
-    pub fn should_fix(&self, issue: &LintianIssue) -> bool {
-        use ::lintian_brush::lintian_overrides::OverrideLineMatch as _;
-        use lintian_overrides::{find_override_files, LintianOverrides};
-
-        for path in find_override_files(&self.base_path) {
-            let rel = match path.strip_prefix(&self.base_path) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let text = self
-                .current_text(rel)
-                .unwrap_or_else(|| std::sync::Arc::from(""));
-            let Ok(parsed) = LintianOverrides::parse(&text).ok() else {
-                continue;
-            };
-            for line in parsed.lines() {
-                if line.matches_issue(issue) {
-                    return false;
-                }
-            }
-        }
-        true
     }
 }

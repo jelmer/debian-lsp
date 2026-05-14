@@ -1,20 +1,20 @@
 //! Glue between debian-lsp's `code_action` handler and lintian-brush's
 //! detector registry.
 //!
-//! Detectors live in `lintian_brush::workspace::iter_detector_registrations()`.
+//! Detectors live in `lintian_brush::detector::iter_detector_registrations()`.
 //! Each one takes our [`LspDebianWorkspace`] and returns
 //! [`lintian_brush::diagnostic::Diagnostic`]s carrying serialisable
-//! [`lintian_brush::diagnostic::Action`]s. We translate the actions into
-//! LSP `TextEdit`s and surface each diagnostic as a `CodeAction`.
+//! `Action`s. We translate the actions into LSP `TextEdit`s via
+//! [`crate::debian_workspace::translate`] and surface each diagnostic as
+//! a `CodeAction`.
 
-use super::translate::{
+use super::triggers::{phase_allow_net, phase_max_cost};
+use crate::debian_workspace::translate::{
     diag_touches_file, diagnostic_range, diagnostic_range_in_file, is_action_translatable,
     parse_for_trigger_filtering_changelog, parse_for_trigger_filtering_deb822,
     parse_for_trigger_filtering_watch, parse_for_trigger_filtering_yaml, plan_to_workspace_edit,
 };
-use super::triggers::{
-    phase_allow_net, phase_max_cost, triggers_match, ChangeContext, Deb822ChangeIndex,
-};
+use crate::debian_workspace::triggers::{triggers_match, ChangeContext, Deb822ChangeIndex};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use tower_lsp_server::ls_types::{
     WorkspaceEdit,
 };
 
-use crate::lintian_brush::workspace::LspDebianWorkspace;
+use crate::debian_workspace::workspace::LspDebianWorkspace;
 use crate::workspace::{SourceFile, Workspace};
 use crate::FileInfo;
 
@@ -103,7 +103,7 @@ pub fn run_fixers_for_uri(
             // Filter out diagnostics that the user has explicitly silenced
             // via lintian overrides.
             if let Some(issue) = &diag.issue {
-                if !ws.should_fix(issue) {
+                if !super::overrides::should_fix(&ws, issue) {
                     continue;
                 }
             }
@@ -288,7 +288,7 @@ pub fn run_diagnostics_for_uri(
             // `run_fixers_for_uri`. A user who suppressed the tag
             // shouldn't see a squiggle for it.
             if let Some(issue) = &diag.issue {
-                if !ws.should_fix(issue) {
+                if !super::overrides::should_fix(&ws, issue) {
                     continue;
                 }
             }
@@ -396,13 +396,13 @@ mod tests {
         DocumentChangeOperation, DocumentChanges, OneOf, Position, ResourceOp, TextEdit,
     };
 
-    use super::super::changelog_edits::changelog_action_to_text_edits;
-    use super::super::deb822_edits::{
+    use crate::debian_workspace::changelog_edits::changelog_action_to_text_edits;
+    use crate::debian_workspace::deb822_edits::{
         append_paragraph_edits, copyright_action_to_text_edits, drop_relation_edits,
         drop_substvar_edits, ensure_substvar_edits, normalize_field_spacing_edits,
         remove_paragraph_edits,
     };
-    use super::super::format_edits::{
+    use crate::debian_workspace::format_edits::{
         substitute_edits, watch_action_to_text_edits, yaml_action_to_text_edits,
     };
 

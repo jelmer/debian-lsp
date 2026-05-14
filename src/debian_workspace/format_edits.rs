@@ -7,7 +7,7 @@ use ::lintian_brush::diagnostic::{
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{Range, TextEdit};
 
-use crate::lintian_brush::workspace::LspDebianWorkspace;
+use crate::debian_workspace::workspace::LspDebianWorkspace;
 
 use super::deb822_edits::find_entry_in_paragraph;
 
@@ -198,7 +198,7 @@ where
     }
 }
 
-pub(super) fn watch_action_to_text_edits(
+pub fn watch_action_to_text_edits(
     action: &WatchAction,
     mut watch: debian_watch::parse::ParsedWatchFile,
     original_src: crate::position::Source<'_>,
@@ -296,7 +296,7 @@ pub(super) fn watch_action_range(
     Some(anchor_src.text_range_to_lsp_range(range))
 }
 
-pub(super) fn yaml_action_to_text_edits(
+pub fn yaml_action_to_text_edits(
     action: &YamlAction,
     yaml_file: &yaml_edit::YamlFile,
     original_src: crate::position::Source<'_>,
@@ -971,7 +971,7 @@ pub(super) fn filesystem_action_to_text_edits(
 
 /// Replace every literal occurrence of `from` with `to` in `original_src`.
 /// Mirrors the applier's behaviour: literal find-and-replace, no regex.
-pub(super) fn substitute_edits(
+pub fn substitute_edits(
     from: &str,
     to: &str,
     original_src: crate::position::Source<'_>,

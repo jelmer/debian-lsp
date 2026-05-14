@@ -11,7 +11,7 @@ use tower_lsp_server::ls_types::{
     TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 
-use crate::lintian_brush::workspace::LspDebianWorkspace;
+use crate::debian_workspace::workspace::LspDebianWorkspace;
 
 use super::changelog_edits::{changelog_action_range, changelog_action_to_text_edits};
 use super::deb822_edits::{
@@ -30,7 +30,7 @@ use super::format_edits::{
 /// deb822 file we can extract a `Deb822` from. Used by the trigger
 /// filter to narrow `Deb822Field` triggers to fields whose ranges
 /// overlap the changed range. Returns `None` for non-deb822 files.
-pub(super) fn parse_for_trigger_filtering_deb822(
+pub fn parse_for_trigger_filtering_deb822(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
 ) -> Option<deb822_lossless::Deb822> {
@@ -41,7 +41,7 @@ pub(super) fn parse_for_trigger_filtering_deb822(
     }
 }
 
-pub(super) fn parse_for_trigger_filtering_changelog(
+pub fn parse_for_trigger_filtering_changelog(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
 ) -> Option<ChangeLog> {
@@ -52,7 +52,7 @@ pub(super) fn parse_for_trigger_filtering_changelog(
     }
 }
 
-pub(super) fn parse_for_trigger_filtering_yaml(
+pub fn parse_for_trigger_filtering_yaml(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
 ) -> Option<yaml_edit::YamlFile> {
@@ -63,7 +63,7 @@ pub(super) fn parse_for_trigger_filtering_yaml(
     }
 }
 
-pub(super) fn parse_for_trigger_filtering_watch(
+pub fn parse_for_trigger_filtering_watch(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
 ) -> Option<debian_watch::parse::ParsedWatchFile> {
@@ -75,10 +75,7 @@ pub(super) fn parse_for_trigger_filtering_watch(
 }
 
 /// Return true if any plan on `diag` has an action targeting `rel`.
-pub(super) fn diag_touches_file(
-    diag: &::lintian_brush::diagnostic::Diagnostic,
-    rel: &Path,
-) -> bool {
+pub fn diag_touches_file(diag: &::lintian_brush::diagnostic::Diagnostic, rel: &Path) -> bool {
     diag.plans.iter().any(|plan| {
         plan.actions
             .iter()
@@ -102,7 +99,7 @@ pub(super) fn diag_touches_file(
 /// cross-file: they don't edit any open buffer. Surface them as a
 /// zero-length range at line 0 of the anchor file so they're offered
 /// regardless of which debian/* file the user has open.
-pub(super) fn diagnostic_range_in_file(
+pub fn diagnostic_range_in_file(
     diag: &::lintian_brush::diagnostic::Diagnostic,
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
@@ -129,7 +126,7 @@ pub(super) fn diagnostic_range_in_file(
     None
 }
 
-pub(super) fn diagnostic_range(
+pub fn diagnostic_range(
     diag: &::lintian_brush::diagnostic::Diagnostic,
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
@@ -186,6 +183,9 @@ pub(super) fn locate_action_target(
                     paragraph, field, ..
                 }
                 | Deb822Action::DropRelation {
+                    paragraph, field, ..
+                }
+                | Deb822Action::DropRelationVersionConstraint {
                     paragraph, field, ..
                 }
                 | Deb822Action::EnsureSubstvar {
@@ -282,7 +282,7 @@ pub(super) fn locate_action_target(
 /// Each `Action` dispatches on its kind and walks the salsa-cached parse
 /// for its target file to find a byte-precise source range, then emits
 /// `TextEdit`s over those ranges. We never reparse here.
-pub(super) fn plan_to_workspace_edit(
+pub fn plan_to_workspace_edit(
     plan: &ActionPlan,
     ws: &LspDebianWorkspace<'_>,
 ) -> Option<WorkspaceEdit> {
@@ -353,8 +353,11 @@ enum ActionEffect {
 /// turn into either a `TextEdit` or a `ResourceOp`. Plans containing any
 /// untranslatable action are dropped so the user never sees a code
 /// action whose `translate_action` call would `unimplemented!()`.
-pub(super) fn is_action_translatable(action: &Action) -> bool {
+pub fn is_action_translatable(action: &Action) -> bool {
     match action {
+        // TODO: implement DropRelationVersionConstraint in the translator
+        // and flip this to true.
+        Action::Deb822(Deb822Action::DropRelationVersionConstraint { .. }) => false,
         Action::Deb822(_) => true,
         Action::Yaml(_) | Action::Changelog(_) => true,
         Action::Filesystem(fs) => match fs {
@@ -532,6 +535,7 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | Deb822Action::AppendParagraph { file, .. }
             | Deb822Action::NormalizeFieldSpacing { file, .. }
             | Deb822Action::DropRelation { file, .. }
+            | Deb822Action::DropRelationVersionConstraint { file, .. }
             | Deb822Action::ReplaceRelation { file, .. }
             | Deb822Action::EnsureSubstvar { file, .. }
             | Deb822Action::DropSubstvar { file, .. }

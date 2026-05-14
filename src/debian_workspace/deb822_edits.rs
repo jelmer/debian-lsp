@@ -97,6 +97,11 @@ pub(super) fn deb822_action_to_text_edits(
         Deb822Action::ReorderParagraphs {
             key_field, order, ..
         } => reorder_paragraphs_edits(control, key_field, order, original_src),
+        // TODO: implement byte-precise stripping of just the version
+        // constraint inside the relation entry. Returning empty here
+        // makes plan_to_workspace_edit drop the action so the user
+        // doesn't see a broken code action.
+        Deb822Action::DropRelationVersionConstraint { .. } => Vec::new(),
     }
 }
 
@@ -111,7 +116,7 @@ pub(super) fn deb822_action_to_text_edits(
 /// in mutable form), snapshot the target paragraph's range *before*
 /// mutation, then emit one TextEdit with the post-mutation paragraph
 /// text. No reparsing.
-pub(super) fn copyright_action_to_text_edits(
+pub fn copyright_action_to_text_edits(
     action: &Deb822Action,
     copyright: Copyright,
     original_src: crate::position::Source<'_>,
@@ -143,6 +148,7 @@ pub(super) fn copyright_action_to_text_edits(
         // Relations / substvars apply only to debian/control; ignore
         // these on debian/copyright so we don't emit spurious edits.
         Deb822Action::DropRelation { .. }
+        | Deb822Action::DropRelationVersionConstraint { .. }
         | Deb822Action::ReplaceRelation { .. }
         | Deb822Action::EnsureRelation { .. }
         | Deb822Action::MoveRelation { .. }
@@ -530,7 +536,7 @@ fn remove_field_edits(
     }]
 }
 
-pub(super) fn remove_paragraph_edits(
+pub fn remove_paragraph_edits(
     control: &Control,
     selector: &ParagraphSelector,
     original_src: crate::position::Source<'_>,
@@ -568,7 +574,7 @@ pub(super) fn absorb_trailing_blank_line(text: &str, end: usize) -> usize {
     i
 }
 
-pub(super) fn append_paragraph_edits(
+pub fn append_paragraph_edits(
     fields: &[(String, String)],
     indent: Option<usize>,
     original_src: crate::position::Source<'_>,
@@ -653,7 +659,7 @@ fn rename_field_edits(
 /// one space. For empty values (e.g. `Field:  \n`), strip the whitespace
 /// entirely so the line becomes `Field:\n`. Mirrors the canonical form
 /// produced by `Entry::normalize_field_spacing`.
-pub(super) fn normalize_field_spacing_edits(
+pub fn normalize_field_spacing_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
@@ -765,7 +771,7 @@ where
     }]
 }
 
-pub(super) fn drop_relation_edits(
+pub fn drop_relation_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
@@ -789,7 +795,7 @@ pub(super) fn drop_relation_edits(
     })
 }
 
-pub(super) fn ensure_substvar_edits(
+pub fn ensure_substvar_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
@@ -812,7 +818,7 @@ pub(super) fn ensure_substvar_edits(
     })
 }
 
-pub(super) fn drop_substvar_edits(
+pub fn drop_substvar_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
