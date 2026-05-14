@@ -13,8 +13,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ::lintian_brush::workspace::{Editor, FixerWorkspace};
-use ::lintian_brush::{FixerError, LintianIssue, Version};
+use ::debian_workspace::workspace::Editor;
+use ::debian_workspace::{Error as FixerError, Version, Workspace as FixerWorkspace};
+use ::lintian_brush::LintianIssue;
 use debian_changelog::ChangeLog;
 use debian_control::lossless::Control;
 use debian_copyright::lossless::Copyright;
@@ -182,7 +183,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         }
         let text = self
             .current_text(Path::new("debian/control"))
-            .ok_or(FixerError::NoChanges)?;
+            .ok_or(FixerError::NotFound)?;
         text.parse().map_err(|e: deb822_lossless::ParseError| {
             FixerError::Other(format!("Failed to parse debian/control: {}", e))
         })
@@ -194,7 +195,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         }
         let text = self
             .current_text(Path::new("debian/changelog"))
-            .ok_or(FixerError::NoChanges)?;
+            .ok_or(FixerError::NotFound)?;
         Ok(ChangeLog::parse_relaxed(&text))
     }
 
@@ -210,7 +211,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         }
         let text = self
             .current_text(Path::new("debian/copyright"))
-            .ok_or(FixerError::NoChanges)?;
+            .ok_or(FixerError::NotFound)?;
         text.parse()
             .map_err(|e: debian_copyright::lossless::Error| {
                 FixerError::Other(format!("Failed to parse debian/copyright: {:?}", e))
@@ -229,7 +230,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
                     FixerError::Other(format!("Failed to parse {}: {}", rel.display(), e))
                 });
         }
-        let text = self.current_text(rel).ok_or(FixerError::NoChanges)?;
+        let text = self.current_text(rel).ok_or(FixerError::NotFound)?;
         yaml_edit::YamlFile::from_str(&text)
             .map_err(|e| FixerError::Other(format!("Failed to parse {}: {}", rel.display(), e)))
     }
@@ -239,7 +240,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         if let Some(sf) = self.source_file_for(rel) {
             return Ok(self.workspace.get_parsed_watch(sf).to_watch_file());
         }
-        let text = self.current_text(rel).ok_or(FixerError::NoChanges)?;
+        let text = self.current_text(rel).ok_or(FixerError::NotFound)?;
         Ok(debian_watch::parse::Parse::parse(&text).to_watch_file())
     }
 
@@ -248,7 +249,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         if let Some(sf) = self.source_file_for(rel) {
             return Ok(self.workspace.get_parsed_rules(sf).tree());
         }
-        let bytes = self.read_file(rel)?.ok_or(FixerError::NoChanges)?;
+        let bytes = self.read_file(rel)?.ok_or(FixerError::NotFound)?;
         Makefile::read_relaxed(&bytes[..])
             .map_err(|e| FixerError::Other(format!("Failed to parse {}: {}", rel.display(), e)))
     }
@@ -335,8 +336,14 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
             "LspDebianWorkspace is read-only; emit Actions instead".into(),
         ))
     }
+}
 
-    fn should_fix(&self, issue: &LintianIssue) -> bool {
+impl<'a> LspDebianWorkspace<'a> {
+    /// Honour open lintian-overrides buffers as well as on-disk overrides.
+    /// `LintianIssue::should_fix` reads only from disk; this variant
+    /// consults the open editor buffer first so a freshly-typed override
+    /// suppresses its diagnostic before save.
+    pub fn should_fix(&self, issue: &LintianIssue) -> bool {
         use ::lintian_brush::lintian_overrides::OverrideLineMatch as _;
         use lintian_overrides::{find_override_files, LintianOverrides};
 
@@ -345,7 +352,6 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            // Prefer the open buffer; fall back to disk.
             let text = self
                 .current_text(rel)
                 .unwrap_or_else(|| std::sync::Arc::from(""));

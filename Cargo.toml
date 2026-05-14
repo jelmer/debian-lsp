@@ -20,7 +20,7 @@ openssl-vendored = ["dep:openssl"]
 # migrated lintian-brush fixers as code actions. Pulls in the full
 # lintian-brush dependency tree (pyo3, breezyshim, sqlx, sequoia, …);
 # leave it off if those are unwanted in the server binary.
-lintian-brush = ["dep:lintian-brush"]
+lintian-brush = ["dep:lintian-brush", "dep:debian-workspace"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
@@ -56,6 +56,7 @@ launchpadlib = { version = "0.5.7", optional = true, default-features = false, f
 lru = "0.16"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
 lintian-brush = { path = "../lintian-brush/lintian-brush", optional = true }
+debian-workspace = { path = "../lintian-brush/debian-workspace", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

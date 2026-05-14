@@ -19,7 +19,7 @@ use super::triggers::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ::lintian_brush::workspace::iter_detector_registrations;
+use ::lintian_brush::detector::iter_detector_registrations;
 use ::lintian_brush::{FixerPreferences, Version};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, NumberOrString, Range, Uri,
@@ -103,7 +103,6 @@ pub fn run_fixers_for_uri(
             // Filter out diagnostics that the user has explicitly silenced
             // via lintian overrides.
             if let Some(issue) = &diag.issue {
-                use ::lintian_brush::workspace::FixerWorkspace as _;
                 if !ws.should_fix(issue) {
                     continue;
                 }
@@ -140,6 +139,13 @@ pub fn run_fixers_for_uri(
                 })
                 .cloned()
                 .collect();
+
+            // When the client specified diagnostics it wants fixes for, only
+            // emit actions that match one of them — otherwise VS Code shows
+            // this quickfix for every squiggle in the vicinity.
+            if !diagnostics.is_empty() && matching_lsp_diags.is_empty() {
+                continue;
+            }
 
             // Each detector may carry multiple alternative ActionPlans.
             // Offer all plans whose actions we can fully translate.
@@ -282,7 +288,6 @@ pub fn run_diagnostics_for_uri(
             // `run_fixers_for_uri`. A user who suppressed the tag
             // shouldn't see a squiggle for it.
             if let Some(issue) = &diag.issue {
-                use ::lintian_brush::workspace::FixerWorkspace as _;
                 if !ws.should_fix(issue) {
                     continue;
                 }

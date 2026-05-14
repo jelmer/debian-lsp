@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use ::lintian_brush::workspace::{ChangelogAspect, DetectorCost, Trigger, WatchAspect};
+use ::lintian_brush::detector::DetectorCost;
 use debian_changelog::ChangeLog;
+use debian_workspace::trigger::{ChangelogAspect, Trigger, WatchAspect};
 
 pub use crate::phase::RunPhase;
 

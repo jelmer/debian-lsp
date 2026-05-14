@@ -984,6 +984,7 @@ dependencies = [
  "debian-control",
  "debian-copyright",
  "debian-watch",
+ "debian-workspace",
  "dep3",
  "distro-info",
  "futures",
