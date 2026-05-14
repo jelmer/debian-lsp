@@ -1,4 +1,4 @@
-use toml_edit::Document;
+use toml_edit::DocumentMut;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use super::fields::{MULTI_ARCH_VALUES, PACKAGE_KEYS, SOURCE_KEYS, TOP_LEVEL_KEYS};
@@ -77,8 +77,8 @@ fn determine_context(text: &str, position: Position) -> CursorContext {
 
 /// Parse the document with toml_edit for structural information (e.g.
 /// filtering out keys already present). Returns `None` for invalid TOML.
-fn try_parse(text: &str) -> Option<Document> {
-    text.parse::<Document>().ok()
+fn try_parse(text: &str) -> Option<DocumentMut> {
+    text.parse::<DocumentMut>().ok()
 }
 
 /// Get completions for a debcargo.toml file at the given position.
