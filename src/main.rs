@@ -639,7 +639,6 @@ impl LanguageServer for Backend {
                         control::code_lens::OPEN_URL_COMMAND.to_string(),
                         changelog::ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
                         control::ADD_BINARY_PACKAGE_COMMAND.to_string(),
-                        changelog::ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
                     ],
                     ..Default::default()
                 }),

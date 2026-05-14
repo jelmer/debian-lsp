@@ -11,8 +11,6 @@ use crate::lintian_brush::workspace::LspDebianWorkspace;
 
 use super::deb822_edits::find_entry_in_paragraph;
 
-// ── dep3 ─────────────────────────────────────────────────────────────────────
-
 pub(super) fn dep3_action_to_text_edits(
     action: &Dep3Action,
     ws: &LspDebianWorkspace<'_>,
@@ -125,8 +123,6 @@ pub(super) fn dep3_action_range(
     let entry = find_entry_in_paragraph(&header_para, field)?;
     Some(anchor_src.text_range_to_lsp_range(entry.text_range()))
 }
-
-// ── watch ─────────────────────────────────────────────────────────────────────
 
 /// Find the byte range of a watch entry whose URL matches `url`. Walks
 /// the parsed watch file (line-based or deb822) and returns the first
@@ -299,8 +295,6 @@ pub(super) fn watch_action_range(
     let range = watch_entry_range_by_url(watch, url)?;
     Some(anchor_src.text_range_to_lsp_range(range))
 }
-
-// ── yaml ──────────────────────────────────────────────────────────────────────
 
 pub(super) fn yaml_action_to_text_edits(
     action: &YamlAction,
@@ -505,8 +499,6 @@ fn absorb_trailing_newline(text: &str, end: usize) -> usize {
     i
 }
 
-// ── makefile ──────────────────────────────────────────────────────────────────
-
 /// Translate a [`MakefileAction`] into `TextEdit`s against `original_src`.
 ///
 /// Clones the salsa-cached `Makefile` tree, applies the mutation, then emits a
@@ -706,8 +698,6 @@ pub(super) fn makefile_action_range(
     }
 }
 
-// ── lintian-overrides ─────────────────────────────────────────────────────────
-
 pub(super) fn lintian_overrides_action_to_text_edits(
     action: &LintianOverridesAction,
     original_src: crate::position::Source<'_>,
@@ -864,8 +854,6 @@ pub(super) fn lintian_overrides_action_range(
     }
 }
 
-// ── maintscript ───────────────────────────────────────────────────────────────
-
 pub(super) fn maintscript_action_to_text_edits(
     action: &MaintscriptAction,
     original_src: crate::position::Source<'_>,
@@ -923,8 +911,6 @@ fn find_maintscript_entry_range(text: &str, entry: &str) -> Option<rowan::TextRa
     }
     None
 }
-
-// ── filesystem / substitute ───────────────────────────────────────────────────
 
 pub(super) fn filesystem_action_to_text_edits(
     action: &FilesystemAction,
