@@ -544,13 +544,13 @@ mod tests {
             .iter()
             .find_map(|a| match a {
                 CodeActionOrCommand::CodeAction(act)
-                    if act.title.starts_with("Add lintian override for ") =>
+                    if act.title == "Add lintian override for faulty-debian-qa-group-phrase" =>
                 {
                     Some(act)
                 }
                 _ => None,
             })
-            .expect("expected an 'Add lintian override for ...' action");
+            .expect("expected an 'Add lintian override for faulty-debian-qa-group-phrase' action");
 
         // The edit should target the overrides file.
         let overrides_uri =

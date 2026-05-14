@@ -185,7 +185,7 @@ pub(super) fn locate_action_target(
                 | Deb822Action::DropRelation {
                     paragraph, field, ..
                 }
-                | Deb822Action::DropRelationVersionConstraint {
+                | Deb822Action::SetRelationVersionConstraint {
                     paragraph, field, ..
                 }
                 | Deb822Action::EnsureSubstvar {
@@ -355,21 +355,24 @@ enum ActionEffect {
 /// action whose `translate_action` call would `unimplemented!()`.
 pub fn is_action_translatable(action: &Action) -> bool {
     match action {
-        // TODO: implement DropRelationVersionConstraint in the translator
+        // TODO: implement SetRelationVersionConstraint in the translator
         // and flip this to true.
-        Action::Deb822(Deb822Action::DropRelationVersionConstraint { .. }) => false,
+        Action::Deb822(Deb822Action::SetRelationVersionConstraint { .. }) => false,
         Action::Deb822(_) => true,
         Action::Yaml(_) | Action::Changelog(_) => true,
         Action::Filesystem(fs) => match fs {
             FilesystemAction::Write { .. }
             | FilesystemAction::ReplaceText { .. }
             | FilesystemAction::Substitute { .. }
-            | FilesystemAction::NormalizeLineEndings { .. }
             | FilesystemAction::Rename { .. }
             | FilesystemAction::Delete { .. }
             | FilesystemAction::RemoveDirIfEmpty { .. } => true,
             // No LSP primitive for chmod.
             FilesystemAction::SetMode { .. } => false,
+            // Whole-buffer CRLF -> LF replacement is a poor fit for a
+            // diagnostic-anchored quickfix; surface via
+            // textDocument/formatting instead (not yet wired up).
+            FilesystemAction::NormalizeLineEndings { .. } => false,
         },
         // Salsa doesn't track these file types.
         Action::Systemd(_) | Action::DesktopIni(_) => false,
@@ -392,9 +395,10 @@ fn translate_action(action: &Action, ws: &LspDebianWorkspace<'_>) -> ActionEffec
     };
 
     // Filesystem actions split into two camps: text-edit producing
-    // (Write/ReplaceText/Substitute/NormalizeLineEndings) and resource-op
-    // producing (Rename/Delete/RemoveDirIfEmpty). SetMode has no LSP
-    // equivalent at all — panic loudly there.
+    // (Write/ReplaceText/Substitute) and resource-op producing
+    // (Rename/Delete/RemoveDirIfEmpty). SetMode has no LSP equivalent
+    // at all -- panic loudly there. NormalizeLineEndings is gated out
+    // by `is_action_translatable` and never reaches this dispatch.
     if let Action::Filesystem(fs) = action {
         match fs {
             FilesystemAction::Rename { file, to } => {
@@ -424,10 +428,15 @@ fn translate_action(action: &Action, ws: &LspDebianWorkspace<'_>) -> ActionEffec
             FilesystemAction::SetMode { .. } => {
                 unimplemented!("FilesystemAction::SetMode has no LSP equivalent")
             }
+            FilesystemAction::NormalizeLineEndings { .. } => {
+                unimplemented!(
+                    "FilesystemAction::NormalizeLineEndings is filtered by \
+                     is_action_translatable; route through textDocument/formatting"
+                )
+            }
             FilesystemAction::Write { .. }
             | FilesystemAction::ReplaceText { .. }
-            | FilesystemAction::Substitute { .. }
-            | FilesystemAction::NormalizeLineEndings { .. } => {
+            | FilesystemAction::Substitute { .. } => {
                 let original = ws.current_text(rel).unwrap_or_default();
                 let original_idx = crate::position::LineIndex::new(&original);
                 let original_src = crate::position::Source::new(&original, &original_idx);
@@ -535,7 +544,7 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | Deb822Action::AppendParagraph { file, .. }
             | Deb822Action::NormalizeFieldSpacing { file, .. }
             | Deb822Action::DropRelation { file, .. }
-            | Deb822Action::DropRelationVersionConstraint { file, .. }
+            | Deb822Action::SetRelationVersionConstraint { file, .. }
             | Deb822Action::ReplaceRelation { file, .. }
             | Deb822Action::EnsureSubstvar { file, .. }
             | Deb822Action::DropSubstvar { file, .. }

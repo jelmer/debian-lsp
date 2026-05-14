@@ -944,27 +944,16 @@ pub(super) fn filesystem_action_to_text_edits(
                 new_text: replacement.clone(),
             }]
         }
-        FilesystemAction::NormalizeLineEndings { .. } => {
-            // Convert CRLF→LF on the open buffer locally and emit one
-            // full-document TextEdit. The Action variant carries the
-            // *intent*, the LSP supplies the buffer-precise edit.
-            let converted = normalize_crlf(original_text);
-            if converted == original_text {
-                return Vec::new();
-            }
-            vec![TextEdit {
-                range: super::translate::full_document_range(original_text),
-                new_text: converted,
-            }]
-        }
         FilesystemAction::Substitute { from, to, .. } => substitute_edits(from, to, original_src),
         // The dispatcher in `translate_action` peels these off into
-        // resource ops (or panics on SetMode) before reaching here.
+        // resource ops (or panics on SetMode / NormalizeLineEndings)
+        // before reaching here.
         FilesystemAction::Rename { .. }
         | FilesystemAction::Delete { .. }
         | FilesystemAction::RemoveDirIfEmpty { .. }
-        | FilesystemAction::SetMode { .. } => {
-            unreachable!("resource-op variant routed to filesystem_action_to_text_edits")
+        | FilesystemAction::SetMode { .. }
+        | FilesystemAction::NormalizeLineEndings { .. } => {
+            unreachable!("non-text-edit variant routed to filesystem_action_to_text_edits")
         }
     }
 }
@@ -994,24 +983,4 @@ pub fn substitute_edits(
         search_from = abs_end;
     }
     edits
-}
-
-/// Replace every `\r\n` pair with `\n`, leaving lone `\r`s alone. Same
-/// rules as lintian-brush's `appliers::normalize_crlf`.
-fn normalize_crlf(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'\r' && bytes[i + 1] == b'\n' {
-            out.push('\n');
-            i += 2;
-        } else {
-            // Push the next char (handles multi-byte safely).
-            let ch = text[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-    out
 }

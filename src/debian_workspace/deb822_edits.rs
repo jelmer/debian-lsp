@@ -97,11 +97,11 @@ pub(super) fn deb822_action_to_text_edits(
         Deb822Action::ReorderParagraphs {
             key_field, order, ..
         } => reorder_paragraphs_edits(control, key_field, order, original_src),
-        // TODO: implement byte-precise stripping of just the version
+        // TODO: implement byte-precise editing of just the version
         // constraint inside the relation entry. Returning empty here
         // makes plan_to_workspace_edit drop the action so the user
         // doesn't see a broken code action.
-        Deb822Action::DropRelationVersionConstraint { .. } => Vec::new(),
+        Deb822Action::SetRelationVersionConstraint { .. } => Vec::new(),
     }
 }
 
@@ -148,7 +148,7 @@ pub fn copyright_action_to_text_edits(
         // Relations / substvars apply only to debian/control; ignore
         // these on debian/copyright so we don't emit spurious edits.
         Deb822Action::DropRelation { .. }
-        | Deb822Action::DropRelationVersionConstraint { .. }
+        | Deb822Action::SetRelationVersionConstraint { .. }
         | Deb822Action::ReplaceRelation { .. }
         | Deb822Action::EnsureRelation { .. }
         | Deb822Action::MoveRelation { .. }
