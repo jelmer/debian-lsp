@@ -305,6 +305,15 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         ))
     }
 
+    fn debcargo(
+        &self,
+    ) -> Result<Option<Box<dyn Editor<toml_edit::DocumentMut> + '_>>, FixerError> {
+        Err(FixerError::Other(
+            "LspDebianWorkspace does not support mutable debcargo editor; emit Actions instead"
+                .into(),
+        ))
+    }
+
     fn read_file(&self, rel: &Path) -> Result<Option<std::borrow::Cow<'_, [u8]>>, FixerError> {
         // Open buffers: hand back a borrow into our `open_texts`
         // cache so detectors don't pay an O(N) copy on every read of

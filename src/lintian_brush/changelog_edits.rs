@@ -1,5 +1,6 @@
 use ::lintian_brush::diagnostic::ChangelogAction;
 use debian_changelog::ChangeLog;
+use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{Range, TextEdit};
 
 pub(super) fn changelog_action_to_text_edits(

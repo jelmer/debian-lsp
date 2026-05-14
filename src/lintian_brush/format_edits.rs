@@ -4,6 +4,7 @@ use ::lintian_brush::diagnostic::{
     Dep3Action, FilesystemAction, LintianOverridesAction, MaintscriptAction, MakefileAction,
     OverrideLineSelector, WatchAction, YamlAction, YamlPathComponent,
 };
+use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{Range, TextEdit};
 
 use crate::lintian_brush::workspace::LspDebianWorkspace;

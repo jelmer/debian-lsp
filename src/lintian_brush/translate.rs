@@ -2,8 +2,7 @@ use std::path::Path;
 
 use ::lintian_brush::diagnostic::{
     Action, ActionPlan, ChangelogAction, Deb822Action, Dep3Action, FilesystemAction,
-    LintianOverridesAction, MaintscriptAction, MakefileAction, OverrideLineSelector,
-    ParagraphSelector, WatchAction, YamlAction, YamlPathComponent,
+    LintianOverridesAction, MaintscriptAction, MakefileAction, WatchAction, YamlAction,
 };
 use debian_changelog::ChangeLog;
 use tower_lsp_server::ls_types::{

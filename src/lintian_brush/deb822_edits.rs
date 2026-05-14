@@ -5,7 +5,7 @@ use ::lintian_brush::diagnostic::{
 };
 use debian_control::lossless::Control;
 use debian_copyright::lossless::Copyright;
-use tower_lsp_server::ls_types::{Position, Range, TextEdit};
+use tower_lsp_server::ls_types::{Range, TextEdit};
 
 pub(super) fn deb822_action_to_text_edits(
     action: &Deb822Action,

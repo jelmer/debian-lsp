@@ -7,26 +7,18 @@
 //! [`lintian_brush::diagnostic::Action`]s. We translate the actions into
 //! LSP `TextEdit`s and surface each diagnostic as a `CodeAction`.
 
-mod changelog_edits;
-mod deb822_edits;
-mod format_edits;
-mod translate;
-mod triggers;
-
-use translate::{
-    action_file, diag_touches_file, diagnostic_range, diagnostic_range_in_file,
-    is_action_translatable, parse_for_trigger_filtering_changelog,
-    parse_for_trigger_filtering_deb822, parse_for_trigger_filtering_watch,
-    parse_for_trigger_filtering_yaml, plan_to_workspace_edit,
+use super::translate::{
+    diag_touches_file, diagnostic_range, diagnostic_range_in_file, is_action_translatable,
+    parse_for_trigger_filtering_changelog, parse_for_trigger_filtering_deb822,
+    parse_for_trigger_filtering_watch, parse_for_trigger_filtering_yaml, plan_to_workspace_edit,
 };
-use triggers::{
-    phase_allow_net, phase_max_cost, ChangeContext, Deb822ChangeIndex, RunPhase, triggers_match,
+use super::triggers::{
+    phase_allow_net, phase_max_cost, triggers_match, ChangeContext, Deb822ChangeIndex,
 };
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ::lintian_brush::diagnostic::Diagnostic as LbDiagnostic;
 use ::lintian_brush::workspace::iter_detector_registrations;
 use ::lintian_brush::{FixerPreferences, Version};
 use tower_lsp_server::ls_types::{
@@ -38,7 +30,7 @@ use crate::lintian_brush::workspace::LspDebianWorkspace;
 use crate::workspace::{SourceFile, Workspace};
 use crate::FileInfo;
 
-pub use triggers::RunPhase;
+pub use super::triggers::RunPhase;
 
 /// Run every registered lintian-brush detector against the package
 /// rooted by `uri` and return the resulting code actions. `uri` may
@@ -327,6 +319,63 @@ pub fn run_diagnostics_for_uri(
         }
     }
     out
+}
+
+/// Look up the debian package root for any URI inside a `debian/`
+/// directory. Walks up until a parent named `debian` is found and
+/// returns its parent. Works for `debian/control`, `debian/copyright`,
+/// `debian/upstream/metadata`, `debian/patches/foo.patch`, etc.
+fn base_path_for_debian_file(uri: &Uri) -> Option<PathBuf> {
+    let path = uri.to_file_path()?;
+    let mut current = path.parent()?;
+    loop {
+        if current.file_name().and_then(|n| n.to_str()) == Some("debian") {
+            return current.parent().map(Path::to_path_buf);
+        }
+        current = current.parent()?;
+    }
+}
+
+/// Compute the package-relative path (e.g. `debian/copyright`) for a URI
+/// inside a package's `debian/` tree.
+fn package_relative_path(base_path: &Path, uri: &Uri) -> Option<PathBuf> {
+    let abs = uri.to_file_path()?;
+    abs.strip_prefix(base_path).ok().map(Path::to_path_buf)
+}
+
+fn resolve_package_version(
+    base_path: &Path,
+    workspace: &Workspace,
+    open_files: &HashMap<Uri, FileInfo>,
+) -> Option<(String, Version)> {
+    let changelog_path = base_path.join("debian/changelog");
+    let changelog_uri = Uri::from_file_path(&changelog_path)?;
+    // Use the salsa-cached parse when the changelog is open in the
+    // editor — otherwise this would re-parse the entire changelog on
+    // every keystroke in any debian/* file, since the lintian-brush
+    // diagnostic and code-action paths both call it. Fall back to a
+    // disk read + one-shot parse only when the file isn't tracked.
+    let parsed = if let Some(info) = open_files.get(&changelog_uri) {
+        workspace.get_parsed_changelog(info.source_file).tree()
+    } else {
+        let text = std::fs::read_to_string(&changelog_path).ok()?;
+        debian_changelog::ChangeLog::parse_relaxed(&text)
+    };
+    let entry = parsed.iter().next()?;
+    let package = entry.package()?;
+    let version = entry.version()?;
+    Some((package, version))
+}
+
+fn relevant_open_files(open_files: &HashMap<Uri, FileInfo>) -> HashMap<Uri, SourceFile> {
+    open_files
+        .iter()
+        .map(|(uri, info)| (uri.clone(), info.source_file))
+        .collect()
+}
+
+fn diagnostic_matches_tag(diag: &Diagnostic, tag: &str) -> bool {
+    matches!(&diag.code, Some(NumberOrString::String(s)) if s == tag)
 }
 
 #[cfg(test)]

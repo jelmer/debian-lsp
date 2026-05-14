@@ -121,6 +121,7 @@ fn trigger_matches(trigger: &Trigger, rel: &Path, ctx: &ChangeContext<'_>) -> bo
                 .iter()
                 .any(|r| yaml_range_touches_top_field(yaml, *r, field))
         }
+        Trigger::DebcargoField(_) => rel == Path::new("debian/debcargo.toml"),
     }
 }
 
