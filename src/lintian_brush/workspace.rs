@@ -305,9 +305,7 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         ))
     }
 
-    fn debcargo(
-        &self,
-    ) -> Result<Option<Box<dyn Editor<toml_edit::DocumentMut> + '_>>, FixerError> {
+    fn debcargo(&self) -> Result<Option<Box<dyn Editor<toml_edit::DocumentMut> + '_>>, FixerError> {
         Err(FixerError::Other(
             "LspDebianWorkspace does not support mutable debcargo editor; emit Actions instead"
                 .into(),

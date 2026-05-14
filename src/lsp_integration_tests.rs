@@ -1,9 +1,9 @@
 use super::*;
-use tower_lsp_server::LspService;
-use tower_service::Service;
+use futures::StreamExt;
 use serde_json::json;
 use tower_lsp_server::jsonrpc::Request;
-use futures::StreamExt;
+use tower_lsp_server::LspService;
+use tower_service::Service;
 
 async fn setup_server() -> (LspService<Backend>, tower_lsp_server::ClientSocket) {
     let package_cache = package_cache::new_shared_cache();
@@ -47,7 +47,8 @@ async fn test_initialize() {
         "params": {
             "capabilities": {}
         }
-    })).unwrap();
+    }))
+    .unwrap();
 
     let response = service.call(req).await.unwrap();
     assert!(response.is_some());
@@ -68,7 +69,8 @@ async fn test_wrap_and_sort_code_action() {
         "params": {
             "capabilities": {}
         }
-    })).unwrap();
+    }))
+    .unwrap();
     let _ = service.call(init_req).await.unwrap();
 
     // didOpen
@@ -83,7 +85,8 @@ async fn test_wrap_and_sort_code_action() {
                 "text": "Source: test-pkg\nBuild-Depends: a, c, b\n"
             }
         }
-    })).unwrap();
+    }))
+    .unwrap();
     let _ = service.call(open_req).await.unwrap();
 
     // codeAction
@@ -99,13 +102,16 @@ async fn test_wrap_and_sort_code_action() {
             },
             "context": { "diagnostics": [] }
         }
-    })).unwrap();
+    }))
+    .unwrap();
     let response = service.call(ca_req).await.unwrap();
     let res = serde_json::to_value(response.unwrap()).unwrap();
-    
+
     let actions = res["result"].as_array().expect("result should be an array");
     assert!(!actions.is_empty());
-    assert!(actions.iter().any(|a| a["title"].as_str() == Some("Wrap and sort")));
+    assert!(actions
+        .iter()
+        .any(|a| a["title"].as_str() == Some("Wrap and sort")));
 }
 
 #[tokio::test]
@@ -116,7 +122,7 @@ async fn test_lintian_brush_diagnostics_integration() {
     let temp = tempfile::tempdir().unwrap();
     let debian_dir = temp.path().join("debian");
     std::fs::create_dir(&debian_dir).unwrap();
-    
+
     // Create debian/changelog so lintian-brush can identify the package
     let changelog_path = debian_dir.join("changelog");
     let changelog_text = "test-pkg (1.0-1) unstable; urgency=low\n\n  * Initial release.\n\n -- Alice <alice@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n";
@@ -136,29 +142,41 @@ async fn test_lintian_brush_diagnostics_integration() {
     });
 
     // Initialize
-    let _ = service.call(serde_json::from_value(json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": { "capabilities": {} }
-    })).unwrap()).await.unwrap();
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
 
     // didOpen
     // Intentional lowercase 'source' to trigger built-in diagnostic
     // and old Standards-Version for lintian-brush
     let text = "source: test-pkg\nStandards-Version: 3.9.8\nMaintainer: Alice <alice@example.com>\n\nPackage: test-pkg\nArchitecture: all\nDescription: test\n";
-    let _ = service.call(serde_json::from_value(json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/didOpen",
-        "params": {
-            "textDocument": {
-                "uri": uri.clone(),
-                "languageId": "debcontrol",
-                "version": 1,
-                "text": text
-            }
-        }
-    })).unwrap()).await.unwrap();
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri.clone(),
+                        "languageId": "debcontrol",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
 
     // Wait for the diagnostic with a timeout
     let mut found_builtin = false;
@@ -169,10 +187,16 @@ async fn test_lintian_brush_diagnostics_integration() {
             let msg_json = serde_json::to_value(msg).unwrap();
             if msg_json["method"] == "textDocument/publishDiagnostics" {
                 let diags = msg_json["params"]["diagnostics"].as_array().unwrap();
-                if diags.iter().any(|d| d["message"].as_str().unwrap_or("").contains("Source")) {
+                if diags
+                    .iter()
+                    .any(|d| d["message"].as_str().unwrap_or("").contains("Source"))
+                {
                     found_builtin = true;
                 }
-                if diags.iter().any(|d| d["source"].as_str() == Some("lintian-brush")) {
+                if diags
+                    .iter()
+                    .any(|d| d["source"].as_str() == Some("lintian-brush"))
+                {
                     found_lb = true;
                 }
                 if found_builtin && found_lb {
@@ -180,7 +204,8 @@ async fn test_lintian_brush_diagnostics_integration() {
                 }
             }
         }
-    }).await;
+    })
+    .await;
 
     assert!(found_builtin, "Did not receive built-in diagnostics");
     assert!(found_lb, "Did not receive lintian-brush diagnostics");
@@ -198,12 +223,15 @@ async fn test_lintian_brush_diagnostics_integration() {
             },
             "context": { "diagnostics": [] }
         }
-    })).unwrap();
+    }))
+    .unwrap();
     let response = service.call(ca_req).await.unwrap();
     let res = serde_json::to_value(response.unwrap()).unwrap();
 
     let actions = res["result"].as_array().expect("result should be an array");
-    assert!(actions.iter().any(|a| a["title"].as_str().unwrap_or("").contains("Source")));
+    assert!(actions
+        .iter()
+        .any(|a| a["title"].as_str().unwrap_or("").contains("Source")));
 }
 
 #[tokio::test]
@@ -214,7 +242,7 @@ async fn test_binary_package_fix_targets_correct_paragraph() {
     let temp = tempfile::tempdir().unwrap();
     let debian_dir = temp.path().join("debian");
     std::fs::create_dir(&debian_dir).unwrap();
-    
+
     let changelog_path = debian_dir.join("changelog");
     let changelog_text = "mypkg (1.0-1) unstable; urgency=low\n\n  * Initial release.\n\n -- Alice <alice@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n";
     std::fs::write(&changelog_path, changelog_text).unwrap();
@@ -236,26 +264,38 @@ async fn test_binary_package_fix_targets_correct_paragraph() {
     });
 
     // Initialize
-    let _ = service.call(serde_json::from_value(json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": { "capabilities": {} }
-    })).unwrap()).await.unwrap();
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
 
     // didOpen
-    let _ = service.call(serde_json::from_value(json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/didOpen",
-        "params": {
-            "textDocument": {
-                "uri": uri.clone(),
-                "languageId": "debcontrol",
-                "version": 1,
-                "text": text
-            }
-        }
-    })).unwrap()).await.unwrap();
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri.clone(),
+                        "languageId": "debcontrol",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
 
     // Wait for the diagnostics
     let mut lb_diags = Vec::new();
@@ -275,9 +315,13 @@ async fn test_binary_package_fix_targets_correct_paragraph() {
                 }
             }
         }
-    }).await;
+    })
+    .await;
 
-    let binary_diag = lb_diags.iter().find(|d| d["range"]["start"]["line"] == 6).expect("Should have diagnostic at line 6");
+    let binary_diag = lb_diags
+        .iter()
+        .find(|d| d["range"]["start"]["line"] == 6)
+        .expect("Should have diagnostic at line 6");
 
     // Request code actions at line 6
     let ca_req: Request = serde_json::from_value(json!({
@@ -292,16 +336,22 @@ async fn test_binary_package_fix_targets_correct_paragraph() {
             },
             "context": { "diagnostics": [binary_diag] }
         }
-    })).unwrap();
+    }))
+    .unwrap();
     let response = service.call(ca_req).await.unwrap();
     let res = serde_json::to_value(response.unwrap()).unwrap();
 
     let actions = res["result"].as_array().expect("result should be an array");
-    
-    let fix_action = actions.iter().find(|a| {
-        a["title"].as_str() == Some("Change priority extra to priority optional.")
-    }).expect("Should have priority fix action");
+
+    let fix_action = actions
+        .iter()
+        .find(|a| a["title"].as_str() == Some("Change priority extra to priority optional."))
+        .expect("Should have priority fix action");
 
     let edit = &fix_action["edit"]["documentChanges"][0]["edits"][0];
-    assert_eq!(edit["range"]["start"]["line"], 6, "Edit should target line 6, but targeted line {}", edit["range"]["start"]["line"]);
+    assert_eq!(
+        edit["range"]["start"]["line"], 6,
+        "Edit should target line 6, but targeted line {}",
+        edit["range"]["start"]["line"]
+    );
 }
