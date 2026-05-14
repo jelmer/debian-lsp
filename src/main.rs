@@ -259,19 +259,6 @@ impl Backend {
         self.workspace.lock().await.clone()
     }
 
-    /// Collect diagnostics for a buffer event.
-    ///
-    /// `phase` controls how expensive a detector is allowed to be (cheap
-    /// only on every keystroke; subprocess-OK on file-open; everything
-    /// only on explicit user action). `changed_ranges` narrows
-    /// field-aware detector triggers to those whose declared field
-    /// overlaps the actually-edited text — `None` means "treat the whole
-    /// file as changed", appropriate for `did_open` and the CLI `check`
-    /// command. With the lintian-brush feature off both arguments are
-    /// ignored.
-    ///
-    /// Async because the lintian-brush detector pass runs on a
-    /// `spawn_blocking` thread (see `lintian_brush_diagnostics`).
     async fn collect_diagnostics(
         uri: Uri,
         source_file: workspace::SourceFile,
@@ -310,11 +297,6 @@ impl Backend {
         })
     }
 
-    /// Per-file-type built-in diagnostics. Returns `None` for file
-    /// types we have no built-in handler for *and* that the
-    /// lintian-brush translator can't target either — those file
-    /// types should leave previously-published diagnostics in place
-    /// (`None`) rather than clearing them with an empty publish.
     fn builtin_diagnostics(
         source_file: workspace::SourceFile,
         file_type: FileType,
@@ -349,15 +331,9 @@ impl Backend {
         }
     }
 
-    /// Run the lintian-brush detector pass for `uri` and return its
-    /// diagnostics. Returns `None` if `file_type` is one the translator
-    /// can't target.
-    ///
-    /// Some detectors call `Runtime::new() + block_on` internally (for
-    /// UDD queries, `git ls-remote`, etc.). Doing that on a thread that
-    /// already drives a tokio runtime panics, so the whole detector
-    /// pass runs on a `spawn_blocking` worker. `Workspace` clones
-    /// cheaply (Arc on salsa storage) and the open-files map is small.
+    // Some lintian-brush detectors call `Runtime::new() + block_on`
+    // internally (UDD queries, `git ls-remote`); doing that on a tokio
+    // worker panics, so the whole detector pass runs on `spawn_blocking`.
     #[cfg(feature = "lintian-brush")]
     async fn lintian_brush_diagnostics(
         uri: Uri,
@@ -718,9 +694,6 @@ impl LanguageServer for Backend {
             self.prefetch_upstream_guesses(&params.text_document.uri);
         }
 
-        // Snapshot the open-files map; the detector pass owns it on
-        // its blocking worker so we don't keep the lock for the
-        // duration.
         let open_files_snapshot = files.clone();
         drop(files);
 
@@ -730,9 +703,6 @@ impl LanguageServer for Backend {
             file_type,
             workspace,
             open_files_snapshot,
-            // File-open: scope is the whole file, no range filter, and
-            // we're willing to do filesystem / subprocess work since
-            // initial scan is rare.
             RunPhase::Open,
             None,
         )
@@ -777,10 +747,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        // Apply incremental content changes to the current text and
-        // collect the post-edit byte ranges so the lintian-brush
-        // detector layer can narrow field-aware triggers to the
-        // entries actually touched.
+        // Apply incremental content changes to the current text.
         //
         // The Mutex is held only for the splice + `update_file`. The
         // diagnostics phase below runs on a Workspace clone so other
@@ -812,7 +779,7 @@ impl LanguageServer for Backend {
                         text.replace_range(start..end, &change.text);
                     }
                 } else {
-                    // Full replacement.
+                    // Full replacement
                     text = change.text.clone();
                 }
             }
@@ -828,14 +795,12 @@ impl LanguageServer for Backend {
             (workspace.clone(), source_file)
         };
 
-        // For did_change we run only Keystroke-cost detectors so every
-        // edit stays responsive. changed_ranges is intentionally not passed
-        // to the detector: narrowing by touched fields would skip detectors
-        // for unchanged fields, producing a partial diagnostic list that
-        // replaces — and wipes — diagnostics for the rest of the file.
         let open_files_snapshot = files.clone();
         drop(files);
 
+        // changed_ranges is intentionally `None`: narrowing by touched
+        // fields would skip detectors for unchanged fields and wipe
+        // their already-published diagnostics from the rest of the file.
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -865,17 +830,6 @@ impl LanguageServer for Backend {
         }
     }
 
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let mut files = self.files.lock().await;
-        files.remove(&params.text_document.uri);
-        drop(files);
-        // Clear diagnostics so stale squiggles don't linger after the file
-        // is closed.
-        self.client
-            .publish_diagnostics(params.text_document.uri, vec![], None)
-            .await;
-    }
-
     async fn will_save_wait_until(
         &self,
         params: WillSaveTextDocumentParams,
@@ -899,6 +853,17 @@ impl LanguageServer for Backend {
 
         let edit = changelog::generate_timestamp_update_edit(&changelog, src);
         Ok(edit.map(|e| vec![e]))
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let mut files = self.files.lock().await;
+        files.remove(&params.text_document.uri);
+        drop(files);
+        // Clear diagnostics so stale squiggles don't linger after the file
+        // is closed.
+        self.client
+            .publish_diagnostics(params.text_document.uri, vec![], None)
+            .await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -1082,11 +1047,6 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        // Code actions surface from two sources: built-in handlers
-        // (wrap-and-sort, field-casing fixes, "Add new changelog entry",
-        // …) for control/copyright/changelog, and lintian-brush
-        // detector quick-fixes for any file the translator can target.
-        // Bail out only for file types neither path covers.
         match file_info.file_type {
             FileType::Control
             | FileType::Copyright
@@ -1261,19 +1221,10 @@ impl LanguageServer for Backend {
             FileType::Watch
             | FileType::UpstreamMetadata
             | FileType::TestsControl
-            | FileType::Patch => {
-                // No built-in code actions; lintian-brush detectors
-                // below are the only source.
-            }
+            | FileType::Patch => {}
             _ => unreachable!(),
         }
 
-        // Surface lintian-brush detector quick-fixes against any file
-        // the translator can target. Anchored on `uri`; built-in
-        // handlers above keep producing actions on their own URIs too.
-        //
-        // The detector pass runs on a blocking worker — see
-        // `lintian_brush_diagnostics` for why.
         #[cfg(feature = "lintian-brush")]
         {
             let open_files_snapshot = files.clone();
@@ -1287,8 +1238,6 @@ impl LanguageServer for Backend {
                     &open_files_snapshot,
                     &diagnostics,
                     Some(params.range),
-                    // Code actions are an explicit user request, so let
-                    // detectors do everything including network checks.
                     RunPhase::Explicit,
                 )
             })
@@ -2236,25 +2185,6 @@ impl LanguageServer for Backend {
                         .await;
                 }
             }
-        } else if params.command == control::ADD_BINARY_PACKAGE_COMMAND {
-            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
-                if let Ok(uri) = uri_str.parse::<Uri>() {
-                    let workspace = self.workspace_clone().await;
-                    let files = self.files.lock().await;
-                    if let Some(file_info) = files.get(&uri) {
-                        let source_text = workspace.source_text(file_info.source_file);
-                        let idx = workspace.get_line_index(file_info.source_file);
-                        let src = Source::new(&source_text, &idx);
-                        let parsed = workspace.get_parsed_control(file_info.source_file);
-                        drop(files);
-                        if let Some(edit) =
-                            control::build_add_binary_package_edit(&uri, src, &parsed)
-                        {
-                            let _ = self.client.apply_edit(edit).await;
-                        }
-                    }
-                }
-            }
         } else if params.command == changelog::ADD_CHANGELOG_ENTRY_COMMAND {
             if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
                 if let Ok(uri) = uri_str.parse::<Uri>() {
@@ -2296,6 +2226,25 @@ impl LanguageServer for Backend {
                     }
                 }
             }
+        } else if params.command == control::ADD_BINARY_PACKAGE_COMMAND {
+            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = uri_str.parse::<Uri>() {
+                    let workspace = self.workspace_clone().await;
+                    let files = self.files.lock().await;
+                    if let Some(file_info) = files.get(&uri) {
+                        let source_text = workspace.source_text(file_info.source_file);
+                        let idx = workspace.get_line_index(file_info.source_file);
+                        let src = Source::new(&source_text, &idx);
+                        let parsed = workspace.get_parsed_control(file_info.source_file);
+                        drop(files);
+                        if let Some(edit) =
+                            control::build_add_binary_package_edit(&uri, src, &parsed)
+                        {
+                            let _ = self.client.apply_edit(edit).await;
+                        }
+                    }
+                }
+            }
         }
         Ok(None)
     }
@@ -2307,10 +2256,6 @@ impl LanguageServer for Backend {
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-
-    /// Run the server over stdio.
-    #[arg(long)]
-    stdio: bool,
 }
 
 /// Subcommands for debian-lsp.
@@ -2435,18 +2380,12 @@ async fn run_check(paths: &[std::path::PathBuf]) -> i32 {
 
         let source_file = workspace.update_file(uri.clone(), content.clone());
 
-        // The CLI `check` command runs against a single file with no
-        // companion buffer state — pass an empty open-files map.
-        let empty_files: HashMap<Uri, FileInfo> = HashMap::new();
         let diagnostics = match Backend::collect_diagnostics(
             uri.clone(),
             source_file,
             file_type,
             workspace.clone(),
-            empty_files,
-            // The CLI is a one-shot scan — the user is asking
-            // explicitly for issues, so let detectors do whatever they
-            // need to including network access.
+            HashMap::new(),
             RunPhase::Explicit,
             None,
         )
