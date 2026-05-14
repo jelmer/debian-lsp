@@ -179,7 +179,6 @@ pub fn get_field_casing_actions(
     for issue in issues {
         let lsp_range = src.text_range_to_lsp_range(issue.field_range);
 
-        // Check if there's a matching diagnostic in the context
         let matching_diagnostics = diagnostics
             .iter()
             .filter(|d| {
@@ -189,7 +188,13 @@ pub fn get_field_casing_actions(
             .cloned()
             .collect::<Vec<_>>();
 
-        // Create a code action to fix the casing
+        // When the client specified diagnostics it wants fixes for, only
+        // emit actions that match one of them — otherwise VS Code shows
+        // this quickfix for every squiggle in the vicinity.
+        if !diagnostics.is_empty() && matching_diagnostics.is_empty() {
+            continue;
+        }
+
         let edit = TextEdit {
             range: lsp_range,
             new_text: issue.standard_name.clone(),
@@ -285,9 +290,7 @@ Description: A test package
 
     #[test]
     fn test_field_casing_actions() {
-        let input = r#"source: test-package
-maintainer: Test User <test@example.com>
-"#;
+        let input = "source: test-package\nmaintainer: Test User <test@example.com>\n";
 
         let idx = crate::position::LineIndex::new(input);
         let src = Source::new(input, &idx);
@@ -305,8 +308,8 @@ maintainer: Test User <test@example.com>
             },
         ];
 
-        let actions = get_field_casing_actions(&uri, src, issues, &[]);
-
+        // Empty diagnostics: all issues in range are returned.
+        let actions = get_field_casing_actions(&uri, src, issues.clone(), &[]);
         assert_eq!(actions.len(), 2);
 
         let CodeActionOrCommand::CodeAction(ref action) = actions[0] else {
@@ -318,6 +321,57 @@ maintainer: Test User <test@example.com>
             panic!("Expected CodeAction");
         };
         assert_eq!(action.title, "Fix field casing: maintainer -> Maintainer");
+    }
+
+    #[test]
+    fn test_field_casing_actions_filters_to_context_diagnostics() {
+        // Two casing issues, but context only contains a diagnostic for the
+        // first one.  The server must return only the matching action and link
+        // the diagnostic object to it.
+        let input = "source: test-package\nmaintainer: Test User <test@example.com>\n";
+
+        let idx = crate::position::LineIndex::new(input);
+        let src = Source::new(input, &idx);
+        let uri: Uri = "file:///debian/control".parse().unwrap();
+        let issues = vec![
+            FieldCasingIssue {
+                field_name: "source".to_string(),
+                standard_name: "Source".to_string(),
+                field_range: TextRange::new(0.into(), 6.into()),
+            },
+            FieldCasingIssue {
+                field_name: "maintainer".to_string(),
+                standard_name: "Maintainer".to_string(),
+                field_range: TextRange::new(21.into(), 31.into()),
+            },
+        ];
+
+        // Only the "source" diagnostic is in context.
+        let source_diag = Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 6,
+                },
+            },
+            code: Some(NumberOrString::String("field-casing".to_string())),
+            message: "Field name should be 'Source'".to_string(),
+            ..Default::default()
+        };
+        let actions = get_field_casing_actions(&uri, src, issues, &[source_diag.clone()]);
+
+        // Only the "source" action is returned.
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(ref action) = actions[0] else {
+            panic!("Expected CodeAction");
+        };
+        assert_eq!(action.title, "Fix field casing: source -> Source");
+        // The action is linked back to the provided diagnostic.
+        assert_eq!(action.diagnostics, Some(vec![source_diag]));
     }
 
     #[test]
