@@ -400,7 +400,7 @@ mod tests {
     use crate::debian_workspace::deb822_edits::{
         append_paragraph_edits, copyright_action_to_text_edits, drop_relation_edits,
         drop_substvar_edits, ensure_substvar_edits, normalize_field_spacing_edits,
-        remove_paragraph_edits,
+        remove_paragraph_edits, set_relation_version_constraint_edits,
     };
     use crate::debian_workspace::format_edits::{
         substitute_edits, watch_action_to_text_edits, yaml_action_to_text_edits,
@@ -1127,6 +1127,71 @@ mod tests {
         assert!(!applied.contains("unwanted"));
         assert!(applied.contains("debhelper-compat (= 13)"));
         assert!(applied.contains("autoconf"));
+    }
+
+    #[test]
+    fn set_relation_version_constraint_sets_a_new_constraint() {
+        let text = "Source: foo\nBuild-Depends: debhelper, autoconf\n\nPackage: bar\n";
+        let parse = Control::parse(text);
+        let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
+        let constraint = Some((
+            debian_control::relations::VersionConstraint::GreaterThanEqual,
+            "13".parse().unwrap(),
+        ));
+        let edits = set_relation_version_constraint_edits(
+            &control,
+            &ParagraphSelector::Source,
+            "Build-Depends",
+            "debhelper",
+            &constraint,
+            src_of(text, &idx),
+        );
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        assert!(applied.contains("debhelper (>= 13)"));
+        assert!(applied.contains("autoconf"));
+    }
+
+    #[test]
+    fn set_relation_version_constraint_drops_with_none() {
+        let text = "Source: foo\nBuild-Depends: debhelper (>= 13), autoconf\n\nPackage: bar\n";
+        let parse = Control::parse(text);
+        let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
+        let edits = set_relation_version_constraint_edits(
+            &control,
+            &ParagraphSelector::Source,
+            "Build-Depends",
+            "debhelper",
+            &None,
+            src_of(text, &idx),
+        );
+        assert_eq!(edits.len(), 1);
+        let applied = apply_text_edit_to_string(text, &edits[0]);
+        assert!(applied.contains("debhelper,") || applied.contains("debhelper "));
+        assert!(!applied.contains("debhelper ("));
+    }
+
+    #[test]
+    fn set_relation_version_constraint_is_noop_when_already_matches() {
+        let text = "Source: foo\nBuild-Depends: debhelper (>= 13), autoconf\n\nPackage: bar\n";
+        let parse = Control::parse(text);
+        let control = parse.to_result().unwrap();
+        let idx = idx_of(text);
+        let constraint = Some((
+            debian_control::relations::VersionConstraint::GreaterThanEqual,
+            "13".parse().unwrap(),
+        ));
+        let edits = set_relation_version_constraint_edits(
+            &control,
+            &ParagraphSelector::Source,
+            "Build-Depends",
+            "debhelper",
+            &constraint,
+            src_of(text, &idx),
+        );
+        assert!(edits.is_empty());
     }
 
     #[test]

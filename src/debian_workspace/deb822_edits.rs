@@ -97,11 +97,20 @@ pub(super) fn deb822_action_to_text_edits(
         Deb822Action::ReorderParagraphs {
             key_field, order, ..
         } => reorder_paragraphs_edits(control, key_field, order, original_src),
-        // TODO: implement byte-precise editing of just the version
-        // constraint inside the relation entry. Returning empty here
-        // makes plan_to_workspace_edit drop the action so the user
-        // doesn't see a broken code action.
-        Deb822Action::SetRelationVersionConstraint { .. } => Vec::new(),
+        Deb822Action::SetRelationVersionConstraint {
+            paragraph,
+            field,
+            package,
+            constraint,
+            ..
+        } => set_relation_version_constraint_edits(
+            control,
+            paragraph,
+            field,
+            package,
+            constraint,
+            original_src,
+        ),
     }
 }
 
@@ -792,6 +801,39 @@ pub fn drop_relation_edits(
             relations.remove_entry(idx);
         }
         true
+    })
+}
+
+/// For every relation in `field` that names `package`, set its version
+/// constraint to `constraint` (or strip it when `None`). No-op when the
+/// package isn't named or every matching relation already has the
+/// requested constraint -- matches the applier semantics.
+pub fn set_relation_version_constraint_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    package: &str,
+    constraint: &Option<(
+        debian_control::relations::VersionConstraint,
+        ::lintian_brush::Version,
+    )>,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    relations_field_edits(control, selector, field, original_src, |relations| {
+        let mut changed = false;
+        for (_, entry) in relations.iter_relations_for(package) {
+            for mut relation in entry.relations() {
+                if relation.try_name().as_deref() != Some(package) {
+                    continue;
+                }
+                if relation.version() == *constraint {
+                    continue;
+                }
+                relation.set_version(constraint.clone());
+                changed = true;
+            }
+        }
+        changed
     })
 }
 

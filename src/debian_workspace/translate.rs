@@ -355,9 +355,6 @@ enum ActionEffect {
 /// action whose `translate_action` call would `unimplemented!()`.
 pub fn is_action_translatable(action: &Action) -> bool {
     match action {
-        // TODO: implement SetRelationVersionConstraint in the translator
-        // and flip this to true.
-        Action::Deb822(Deb822Action::SetRelationVersionConstraint { .. }) => false,
         Action::Deb822(_) => true,
         Action::Yaml(_) | Action::Changelog(_) => true,
         Action::Filesystem(fs) => match fs {
