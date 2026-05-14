@@ -145,6 +145,80 @@ struct FileInfo {
     file_type: FileType,
 }
 
+/// Whether a code action or command matches one of the client's requested kinds.
+///
+/// LSP's `context.only` lets a client narrow the response to specific kinds.
+/// A requested kind is treated as a prefix: requesting `source` matches
+/// `source.fixAll` and `source.organizeImports`; requesting `quickfix` matches
+/// `quickfix` and any `quickfix.foo` subkind. Commands have no kind and are
+/// excluded when the client is filtering.
+fn action_matches_requested_kinds(
+    action: &CodeActionOrCommand,
+    requested_kinds: &[CodeActionKind],
+) -> bool {
+    match action {
+        CodeActionOrCommand::CodeAction(ca) => {
+            let Some(kind) = &ca.kind else {
+                return false;
+            };
+            requested_kinds
+                .iter()
+                .any(|requested| kind_matches_prefix(kind, requested))
+        }
+        CodeActionOrCommand::Command(_) => false,
+    }
+}
+
+/// Whether `kind` is `requested` or a sub-kind of it (LSP prefix semantics).
+fn kind_matches_prefix(kind: &CodeActionKind, requested: &CodeActionKind) -> bool {
+    let kind_str = kind.as_str();
+    let requested_str = requested.as_str();
+    kind_str == requested_str || kind_str.starts_with(&format!("{}.", requested_str))
+}
+
+/// Build a single `source.fixAll` action that applies every text edit from
+/// `quickfix_actions` for `uri` at once. Returns None if there are no edits.
+///
+/// LSP's `source.fixAll` is meant to apply all auto-fixable problems without
+/// user interaction, so we collapse the individual quickfixes into one
+/// workspace edit.
+fn build_fix_all_action(
+    uri: &Uri,
+    quickfix_actions: &[CodeActionOrCommand],
+) -> Option<CodeActionOrCommand> {
+    let mut edits: Vec<TextEdit> = Vec::new();
+    for action in quickfix_actions {
+        let CodeActionOrCommand::CodeAction(ca) = action else {
+            continue;
+        };
+        let Some(edit) = ca.edit.as_ref() else {
+            continue;
+        };
+        let Some(changes) = edit.changes.as_ref() else {
+            continue;
+        };
+        if let Some(uri_edits) = changes.get(uri) {
+            edits.extend(uri_edits.iter().cloned());
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    let workspace_edit = WorkspaceEdit {
+        changes: Some(vec![(uri.clone(), edits)].into_iter().collect()),
+        ..Default::default()
+    };
+
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: "Fix all auto-fixable problems".to_string(),
+        kind: Some(CodeActionKind::SOURCE_FIX_ALL),
+        edit: Some(workspace_edit),
+        ..Default::default()
+    }))
+}
+
 struct Backend {
     client: Client,
     workspace: Arc<Mutex<Workspace>>,
@@ -860,6 +934,16 @@ impl LanguageServer for Backend {
 
         let text_range = src.try_lsp_range_to_text_range(&params.range);
 
+        // Check if client requested specific action kinds
+        let requested_kinds = params.context.only.as_ref();
+        let wants_fix_all = requested_kinds
+            .map(|kinds| {
+                kinds
+                    .iter()
+                    .any(|k| kind_matches_prefix(&CodeActionKind::SOURCE_FIX_ALL, k))
+            })
+            .unwrap_or(false);
+
         match file_info.file_type {
             FileType::Control => {
                 let Some(text_range) = text_range else {
@@ -885,15 +969,34 @@ impl LanguageServer for Backend {
                     ));
                 }
 
-                // Add field casing fixes
-                let issues =
-                    control::diagnostics::find_field_casing_issues(&parsed, Some(text_range));
-                actions.extend(control::get_field_casing_actions(
+                // Add field casing fixes. For source.fixAll, scan the whole
+                // document and ignore the diagnostics filter so a single
+                // "Fix all" can apply every casing fix at once.
+                let (issues, diagnostics_filter): (_, &[Diagnostic]) = if wants_fix_all {
+                    (
+                        control::diagnostics::find_field_casing_issues(&parsed, None),
+                        &[],
+                    )
+                } else {
+                    (
+                        control::diagnostics::find_field_casing_issues(&parsed, Some(text_range)),
+                        &params.context.diagnostics,
+                    )
+                };
+                let casing_actions = control::get_field_casing_actions(
                     &params.text_document.uri,
                     src,
                     issues,
-                    &params.context.diagnostics,
-                ));
+                    diagnostics_filter,
+                );
+                if wants_fix_all {
+                    if let Some(action) =
+                        build_fix_all_action(&params.text_document.uri, &casing_actions)
+                    {
+                        actions.push(action);
+                    }
+                }
+                actions.extend(casing_actions);
             }
             FileType::Copyright => {
                 let Some(text_range) = text_range else {
@@ -911,15 +1014,36 @@ impl LanguageServer for Backend {
                     actions.push(action);
                 }
 
-                // Add field casing fixes
-                let issues = workspace
-                    .find_copyright_field_casing_issues(file_info.source_file, Some(text_range));
-                actions.extend(copyright::get_field_casing_actions(
+                // Add field casing fixes. For source.fixAll, scan the whole
+                // document and ignore the diagnostics filter.
+                let (issues, diagnostics_filter): (_, &[Diagnostic]) = if wants_fix_all {
+                    (
+                        workspace.find_copyright_field_casing_issues(file_info.source_file, None),
+                        &[],
+                    )
+                } else {
+                    (
+                        workspace.find_copyright_field_casing_issues(
+                            file_info.source_file,
+                            Some(text_range),
+                        ),
+                        &params.context.diagnostics,
+                    )
+                };
+                let casing_actions = copyright::get_field_casing_actions(
                     &params.text_document.uri,
                     src,
                     issues,
-                    &params.context.diagnostics,
-                ));
+                    diagnostics_filter,
+                );
+                if wants_fix_all {
+                    if let Some(action) =
+                        build_fix_all_action(&params.text_document.uri, &casing_actions)
+                    {
+                        actions.push(action);
+                    }
+                }
+                actions.extend(casing_actions);
             }
             FileType::Changelog => {
                 // Add new changelog entry: document-level, palette only.
@@ -963,6 +1087,11 @@ impl LanguageServer for Backend {
                 }
             }
             _ => unreachable!(),
+        }
+
+        // Filter actions based on client's requested kinds
+        if let Some(requested_kinds) = requested_kinds {
+            actions.retain(|action| action_matches_requested_kinds(action, requested_kinds));
         }
 
         if actions.is_empty() {
@@ -2407,5 +2536,208 @@ mod main_tests {
             Some(FileType::SourceOptions)
         );
         assert_eq!(FileType::detect(&non_options_uri), None);
+    }
+
+    #[test]
+    fn test_kind_matches_prefix_exact() {
+        assert!(kind_matches_prefix(
+            &CodeActionKind::QUICKFIX,
+            &CodeActionKind::QUICKFIX,
+        ));
+    }
+
+    #[test]
+    fn test_kind_matches_prefix_subkind() {
+        assert!(kind_matches_prefix(
+            &CodeActionKind::SOURCE_FIX_ALL,
+            &CodeActionKind::SOURCE,
+        ));
+        assert!(kind_matches_prefix(
+            &CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+            &CodeActionKind::SOURCE,
+        ));
+    }
+
+    #[test]
+    fn test_kind_matches_prefix_non_match() {
+        assert!(!kind_matches_prefix(
+            &CodeActionKind::QUICKFIX,
+            &CodeActionKind::SOURCE,
+        ));
+        assert!(!kind_matches_prefix(
+            &CodeActionKind::SOURCE,
+            &CodeActionKind::SOURCE_FIX_ALL,
+        ));
+    }
+
+    #[test]
+    fn test_kind_matches_prefix_does_not_match_partial_segment() {
+        // "sourcefoo" should not match a request for "source"
+        let kind: CodeActionKind = "sourcefoo".into();
+        assert!(!kind_matches_prefix(&kind, &CodeActionKind::SOURCE));
+    }
+
+    #[test]
+    fn test_action_matches_requested_kinds_filters_quickfix_under_source() {
+        let quickfix = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "fix".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            ..Default::default()
+        });
+        // quickfix is not a sub-kind of source
+        assert!(!action_matches_requested_kinds(
+            &quickfix,
+            &[CodeActionKind::SOURCE],
+        ));
+        // quickfix matches a request for quickfix
+        assert!(action_matches_requested_kinds(
+            &quickfix,
+            &[CodeActionKind::QUICKFIX],
+        ));
+    }
+
+    #[test]
+    fn test_action_matches_requested_kinds_commands_excluded_when_filtering() {
+        let cmd = CodeActionOrCommand::Command(tower_lsp_server::ls_types::Command {
+            title: "do thing".to_string(),
+            command: "ext.doThing".to_string(),
+            arguments: None,
+        });
+        assert!(!action_matches_requested_kinds(
+            &cmd,
+            &[CodeActionKind::SOURCE_FIX_ALL],
+        ));
+    }
+
+    #[test]
+    fn test_action_matches_requested_kinds_source_fix_all_matches() {
+        let fix_all = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Fix all".to_string(),
+            kind: Some(CodeActionKind::SOURCE_FIX_ALL),
+            ..Default::default()
+        });
+        assert!(action_matches_requested_kinds(
+            &fix_all,
+            &[CodeActionKind::SOURCE_FIX_ALL],
+        ));
+        // source is a prefix of source.fixAll
+        assert!(action_matches_requested_kinds(
+            &fix_all,
+            &[CodeActionKind::SOURCE],
+        ));
+    }
+
+    #[test]
+    fn test_build_fix_all_action_combines_edits() {
+        let uri: Uri = "file:///debian/control".parse().unwrap();
+        let other_uri: Uri = "file:///other".parse().unwrap();
+
+        let edit1 = TextEdit {
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 6),
+            },
+            new_text: "Source".to_string(),
+        };
+        let edit2 = TextEdit {
+            range: Range {
+                start: Position::new(1, 0),
+                end: Position::new(1, 10),
+            },
+            new_text: "Maintainer".to_string(),
+        };
+
+        let action1 = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Fix Source".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(
+                    vec![(uri.clone(), vec![edit1.clone()])]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let action2 = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Fix Maintainer".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(
+                    vec![(uri.clone(), vec![edit2.clone()])]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        // Edits for an unrelated uri must not leak into the combined action.
+        let action_other = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Unrelated".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(
+                    vec![(
+                        other_uri,
+                        vec![TextEdit {
+                            range: Range::default(),
+                            new_text: "x".to_string(),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let combined =
+            build_fix_all_action(&uri, &[action1, action2, action_other]).expect("Should build");
+        let CodeActionOrCommand::CodeAction(ca) = combined else {
+            panic!("Expected CodeAction");
+        };
+        assert_eq!(ca.kind, Some(CodeActionKind::SOURCE_FIX_ALL));
+        let edits = ca
+            .edit
+            .as_ref()
+            .and_then(|e| e.changes.as_ref())
+            .and_then(|c| c.get(&uri))
+            .expect("Should have edits for uri");
+        assert_eq!(edits, &vec![edit1, edit2]);
+    }
+
+    #[test]
+    fn test_build_fix_all_action_returns_none_for_empty_input() {
+        let uri: Uri = "file:///debian/control".parse().unwrap();
+        assert!(build_fix_all_action(&uri, &[]).is_none());
+    }
+
+    #[test]
+    fn test_build_fix_all_action_returns_none_when_no_edits_for_uri() {
+        let uri: Uri = "file:///debian/control".parse().unwrap();
+        let other_uri: Uri = "file:///other".parse().unwrap();
+        let action = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Other".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(
+                    vec![(
+                        other_uri,
+                        vec![TextEdit {
+                            range: Range::default(),
+                            new_text: "x".to_string(),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(build_fix_all_action(&uri, &[action]).is_none());
     }
 }
