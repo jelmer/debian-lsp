@@ -97,14 +97,23 @@ pub(super) fn diag_touches_file(
 /// the anchor file rather than falling back to the full document range.
 /// Used for code-action filtering to avoid showing cross-file actions
 /// on every line of the wrong file.
+///
+/// Filesystem actions (delete/rename/chmod a file) are inherently
+/// cross-file: they don't edit any open buffer. Surface them as a
+/// zero-length range at line 0 of the anchor file so they're offered
+/// regardless of which debian/* file the user has open.
 pub(super) fn diagnostic_range_in_file(
     diag: &::lintian_brush::diagnostic::Diagnostic,
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
     anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
+    let mut has_filesystem = false;
     for plan in &diag.plans {
         for action in &plan.actions {
+            if matches!(action, Action::Filesystem(_)) {
+                has_filesystem = true;
+            }
             if action_file(action) != Some(anchor_rel) {
                 continue;
             }
@@ -112,6 +121,10 @@ pub(super) fn diagnostic_range_in_file(
                 return Some(range);
             }
         }
+    }
+    if has_filesystem {
+        let zero = Position::new(0, 0);
+        return Some(Range::new(zero, zero));
     }
     None
 }

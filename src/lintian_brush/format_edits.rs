@@ -555,9 +555,7 @@ pub(super) fn makefile_action_to_text_edits(
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
-        MakefileAction::SetVariableOperator {
-            name, operator, ..
-        } => {
+        MakefileAction::SetVariableOperator { name, operator, .. } => {
             let mf = makefile.clone();
             if let Some(mut var) = mf.find_variable(name).next() {
                 var.set_assignment_operator(operator);
@@ -734,10 +732,7 @@ pub(super) fn lintian_overrides_action_to_text_edits(
                 if line_tag != *tag {
                     return false;
                 }
-                let line_pkg = line
-                    .package_spec()
-                    .as_ref()
-                    .and_then(|s| s.package_name());
+                let line_pkg = line.package_spec().as_ref().and_then(|s| s.package_name());
                 if line_pkg.as_deref() != package.as_deref() {
                     return false;
                 }
@@ -990,7 +985,7 @@ pub(super) fn filesystem_action_to_text_edits(
 
 /// Replace every literal occurrence of `from` with `to` in `original_src`.
 /// Mirrors the applier's behaviour: literal find-and-replace, no regex.
-fn substitute_edits(
+pub(super) fn substitute_edits(
     from: &str,
     to: &str,
     original_src: crate::position::Source<'_>,

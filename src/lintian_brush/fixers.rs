@@ -161,9 +161,7 @@ pub fn run_fixers_for_uri(
             // "suppress with lintian override" action via the standard
             // plan translation path.
             if let Some(issue) = &diag.issue {
-                if let Some(plan) =
-                    ::lintian_brush::diagnostic::override_action_plan(issue)
-                {
+                if let Some(plan) = ::lintian_brush::diagnostic::override_action_plan(issue) {
                     if let Some(edit) = plan_to_workspace_edit(&plan, &ws) {
                         actions.push(build_action_with_diagnostics(
                             &plan.label,
@@ -182,7 +180,6 @@ pub fn run_fixers_for_uri(
 fn ranges_overlap_lsp(a: Range, b: Range) -> bool {
     a.start < b.end && b.start < a.end
 }
-
 
 fn build_action_with_diagnostics(
     title: &str,
@@ -383,6 +380,27 @@ mod tests {
     use super::*;
     use crate::FileType;
 
+    use ::lintian_brush::diagnostic::{
+        Action, ChangelogAction, Deb822Action, FilesystemAction, ParagraphSelector, WatchAction,
+        YamlAction,
+    };
+    use debian_changelog::ChangeLog;
+    use debian_control::lossless::Control;
+    use debian_copyright::lossless::Copyright;
+    use tower_lsp_server::ls_types::{
+        DocumentChangeOperation, DocumentChanges, OneOf, Position, ResourceOp, TextEdit,
+    };
+
+    use super::super::changelog_edits::changelog_action_to_text_edits;
+    use super::super::deb822_edits::{
+        append_paragraph_edits, copyright_action_to_text_edits, drop_relation_edits,
+        drop_substvar_edits, ensure_substvar_edits, normalize_field_spacing_edits,
+        remove_paragraph_edits,
+    };
+    use super::super::format_edits::{
+        substitute_edits, watch_action_to_text_edits, yaml_action_to_text_edits,
+    };
+
     /// Build a `Source` over `text` for tests. Stores the `LineIndex` in
     /// the caller's scope via a `let` binding pattern: `let idx =
     /// idx_of(text); let src = src_of(text, &idx);`.
@@ -441,7 +459,6 @@ mod tests {
             None,
             RunPhase::Explicit,
         );
-
 
         let qa_action = actions
             .iter()
@@ -503,7 +520,10 @@ mod tests {
         let mut open_files = HashMap::new();
         open_files.insert(
             control_uri.clone(),
-            FileInfo { source_file, file_type: FileType::Control },
+            FileInfo {
+                source_file,
+                file_type: FileType::Control,
+            },
         );
 
         let actions = run_fixers_for_uri(
@@ -534,7 +554,10 @@ mod tests {
             .expect("suppress action must target the overrides file");
         assert_eq!(edits.len(), 1);
         // The inserted text should contain the lintian tag.
-        assert_eq!(edits[0].new_text, "faulty-debian-qa-group-phrase Maintainer QA Folks -> Debian QA Group\n");
+        assert_eq!(
+            edits[0].new_text,
+            "faulty-debian-qa-group-phrase Maintainer QA Folks -> Debian QA Group\n"
+        );
     }
 
     /// Pull the `Vec<TextEdit>` for `uri` out of a `WorkspaceEdit`'s
@@ -611,6 +634,133 @@ mod tests {
         // Range covers the Maintainer entry, which is on line 1 (0-based)
         // of the control file.
         assert_eq!(qa.range.start.line, 1);
+    }
+
+    /// run_fixers_for_uri only emits quickfix actions that match a diagnostic
+    /// in context.diagnostics when that list is non-empty.
+    #[test]
+    fn run_fixers_filters_to_context_diagnostics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let debian = tmp.path().join("debian");
+        std::fs::create_dir(&debian).unwrap();
+        std::fs::write(
+            debian.join("control"),
+            "Source: foo\nMaintainer: QA Folks <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
+        )
+        .unwrap();
+        std::fs::write(
+            debian.join("changelog"),
+            "foo (1.0) unstable; urgency=medium\n\n  * Initial.\n\n -- A B <a@b>  Mon, 01 Jan 2024 00:00:00 +0000\n",
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::new();
+        let control_uri = Uri::from_file_path(debian.join("control")).unwrap();
+        let source_file = workspace.update_file(
+            control_uri.clone(),
+            std::fs::read_to_string(debian.join("control")).unwrap(),
+        );
+        let mut open_files = HashMap::new();
+        open_files.insert(
+            control_uri.clone(),
+            FileInfo {
+                source_file,
+                file_type: FileType::Control,
+            },
+        );
+
+        // With no context diagnostics: action is returned.
+        let actions = run_fixers_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            &[],
+            None,
+            RunPhase::Explicit,
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a,
+                CodeActionOrCommand::CodeAction(act) if act.title == "Fix Debian QA group name."
+            )),
+            "expected the QA fix action with empty context.diagnostics"
+        );
+
+        // With a non-matching diagnostic in context: action is suppressed.
+        let unrelated_diag = Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 10,
+                },
+            },
+            code: Some(NumberOrString::String("some-other-tag".to_string())),
+            message: "unrelated".to_string(),
+            ..Default::default()
+        };
+        let actions = run_fixers_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            &[unrelated_diag],
+            None,
+            RunPhase::Explicit,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a,
+                CodeActionOrCommand::CodeAction(act) if act.title == "Fix Debian QA group name."
+            )),
+            "QA fix should be suppressed when context.diagnostics has no matching entry"
+        );
+
+        // With the matching diagnostic in context: action is returned and linked.
+        let matching_diag = Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: Position {
+                    line: 1,
+                    character: 50,
+                },
+            },
+            code: Some(NumberOrString::String(
+                "faulty-debian-qa-group-phrase".to_string(),
+            )),
+            message: "Fix Debian QA group name.".to_string(),
+            source: Some("lintian-brush".to_string()),
+            ..Default::default()
+        };
+        let actions = run_fixers_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            &[matching_diag.clone()],
+            None,
+            RunPhase::Explicit,
+        );
+        let qa_action = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(act)
+                    if act.title == "Fix Debian QA group name." =>
+                {
+                    Some(act)
+                }
+                _ => None,
+            })
+            .expect("QA fix should be returned when matching diagnostic is in context");
+        assert!(
+            qa_action
+                .diagnostics
+                .as_ref()
+                .map_or(false, |d| d.contains(&matching_diag)),
+            "action should be linked to the matching diagnostic"
+        );
     }
 
     /// Tiny LSP TextEdit applier: convert the LSP range to byte offsets in
@@ -863,7 +1013,6 @@ mod tests {
             RunPhase::Explicit,
         );
 
-
         let pycompat_uri = Uri::from_file_path(debian.join("pycompat")).unwrap();
         let action = actions
             .iter()
@@ -1019,13 +1168,16 @@ mod tests {
         // No Depends field — must insert "Depends: ${misc:Depends}" in
         // canonical BINARY_FIELD_ORDER position (after Architecture, before
         // Description).
-        let text = "Source: foo\n\nPackage: bar\nArchitecture: any\nDescription: A package\n some text\n";
+        let text =
+            "Source: foo\n\nPackage: bar\nArchitecture: any\nDescription: A package\n some text\n";
         let parse = Control::parse(text);
         let control = parse.to_result().unwrap();
         let idx = idx_of(text);
         let edits = ensure_substvar_edits(
             &control,
-            &ParagraphSelector::Binary { package: "bar".into() },
+            &ParagraphSelector::Binary {
+                package: "bar".into(),
+            },
             "Depends",
             "${misc:Depends}",
             src_of(text, &idx),

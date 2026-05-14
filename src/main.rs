@@ -2237,6 +2237,25 @@ impl LanguageServer for Backend {
                         .await;
                 }
             }
+        } else if params.command == control::ADD_BINARY_PACKAGE_COMMAND {
+            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
+                if let Ok(uri) = uri_str.parse::<Uri>() {
+                    let workspace = self.workspace_clone().await;
+                    let files = self.files.lock().await;
+                    if let Some(file_info) = files.get(&uri) {
+                        let source_text = workspace.source_text(file_info.source_file);
+                        let idx = workspace.get_line_index(file_info.source_file);
+                        let src = Source::new(&source_text, &idx);
+                        let parsed = workspace.get_parsed_control(file_info.source_file);
+                        drop(files);
+                        if let Some(edit) =
+                            control::build_add_binary_package_edit(&uri, src, &parsed)
+                        {
+                            let _ = self.client.apply_edit(edit).await;
+                        }
+                    }
+                }
+            }
         } else if params.command == changelog::ADD_CHANGELOG_ENTRY_COMMAND {
             if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
                 if let Ok(uri) = uri_str.parse::<Uri>() {
@@ -2271,55 +2290,6 @@ impl LanguageServer for Backend {
                                     ),
                                     ..Default::default()
                                 })
-                        })
-                    };
-                    if let Some(edit) = workspace_edit {
-                        let _ = self.client.apply_edit(edit).await;
-                    }
-                }
-            }
-        } else if params.command == control::ADD_BINARY_PACKAGE_COMMAND {
-            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
-                if let Ok(uri) = uri_str.parse::<Uri>() {
-                    let workspace = self.workspace_clone().await;
-                    let files = self.files.lock().await;
-                    if let Some(file_info) = files.get(&uri) {
-                        let source_text = workspace.source_text(file_info.source_file);
-                        let idx = workspace.get_line_index(file_info.source_file);
-                        let src = Source::new(&source_text, &idx);
-                        let parsed = workspace.get_parsed_control(file_info.source_file);
-                        drop(files);
-                        if let Some(edit) =
-                            control::build_add_binary_package_edit(&uri, src, &parsed)
-                        {
-                            let _ = self.client.apply_edit(edit).await;
-                        }
-                    }
-                }
-            }
-        } else if params.command == changelog::ADD_CHANGELOG_ENTRY_COMMAND {
-            if let Some(uri_str) = params.arguments.first().and_then(|v| v.as_str()) {
-                if let Ok(uri) = uri_str.parse::<Uri>() {
-                    let workspace = self.workspace_clone().await;
-                    let workspace_edit = {
-                        let files = self.files.lock().await;
-                        files.get(&uri).and_then(|file_info| {
-                            let parsed = workspace.get_parsed_changelog(file_info.source_file);
-                            let changelog = parsed.tree();
-                            changelog::generate_new_changelog_entry(&changelog).ok().map(|new_entry| {
-                                WorkspaceEdit {
-                                    changes: Some(
-                                        vec![(uri.clone(), vec![TextEdit {
-                                            range: Range {
-                                                start: Position { line: 0, character: 0 },
-                                                end: Position { line: 0, character: 0 },
-                                            },
-                                            new_text: new_entry,
-                                        }])].into_iter().collect(),
-                                    ),
-                                    ..Default::default()
-                                }
-                            })
                         })
                     };
                     if let Some(edit) = workspace_edit {

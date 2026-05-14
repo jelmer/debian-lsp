@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use ::lintian_brush::diagnostic::{
-    Deb822Action, IndentPattern, ParagraphSelector,
-};
+use ::lintian_brush::diagnostic::{Deb822Action, IndentPattern, ParagraphSelector};
 use debian_control::lossless::Control;
 use debian_copyright::lossless::Copyright;
 use tower_lsp_server::ls_types::{Range, TextEdit};
@@ -424,8 +422,8 @@ fn insert_offset_for_field(
     selector: &ParagraphSelector,
 ) -> usize {
     let field_order: &[&str] = match selector {
-        ParagraphSelector::Source => &debian_control::lossless::SOURCE_FIELD_ORDER,
-        ParagraphSelector::Binary { .. } => &debian_control::lossless::BINARY_FIELD_ORDER,
+        ParagraphSelector::Source => debian_control::lossless::SOURCE_FIELD_ORDER,
+        ParagraphSelector::Binary { .. } => debian_control::lossless::BINARY_FIELD_ORDER,
         _ => &[],
     };
 
@@ -433,7 +431,9 @@ fn insert_offset_for_field(
         return paragraph.text_range().end().into();
     }
 
-    let new_pos = field_order.iter().position(|f| f.eq_ignore_ascii_case(field));
+    let new_pos = field_order
+        .iter()
+        .position(|f| f.eq_ignore_ascii_case(field));
 
     // Walk the existing entries and find the last one whose canonical position
     // is before `new_pos`, and the first one whose position is after it.
@@ -459,7 +459,7 @@ fn insert_offset_for_field(
             }
             std::cmp::Ordering::Less => {
                 // existing comes after new field; record the earliest such
-                if insert_before.map_or(true, |b| entry.text_range().start() < (b as u32).into()) {
+                if insert_before.is_none_or(|b| entry.text_range().start() < (b as u32).into()) {
                     insert_before = Some(entry.text_range().start().into());
                 }
             }
@@ -501,7 +501,10 @@ pub(super) fn set_field_edits(
         let insertion = insert_offset_for_field(&paragraph, field, selector);
         let pos = original_src.offset_to_position((insertion as u32).into());
         vec![TextEdit {
-            range: Range { start: pos, end: pos },
+            range: Range {
+                start: pos,
+                end: pos,
+            },
             new_text: format!("{}: {}\n", field, value),
         }]
     }
@@ -527,7 +530,7 @@ fn remove_field_edits(
     }]
 }
 
-fn remove_paragraph_edits(
+pub(super) fn remove_paragraph_edits(
     control: &Control,
     selector: &ParagraphSelector,
     original_src: crate::position::Source<'_>,
@@ -650,7 +653,7 @@ fn rename_field_edits(
 /// one space. For empty values (e.g. `Field:  \n`), strip the whitespace
 /// entirely so the line becomes `Field:\n`. Mirrors the canonical form
 /// produced by `Entry::normalize_field_spacing`.
-fn normalize_field_spacing_edits(
+pub(super) fn normalize_field_spacing_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
@@ -762,7 +765,7 @@ where
     }]
 }
 
-fn drop_relation_edits(
+pub(super) fn drop_relation_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
@@ -786,7 +789,7 @@ fn drop_relation_edits(
     })
 }
 
-fn ensure_substvar_edits(
+pub(super) fn ensure_substvar_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
@@ -809,7 +812,7 @@ fn ensure_substvar_edits(
     })
 }
 
-fn drop_substvar_edits(
+pub(super) fn drop_substvar_edits(
     control: &Control,
     selector: &ParagraphSelector,
     field: &str,
