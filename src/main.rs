@@ -252,6 +252,7 @@ impl Backend {
     }
 
     fn collect_diagnostics(
+        uri: &Uri,
         source_file: workspace::SourceFile,
         file_type: FileType,
         workspace: &Workspace,
@@ -272,6 +273,15 @@ impl Backend {
                 let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
                 Some(dep3::get_diagnostics(&parsed.tree(), src))
             }
+            FileType::PatchesSeries => {
+                let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_patches_series(source_file);
+                Some(patches_series::diagnostics::get_diagnostics(
+                    &uri, src, &parsed,
+                ))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::Changelog
@@ -280,7 +290,6 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::PatchesSeries
             | FileType::DebcargoToml => None,
         }
     }
@@ -606,7 +615,12 @@ impl LanguageServer for Backend {
             self.prefetch_upstream_guesses(&params.text_document.uri);
         }
 
-        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        let diagnostics = Self::collect_diagnostics(
+            &params.text_document.uri,
+            source_file,
+            file_type,
+            &workspace,
+        );
         drop(files);
 
         if let Some(diagnostics) = diagnostics {
@@ -689,7 +703,12 @@ impl LanguageServer for Backend {
             (workspace.clone(), source_file)
         };
 
-        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        let diagnostics = Self::collect_diagnostics(
+            &params.text_document.uri,
+            source_file,
+            file_type,
+            &workspace,
+        );
         drop(files);
 
         if let Some(diagnostics) = diagnostics {
@@ -2211,12 +2230,13 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
             }
         };
 
-        let source_file = workspace.update_file(uri, content.clone());
+        let source_file = workspace.update_file(uri.clone(), content.clone());
 
-        let diagnostics = match Backend::collect_diagnostics(source_file, file_type, &workspace) {
-            Some(d) => d,
-            None => continue,
-        };
+        let diagnostics =
+            match Backend::collect_diagnostics(&uri, source_file, file_type, &workspace) {
+                Some(d) => d,
+                None => continue,
+            };
 
         let display_path = path.display();
         for diag in &diagnostics {
