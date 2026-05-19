@@ -16,5 +16,6 @@ pub(crate) mod changelog_edits;
 pub(crate) mod deb822_edits;
 pub(crate) mod format_edits;
 pub mod translate;
+#[cfg(feature = "lintian-brush")]
 pub mod triggers;
 pub mod workspace;

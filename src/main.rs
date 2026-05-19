@@ -28,7 +28,7 @@ mod control;
 mod copyright;
 mod deb822;
 mod debcargo;
-#[cfg(feature = "debian-workspace")]
+#[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
 mod debian_workspace;
 mod dep3;
 mod distros;

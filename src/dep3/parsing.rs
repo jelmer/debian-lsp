@@ -8,6 +8,7 @@
 //! the header portion and returns the offset where the body starts so
 //! callers can map source ranges back into the original file.
 
+#[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
 pub use dep3::lossless::PatchHeader;
 
 /// Parse the DEP-3 header portion of `content`. Returns the parsed
@@ -15,11 +16,15 @@ pub use dep3::lossless::PatchHeader;
 /// `content.len()` if there is no body). Returns `None` if the header
 /// portion can't be parsed as deb822 — e.g. a malformed continuation
 /// line in the header.
+#[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
 pub fn parse_dep3_header(content: &str) -> Option<(PatchHeader, usize)> {
     PatchHeader::parse_relaxed(content).ok()
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(feature = "lintian-brush", feature = "multiarch-hints")
+))]
 mod tests {
     use super::*;
 

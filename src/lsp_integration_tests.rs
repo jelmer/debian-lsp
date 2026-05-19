@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "lintian-brush")]
 use futures::StreamExt;
 use serde_json::json;
 use tower_lsp_server::jsonrpc::Request;

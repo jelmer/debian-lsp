@@ -98,6 +98,7 @@ impl<'a> LspDebianWorkspace<'a> {
 
     /// Absolute path to the package root (the directory containing
     /// `debian/`).
+    #[cfg(feature = "lintian-brush")]
     pub fn base_path(&self) -> &Path {
         &self.base_path
     }

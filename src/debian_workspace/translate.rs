@@ -4,6 +4,7 @@ use ::debian_workspace::action::{
     Action, ActionPlan, ChangelogAction, Deb822Action, Dep3Action, FilesystemAction,
     LintianOverridesAction, MaintscriptAction, MakefileAction, WatchAction, YamlAction,
 };
+#[cfg(feature = "lintian-brush")]
 use debian_changelog::ChangeLog;
 use tower_lsp_server::ls_types::{
     DeleteFile, DocumentChangeOperation, DocumentChanges, OneOf,
@@ -30,6 +31,7 @@ use super::format_edits::{
 /// deb822 file we can extract a `Deb822` from. Used by the trigger
 /// filter to narrow `Deb822Field` triggers to fields whose ranges
 /// overlap the changed range. Returns `None` for non-deb822 files.
+#[cfg(feature = "lintian-brush")]
 pub fn parse_for_trigger_filtering_deb822(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
@@ -41,6 +43,7 @@ pub fn parse_for_trigger_filtering_deb822(
     }
 }
 
+#[cfg(feature = "lintian-brush")]
 pub fn parse_for_trigger_filtering_changelog(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
@@ -52,6 +55,7 @@ pub fn parse_for_trigger_filtering_changelog(
     }
 }
 
+#[cfg(feature = "lintian-brush")]
 pub fn parse_for_trigger_filtering_yaml(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
@@ -63,6 +67,7 @@ pub fn parse_for_trigger_filtering_yaml(
     }
 }
 
+#[cfg(feature = "lintian-brush")]
 pub fn parse_for_trigger_filtering_watch(
     ws: &LspDebianWorkspace<'_>,
     rel: &Path,
