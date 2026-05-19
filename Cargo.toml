@@ -58,8 +58,8 @@ patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = "0.16"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
-lintian-brush = { path = "../lintian-brush/lintian-brush", optional = true }
-debian-workspace = { path = "../lintian-brush/debian-workspace", optional = true }
+lintian-brush = { version = "0.176", optional = true }
+debian-workspace = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
