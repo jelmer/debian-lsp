@@ -2258,6 +2258,11 @@ impl LanguageServer for Backend {
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// Accepted for compatibility with LSP clients that append `--stdio`
+    /// (e.g. vscode-languageclient). The server always speaks LSP over
+    /// stdio when no subcommand is given, so the flag is a no-op.
+    #[arg(long, hide = true)]
+    stdio: bool,
 }
 
 /// Subcommands for debian-lsp.
