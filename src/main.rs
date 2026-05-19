@@ -961,14 +961,6 @@ impl LanguageServer for Backend {
                     actions.push(action);
                 }
 
-                // "Add binary package" is document-level and should only
-                // appear via the command palette, not the lightbulb.
-                if params.context.trigger_kind != Some(CodeActionTriggerKind::AUTOMATIC) {
-                    actions.push(control::get_add_binary_package_command(
-                        &params.text_document.uri,
-                    ));
-                }
-
                 // Add field casing fixes. For source.fixAll, scan the whole
                 // document and ignore the diagnostics filter so a single
                 // "Fix all" can apply every casing fix at once.
@@ -1046,13 +1038,6 @@ impl LanguageServer for Backend {
                 actions.extend(casing_actions);
             }
             FileType::Changelog => {
-                // Add new changelog entry: document-level, palette only.
-                if params.context.trigger_kind != Some(CodeActionTriggerKind::AUTOMATIC) {
-                    actions.push(changelog::get_add_changelog_entry_command(
-                        &params.text_document.uri,
-                    ));
-                }
-
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
                 if let Some(text_range) = text_range {
                     let unreleased_entries = workspace

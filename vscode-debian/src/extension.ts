@@ -93,9 +93,11 @@ export function activate(context: ExtensionContext) {
     }
   }, null, context.subscriptions);
 
-  // Register command palette commands that delegate to the LSP server.
+  // Palette wrappers: supply the active document URI as the first argument
+  // to the server-side handler. The command IDs differ from the LSP-registered
+  // ones to avoid duplicate registration with vscode-languageclient.
   context.subscriptions.push(
-    commands.registerCommand('debian-lsp.addBinaryPackage', () => {
+    commands.registerCommand('debian-lsp.palette.addBinaryPackage', () => {
       const uri = window.activeTextEditor?.document.uri.toString();
       if (uri) {
         client.sendRequest('workspace/executeCommand', {
@@ -104,7 +106,7 @@ export function activate(context: ExtensionContext) {
         });
       }
     }),
-    commands.registerCommand('debian-lsp.addChangelogEntry', () => {
+    commands.registerCommand('debian-lsp.palette.addChangelogEntry', () => {
       const uri = window.activeTextEditor?.document.uri.toString();
       if (uri) {
         client.sendRequest('workspace/executeCommand', {
