@@ -418,14 +418,28 @@ impl Backend {
         store: Option<multiarch_hints::hints::HintsStore>,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
         if file_type != FileType::Control {
+            tracing::debug!(
+                "multiarch-hints: skipping {} ({:?} is not Control)",
+                uri.as_str(),
+                file_type
+            );
             return Ok(None);
         }
         let Some(store) = store else {
+            tracing::debug!(
+                "multiarch-hints: no HintsStore configured, skipping {}",
+                uri.as_str()
+            );
             return Ok(None);
         };
         let Some(hints) = store.get().await else {
+            tracing::debug!(
+                "multiarch-hints: no hints available, skipping {}",
+                uri.as_str()
+            );
             return Ok(None);
         };
+        let uri_for_log = uri.as_str().to_string();
         let diags = tokio::task::spawn_blocking(move || {
             multiarch_hints::fixers::run_diagnostics_for_uri(
                 &uri,
@@ -440,6 +454,11 @@ impl Backend {
             tracing::error!("{}", msg);
             tower_lsp_server::jsonrpc::Error::internal_error()
         })?;
+        tracing::debug!(
+            "multiarch-hints: produced {} diagnostic(s) for {}",
+            diags.len(),
+            uri_for_log
+        );
         Ok(Some(diags))
     }
 
@@ -2372,6 +2391,12 @@ enum Command {
     Check {
         /// Files or directories to check.
         paths: Vec<std::path::PathBuf>,
+        /// Skip the multiarch-hints detector. The detector fetches a hints
+        /// feed from the network (cached on disk after the first call);
+        /// pass this flag for fully offline runs or to keep `check` fast.
+        #[cfg(feature = "multiarch-hints")]
+        #[arg(long)]
+        no_multiarch_hints: bool,
     },
 }
 
@@ -2422,9 +2447,21 @@ fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// and any recognized Debian files found within are checked.
 ///
 /// Returns the number of errors found (for the exit code).
-async fn run_check(paths: &[std::path::PathBuf]) -> i32 {
+async fn run_check(
+    paths: &[std::path::PathBuf],
+    #[cfg(feature = "multiarch-hints")] enable_multiarch_hints: bool,
+) -> i32 {
     let mut workspace = Workspace::new();
     let mut error_count: i32 = 0;
+
+    // Construct (but don't pre-warm) the multiarch-hints store. The
+    // first per-file diagnostics pass that needs it triggers the
+    // network fetch; subsequent passes hit the in-process cache. Pass
+    // mode is `Explicit`, so a one-off network round-trip is fine.
+    // `None` here skips the detector entirely (see --no-multiarch-hints).
+    #[cfg(feature = "multiarch-hints")]
+    let multiarch_hints_store =
+        enable_multiarch_hints.then(multiarch_hints::hints::HintsStore::default);
 
     // Expand directories into individual files, tracking which were explicit.
     let explicit_paths: std::collections::HashSet<std::path::PathBuf> =
@@ -2492,7 +2529,7 @@ async fn run_check(paths: &[std::path::PathBuf]) -> i32 {
             RunPhase::Explicit,
             None,
             #[cfg(feature = "multiarch-hints")]
-            None,
+            multiarch_hints_store.clone(),
         )
         .await
         {
@@ -2528,8 +2565,27 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Check { paths }) => {
-            let errors = run_check(&paths).await;
+        Some(Command::Check {
+            paths,
+            #[cfg(feature = "multiarch-hints")]
+            no_multiarch_hints,
+        }) => {
+            // ANSI colours and the more readable `pretty` formatter
+            // are fine for `check` — it's a terminal-facing CLI. The
+            // LSP-server path leaves both off because the client reads
+            // stderr as plain text.
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+                .with_target(false)
+                .compact()
+                .init();
+            let errors = run_check(
+                &paths,
+                #[cfg(feature = "multiarch-hints")]
+                !no_multiarch_hints,
+            )
+            .await;
             std::process::exit(if errors > 0 { 1 } else { 0 });
         }
         None => {

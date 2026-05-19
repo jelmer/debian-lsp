@@ -62,8 +62,18 @@ impl HintsStore {
     }
 
     async fn fetch_and_parse() -> Result<Vec<Hint>, Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!(
+            "Loading multiarch hints from {}",
+            multiarch_hints::MULTIARCH_HINTS_URL
+        );
+        let started = std::time::Instant::now();
         let bytes = cache_download_multiarch_hints_async(None).await?;
         let parsed = parse_multiarch_hints(&bytes)?;
+        tracing::info!(
+            "Loaded {} multiarch hints in {:.2}s",
+            parsed.len(),
+            started.elapsed().as_secs_f64()
+        );
         Ok(parsed)
     }
 }

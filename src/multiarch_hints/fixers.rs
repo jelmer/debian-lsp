@@ -9,11 +9,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-use multiarch_hints::{detect_multiarch_hints, multiarch_hints_by_binary, Certainty, Hint};
+use multiarch_hints::{
+    detect_multiarch_hints, multiarch_hints_by_binary, Certainty, Hint, Severity,
+};
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
-    NumberOrString, Range, Uri, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeDescription, Diagnostic,
+    DiagnosticSeverity, NumberOrString, Range, Uri, WorkspaceEdit,
 };
 
 use crate::debian_workspace::translate::{
@@ -158,16 +161,42 @@ pub fn run_diagnostics_for_uri(
             continue;
         }
         let range = plans_range(plans, &ws, &rel, original_src);
+        // The diagnostic describes the problem in the upstream's own
+        // words ("foo could be MA: foreign"); the matching quickfix
+        // action title carries the proposed change ("Add Multi-Arch:
+        // foreign."). Fall back to the action label if the upstream
+        // description is empty.
+        let message = if change.hint.description.is_empty() {
+            plan.label.clone()
+        } else {
+            change.hint.description.clone()
+        };
         out.push(Diagnostic {
             range,
-            severity: Some(DiagnosticSeverity::INFORMATION),
+            severity: Some(hint_severity_to_lsp(change.hint.severity)),
             code: Some(NumberOrString::String(change.hint.kind().to_string())),
+            code_description: Uri::from_str(&change.hint.link)
+                .ok()
+                .map(|href| CodeDescription { href }),
             source: Some("multiarch-hints".to_string()),
-            message: plan.label.clone(),
+            message,
             ..Default::default()
         });
     }
     out
+}
+
+/// Map a multiarch-hints `Severity` to its LSP counterpart.
+///
+/// `High` is a hard conflict (file-conflict, ma-foreign-library); the
+/// fix is well-defined and worth surfacing prominently. `Normal` and
+/// `Low` are suggestions, so they stay at the lower LSP levels.
+fn hint_severity_to_lsp(severity: Severity) -> DiagnosticSeverity {
+    match severity {
+        Severity::High => DiagnosticSeverity::WARNING,
+        Severity::Normal => DiagnosticSeverity::INFORMATION,
+        Severity::Low => DiagnosticSeverity::HINT,
+    }
 }
 
 fn ranges_overlap_lsp(a: Range, b: Range) -> bool {
@@ -345,7 +374,39 @@ mod tests {
             Some(NumberOrString::String("ma-foreign".to_string()))
         );
         assert_eq!(diags[0].source.as_deref(), Some("multiarch-hints"));
-        assert_eq!(diags[0].message, "Add Multi-Arch: foreign.");
+        // The diagnostic message carries the upstream description.
+        // The fix label ("Add Multi-Arch: foreign.") is the code action
+        // title, not the diagnostic message.
+        assert_eq!(diags[0].message, "foo could be MA: foreign");
+        // code_description carries the wiki link so editors can render
+        // a "More information" affordance.
+        assert_eq!(
+            diags[0]
+                .code_description
+                .as_ref()
+                .map(|c| c.href.as_str().to_string()),
+            Some("https://wiki.debian.org/MultiArch/Hints#ma-foreign".to_string())
+        );
+        // "normal" severity hints map to INFORMATION.
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::INFORMATION));
+    }
+
+    /// "high"-severity hints (file-conflict, ma-foreign-library) map
+    /// to LSP WARNING — they describe an actual conflict, not a
+    /// suggestion.
+    #[test]
+    fn high_severity_hint_maps_to_warning() {
+        let (_tmp, workspace, open_files, control_uri) = setup_control(
+            "Source: src\n\nPackage: foo\nArchitecture: any\nMulti-Arch: same\nDescription: bar\n bar\n",
+        );
+
+        let yaml = format!(
+            "format: multiarch-hints-1.0\nhints:\n- binary: foo\n  description: \"foo conflicts\"\n  link: https://wiki.debian.org/MultiArch/Hints#file-conflict\n  severity: high\n  source: src\n",
+        );
+        let hints = parse(&yaml);
+        let diags = run_diagnostics_for_uri(&control_uri, &workspace, &open_files, &hints);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
     }
 
     #[test]
