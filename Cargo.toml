@@ -15,12 +15,21 @@ include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/R
 default = ["launchpad"]
 launchpad = ["dep:launchpadlib"]
 openssl-vendored = ["dep:openssl"]
+# Generic adapter from our salsa workspace to the `debian-workspace`
+# crate's `Workspace` trait, plus the action-plan -> LSP-edit translator.
+# Required by detector hosts (lintian-brush, multiarch-hints, ...) but
+# carries no detector code itself, so it's cheap to enable on its own.
+debian-workspace = ["dep:debian-workspace"]
+# Surfaces migrated lintian-brush fixers as code actions. Pulls in the
+# full lintian-brush dependency tree (pyo3, breezyshim, sqlx, sequoia,
+# ...); leave it off if those are unwanted in the server binary.
+lintian-brush = ["dep:lintian-brush", "debian-workspace"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
 async-trait = "0.1"
 chrono = "0.4"
-debian-changelog = "0.2.18"
+debian-changelog = "0.2.19"
 debian-control = { version = "0.3.7" }
 debian-copyright = { version = "0.1.47", features = ["lossless"] }
 debian-watch = { version = "0.4.10", features = ["linebased", "deb822"] }
@@ -28,9 +37,9 @@ dep3 = "0.2.2"
 distro-info = "0.4"
 rowan = "0.16.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
-makefile-lossless = "0.3.34"
+makefile-lossless = "0.3.36"
 deb822-fast = "0.2"
-lintian-overrides = { version = "0.1.2" }
+lintian-overrides = "0.1.3"
 deb822-lossless = { version = "0.5.15" }
 yaml-edit = { version = "0.2.0" }
 toml_edit = "0.25"
@@ -49,12 +58,15 @@ patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = "0.16"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
+lintian-brush = { version = "0.176", optional = true }
+debian-workspace = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tower-service = "0.3"
+tower-test = "0.4"
 
 [[bin]]
 name = "debian-lsp"

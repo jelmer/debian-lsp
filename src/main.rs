@@ -28,12 +28,17 @@ mod control;
 mod copyright;
 mod deb822;
 mod debcargo;
+#[cfg(feature = "debian-workspace")]
+mod debian_workspace;
 mod dep3;
 mod distros;
+#[cfg(feature = "lintian-brush")]
+mod lintian_brush;
 mod lintian_overrides;
 mod maintainers;
 mod package_cache;
 mod patches_series;
+mod phase;
 mod popcon;
 mod position;
 mod rdeps;
@@ -46,6 +51,9 @@ mod upstream_metadata;
 mod vcswatch;
 mod watch;
 mod workspace;
+
+#[cfg(test)]
+mod lsp_integration_tests;
 
 use position::{LineIndex, Source};
 use std::collections::HashMap;
@@ -236,6 +244,8 @@ struct Backend {
     settings: Arc<Mutex<Settings>>,
 }
 
+use phase::RunPhase;
+
 impl Backend {
     /// Acquire a clone of the workspace under a brief Mutex lock.
     ///
@@ -251,7 +261,45 @@ impl Backend {
         self.workspace.lock().await.clone()
     }
 
-    fn collect_diagnostics(
+    async fn collect_diagnostics(
+        uri: Uri,
+        source_file: workspace::SourceFile,
+        file_type: FileType,
+        workspace: Workspace,
+        open_files: HashMap<Uri, FileInfo>,
+        phase: RunPhase,
+        changed_ranges: Option<Vec<rowan::TextRange>>,
+    ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
+        let builtin = Self::builtin_diagnostics(source_file, file_type, &workspace);
+
+        #[cfg(feature = "lintian-brush")]
+        let lb = Self::lintian_brush_diagnostics(
+            uri,
+            file_type,
+            workspace,
+            open_files,
+            phase,
+            changed_ranges,
+        )
+        .await?;
+        #[cfg(not(feature = "lintian-brush"))]
+        let lb: Option<Vec<Diagnostic>> = {
+            let _ = (uri, workspace, open_files, phase, changed_ranges);
+            None
+        };
+
+        Ok(match (builtin, lb) {
+            (None, None) => None,
+            (Some(b), None) => Some(b),
+            (None, Some(l)) => Some(l),
+            (Some(mut b), Some(l)) => {
+                b.extend(l);
+                Some(b)
+            }
+        })
+    }
+
+    fn builtin_diagnostics(
         source_file: workspace::SourceFile,
         file_type: FileType,
         workspace: &Workspace,
@@ -283,6 +331,48 @@ impl Backend {
             | FileType::PatchesSeries
             | FileType::DebcargoToml => None,
         }
+    }
+
+    // Some lintian-brush detectors call `Runtime::new() + block_on`
+    // internally (UDD queries, `git ls-remote`); doing that on a tokio
+    // worker panics, so the whole detector pass runs on `spawn_blocking`.
+    #[cfg(feature = "lintian-brush")]
+    async fn lintian_brush_diagnostics(
+        uri: Uri,
+        file_type: FileType,
+        workspace: Workspace,
+        open_files: HashMap<Uri, FileInfo>,
+        phase: RunPhase,
+        changed_ranges: Option<Vec<rowan::TextRange>>,
+    ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
+        if !matches!(
+            file_type,
+            FileType::Control
+                | FileType::Copyright
+                | FileType::Changelog
+                | FileType::Watch
+                | FileType::UpstreamMetadata
+                | FileType::TestsControl
+                | FileType::Patch
+        ) {
+            return Ok(None);
+        }
+        let diags = tokio::task::spawn_blocking(move || {
+            lintian_brush::fixers::run_diagnostics_for_uri(
+                &uri,
+                &workspace,
+                &open_files,
+                phase,
+                changed_ranges.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| {
+            let msg = format!("lintian-brush detector task panicked: {:?}", e);
+            tracing::error!("{}", msg);
+            tower_lsp_server::jsonrpc::Error::internal_error()
+        })?;
+        Ok(Some(diags))
     }
 
     /// Find the `debian/` directory by walking up from the given URI.
@@ -606,8 +696,26 @@ impl LanguageServer for Backend {
             self.prefetch_upstream_guesses(&params.text_document.uri);
         }
 
-        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        let open_files_snapshot = files.clone();
         drop(files);
+
+        let diagnostics = match Self::collect_diagnostics(
+            params.text_document.uri.clone(),
+            source_file,
+            file_type,
+            workspace,
+            open_files_snapshot,
+            RunPhase::Open,
+            None,
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                self.client.log_message(MessageType::ERROR, &e).await;
+                None
+            }
+        };
 
         if let Some(diagnostics) = diagnostics {
             self.client
@@ -689,8 +797,29 @@ impl LanguageServer for Backend {
             (workspace.clone(), source_file)
         };
 
-        let diagnostics = Self::collect_diagnostics(source_file, file_type, &workspace);
+        let open_files_snapshot = files.clone();
         drop(files);
+
+        // changed_ranges is intentionally `None`: narrowing by touched
+        // fields would skip detectors for unchanged fields and wipe
+        // their already-published diagnostics from the rest of the file.
+        let diagnostics = match Self::collect_diagnostics(
+            params.text_document.uri.clone(),
+            source_file,
+            file_type,
+            workspace,
+            open_files_snapshot,
+            RunPhase::Keystroke,
+            None,
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                self.client.log_message(MessageType::ERROR, &e).await;
+                None
+            }
+        };
 
         if let Some(diagnostics) = diagnostics {
             self.client
@@ -920,9 +1049,14 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        // Only control, copyright, and changelog files support code actions for now
         match file_info.file_type {
-            FileType::Control | FileType::Copyright | FileType::Changelog => {}
+            FileType::Control
+            | FileType::Copyright
+            | FileType::Changelog
+            | FileType::Watch
+            | FileType::UpstreamMetadata
+            | FileType::TestsControl
+            | FileType::Patch => {}
             _ => return Ok(None),
         }
 
@@ -1086,8 +1220,43 @@ impl LanguageServer for Backend {
                     }
                 }
             }
+            FileType::Watch
+            | FileType::UpstreamMetadata
+            | FileType::TestsControl
+            | FileType::Patch => {}
             _ => unreachable!(),
         }
+
+        #[cfg(feature = "lintian-brush")]
+        {
+            let open_files_snapshot = files.clone();
+            drop(files);
+            let uri = params.text_document.uri.clone();
+            let diagnostics = params.context.diagnostics.clone();
+            let lb_actions = match tokio::task::spawn_blocking(move || {
+                lintian_brush::fixers::run_fixers_for_uri(
+                    &uri,
+                    &workspace,
+                    &open_files_snapshot,
+                    &diagnostics,
+                    Some(params.range),
+                    RunPhase::Explicit,
+                )
+            })
+            .await
+            {
+                Ok(actions) => actions,
+                Err(e) => {
+                    let msg = format!("lintian-brush fixer task panicked: {:?}", e);
+                    tracing::error!("{}", msg);
+                    self.client.log_message(MessageType::ERROR, msg).await;
+                    Vec::new()
+                }
+            };
+            actions.extend(lb_actions);
+        }
+        #[cfg(not(feature = "lintian-brush"))]
+        drop(files);
 
         // Filter actions based on client's requested kinds
         if let Some(requested_kinds) = requested_kinds {
@@ -2152,7 +2321,7 @@ fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// and any recognized Debian files found within are checked.
 ///
 /// Returns the number of errors found (for the exit code).
-fn run_check(paths: &[std::path::PathBuf]) -> i32 {
+async fn run_check(paths: &[std::path::PathBuf]) -> i32 {
     let mut workspace = Workspace::new();
     let mut error_count: i32 = 0;
 
@@ -2211,11 +2380,26 @@ fn run_check(paths: &[std::path::PathBuf]) -> i32 {
             }
         };
 
-        let source_file = workspace.update_file(uri, content.clone());
+        let source_file = workspace.update_file(uri.clone(), content.clone());
 
-        let diagnostics = match Backend::collect_diagnostics(source_file, file_type, &workspace) {
-            Some(d) => d,
-            None => continue,
+        let diagnostics = match Backend::collect_diagnostics(
+            uri.clone(),
+            source_file,
+            file_type,
+            workspace.clone(),
+            HashMap::new(),
+            RunPhase::Explicit,
+            None,
+        )
+        .await
+        {
+            Ok(Some(d)) => d,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("{}: error: {}", path.display(), e);
+                error_count += 1;
+                continue;
+            }
         };
 
         let display_path = path.display();
@@ -2242,7 +2426,7 @@ async fn main() {
 
     match cli.command {
         Some(Command::Check { paths }) => {
-            let errors = run_check(&paths);
+            let errors = run_check(&paths).await;
             std::process::exit(if errors > 0 { 1 } else { 0 });
         }
         None => {
