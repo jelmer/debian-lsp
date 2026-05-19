@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ::lintian_brush::diagnostic::{
+use ::debian_workspace::action::{
     Action, ActionPlan, ChangelogAction, Deb822Action, Dep3Action, FilesystemAction,
     LintianOverridesAction, MaintscriptAction, MakefileAction, WatchAction, YamlAction,
 };
@@ -74,9 +74,9 @@ pub fn parse_for_trigger_filtering_watch(
     }
 }
 
-/// Return true if any plan on `diag` has an action targeting `rel`.
-pub fn diag_touches_file(diag: &::lintian_brush::diagnostic::Diagnostic, rel: &Path) -> bool {
-    diag.plans.iter().any(|plan| {
+/// Return true if any plan in `plans` has an action targeting `rel`.
+pub fn plans_touch_file(plans: &[ActionPlan], rel: &Path) -> bool {
+    plans.iter().any(|plan| {
         plan.actions
             .iter()
             .any(|action| action_file(action) == Some(rel))
@@ -90,7 +90,7 @@ pub fn diag_touches_file(diag: &::lintian_brush::diagnostic::Diagnostic, rel: &P
 /// one that targets `anchor_rel` and produces a precise source range;
 /// fall back to a whole-document range if nothing more specific is
 /// available.
-/// Like `diagnostic_range`, but returns `None` when no action targets
+/// Like `plans_range`, but returns `None` when no action targets
 /// the anchor file rather than falling back to the full document range.
 /// Used for code-action filtering to avoid showing cross-file actions
 /// on every line of the wrong file.
@@ -99,14 +99,14 @@ pub fn diag_touches_file(diag: &::lintian_brush::diagnostic::Diagnostic, rel: &P
 /// cross-file: they don't edit any open buffer. Surface them as a
 /// zero-length range at line 0 of the anchor file so they're offered
 /// regardless of which debian/* file the user has open.
-pub fn diagnostic_range_in_file(
-    diag: &::lintian_brush::diagnostic::Diagnostic,
+pub fn plans_range_in_file(
+    plans: &[ActionPlan],
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
     anchor_src: crate::position::Source<'_>,
 ) -> Option<Range> {
     let mut has_filesystem = false;
-    for plan in &diag.plans {
+    for plan in plans {
         for action in &plan.actions {
             if matches!(action, Action::Filesystem(_)) {
                 has_filesystem = true;
@@ -126,13 +126,13 @@ pub fn diagnostic_range_in_file(
     None
 }
 
-pub fn diagnostic_range(
-    diag: &::lintian_brush::diagnostic::Diagnostic,
+pub fn plans_range(
+    plans: &[ActionPlan],
     ws: &LspDebianWorkspace<'_>,
     anchor_rel: &Path,
     anchor_src: crate::position::Source<'_>,
 ) -> Range {
-    for plan in &diag.plans {
+    for plan in plans {
         for action in &plan.actions {
             if action_file(action) != Some(anchor_rel) {
                 continue;

@@ -1,4 +1,4 @@
-use ::lintian_brush::diagnostic::ChangelogAction;
+use ::debian_workspace::action::ChangelogAction;
 use debian_changelog::ChangeLog;
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{Range, TextEdit};

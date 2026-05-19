@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ::lintian_brush::diagnostic::{Deb822Action, IndentPattern, ParagraphSelector};
+use ::debian_workspace::action::{Deb822Action, IndentPattern, ParagraphSelector};
 use debian_control::lossless::Control;
 use debian_copyright::lossless::Copyright;
 use tower_lsp_server::ls_types::{Range, TextEdit};
@@ -815,7 +815,7 @@ pub fn set_relation_version_constraint_edits(
     package: &str,
     constraint: &Option<(
         debian_control::relations::VersionConstraint,
-        ::lintian_brush::Version,
+        ::debian_workspace::Version,
     )>,
     original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
