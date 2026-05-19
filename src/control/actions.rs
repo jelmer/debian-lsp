@@ -146,18 +146,6 @@ pub fn build_add_binary_package_edit(
     })
 }
 
-/// Return a palette command entry for "Add binary package".
-///
-/// This is intentionally a `Command` (not a `CodeAction`) so that VS Code
-/// only surfaces it via the command palette, not the automatic lightbulb.
-pub fn get_add_binary_package_command(uri: &Uri) -> CodeActionOrCommand {
-    CodeActionOrCommand::Command(Command {
-        title: "Add binary package".to_string(),
-        command: ADD_BINARY_PACKAGE_COMMAND.to_string(),
-        arguments: Some(vec![serde_json::json!(uri.as_str())]),
-    })
-}
-
 /// Generate field casing fix actions for a control file
 ///
 /// # Arguments

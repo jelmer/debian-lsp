@@ -44,12 +44,12 @@
   "contributes": {
     "commands": [
       {
-        "command": "debian-lsp.addBinaryPackage",
+        "command": "debian-lsp.palette.addBinaryPackage",
         "title": "Add Binary Package",
         "category": "Debian"
       },
       {
-        "command": "debian-lsp.addChangelogEntry",
+        "command": "debian-lsp.palette.addChangelogEntry",
         "title": "Add New Changelog Entry",
         "category": "Debian"
       }

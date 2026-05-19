@@ -6,18 +6,6 @@ use crate::position::Source;
 
 pub const ADD_CHANGELOG_ENTRY_COMMAND: &str = "debian-lsp.addChangelogEntry";
 
-/// Return a palette command entry for "Add new changelog entry".
-///
-/// This is intentionally a `Command` (not a `CodeAction`) so that VS Code
-/// only surfaces it via the command palette, not the automatic lightbulb.
-pub fn get_add_changelog_entry_command(uri: &Uri) -> CodeActionOrCommand {
-    CodeActionOrCommand::Command(Command {
-        title: "Add new changelog entry".to_string(),
-        command: ADD_CHANGELOG_ENTRY_COMMAND.to_string(),
-        arguments: Some(vec![serde_json::json!(uri.as_str())]),
-    })
-}
-
 /// Generate a TextEdit that updates the timestamp of the first UNRELEASED entry
 /// to the current time. Returns `None` if the first entry is not UNRELEASED or
 /// has no timestamp.
