@@ -36,6 +36,8 @@ mod distros;
 mod lintian_brush;
 mod lintian_overrides;
 mod maintainers;
+#[cfg(feature = "multiarch-hints")]
+mod multiarch_hints;
 mod package_cache;
 mod patches_series;
 mod phase;
@@ -241,6 +243,8 @@ struct Backend {
     git_file_cache: copyright::code_lens::SharedGitFileCache,
     lintian_tag_cache: lintian_overrides::SharedLintianTagCache,
     upstream_cache: upstream_metadata::SharedUpstreamCache,
+    #[cfg(feature = "multiarch-hints")]
+    multiarch_hints_store: multiarch_hints::hints::HintsStore,
     settings: Arc<Mutex<Settings>>,
 }
 
@@ -261,6 +265,7 @@ impl Backend {
         self.workspace.lock().await.clone()
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn collect_diagnostics(
         uri: Uri,
         source_file: workspace::SourceFile,
@@ -269,31 +274,56 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        #[cfg(feature = "multiarch-hints")] multiarch_hints_store: Option<
+            multiarch_hints::hints::HintsStore,
+        >,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
         let builtin = Self::builtin_diagnostics(source_file, file_type, &workspace);
 
         #[cfg(feature = "lintian-brush")]
         let lb = Self::lintian_brush_diagnostics(
-            uri,
+            uri.clone(),
             file_type,
-            workspace,
-            open_files,
+            workspace.clone(),
+            open_files.clone(),
             phase,
-            changed_ranges,
+            changed_ranges.clone(),
         )
         .await?;
         #[cfg(not(feature = "lintian-brush"))]
-        let lb: Option<Vec<Diagnostic>> = {
-            let _ = (uri, workspace, open_files, phase, changed_ranges);
-            None
-        };
+        let lb: Option<Vec<Diagnostic>> = None;
 
-        Ok(match (builtin, lb) {
+        #[cfg(feature = "multiarch-hints")]
+        let mh = Self::multiarch_hints_diagnostics(
+            uri.clone(),
+            file_type,
+            workspace.clone(),
+            open_files.clone(),
+            multiarch_hints_store,
+        )
+        .await?;
+        #[cfg(not(feature = "multiarch-hints"))]
+        let mh: Option<Vec<Diagnostic>> = None;
+
+        // Silence unused-variable warnings when neither extension feature
+        // is enabled — the bindings are only consumed inside the cfg arms.
+        let _ = (uri, workspace, open_files, phase, changed_ranges);
+
+        let combined = match (builtin, lb) {
             (None, None) => None,
             (Some(b), None) => Some(b),
             (None, Some(l)) => Some(l),
             (Some(mut b), Some(l)) => {
                 b.extend(l);
+                Some(b)
+            }
+        };
+        Ok(match (combined, mh) {
+            (None, None) => None,
+            (Some(b), None) => Some(b),
+            (None, Some(m)) => Some(m),
+            (Some(mut b), Some(m)) => {
+                b.extend(m);
                 Some(b)
             }
         })
@@ -369,6 +399,44 @@ impl Backend {
         .await
         .map_err(|e| {
             let msg = format!("lintian-brush detector task panicked: {:?}", e);
+            tracing::error!("{}", msg);
+            tower_lsp_server::jsonrpc::Error::internal_error()
+        })?;
+        Ok(Some(diags))
+    }
+
+    /// Surface multiarch-hints suggestions as diagnostics on
+    /// `debian/control`. The detector itself is sync, but the hint feed
+    /// is fetched (and cached on disk) asynchronously through
+    /// [`multiarch_hints::hints::HintsStore`].
+    #[cfg(feature = "multiarch-hints")]
+    async fn multiarch_hints_diagnostics(
+        uri: Uri,
+        file_type: FileType,
+        workspace: Workspace,
+        open_files: HashMap<Uri, FileInfo>,
+        store: Option<multiarch_hints::hints::HintsStore>,
+    ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
+        if file_type != FileType::Control {
+            return Ok(None);
+        }
+        let Some(store) = store else {
+            return Ok(None);
+        };
+        let Some(hints) = store.get().await else {
+            return Ok(None);
+        };
+        let diags = tokio::task::spawn_blocking(move || {
+            multiarch_hints::fixers::run_diagnostics_for_uri(
+                &uri,
+                &workspace,
+                &open_files,
+                hints.as_slice(),
+            )
+        })
+        .await
+        .map_err(|e| {
+            let msg = format!("multiarch-hints detector task panicked: {:?}", e);
             tracing::error!("{}", msg);
             tower_lsp_server::jsonrpc::Error::internal_error()
         })?;
@@ -707,6 +775,8 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Open,
             None,
+            #[cfg(feature = "multiarch-hints")]
+            Some(self.multiarch_hints_store.clone()),
         )
         .await
         {
@@ -811,6 +881,8 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Keystroke,
             None,
+            #[cfg(feature = "multiarch-hints")]
+            Some(self.multiarch_hints_store.clone()),
         )
         .await
         {
@@ -1212,19 +1284,24 @@ impl LanguageServer for Backend {
             _ => unreachable!(),
         }
 
+        #[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
+        let open_files_snapshot = files.clone();
+        drop(files);
+
         #[cfg(feature = "lintian-brush")]
         {
-            let open_files_snapshot = files.clone();
-            drop(files);
             let uri = params.text_document.uri.clone();
             let diagnostics = params.context.diagnostics.clone();
+            let workspace_for_lb = workspace.clone();
+            let open_files_for_lb = open_files_snapshot.clone();
+            let range = params.range;
             let lb_actions = match tokio::task::spawn_blocking(move || {
                 lintian_brush::fixers::run_fixers_for_uri(
                     &uri,
-                    &workspace,
-                    &open_files_snapshot,
+                    &workspace_for_lb,
+                    &open_files_for_lb,
                     &diagnostics,
-                    Some(params.range),
+                    Some(range),
                     RunPhase::Explicit,
                 )
             })
@@ -1240,8 +1317,42 @@ impl LanguageServer for Backend {
             };
             actions.extend(lb_actions);
         }
-        #[cfg(not(feature = "lintian-brush"))]
-        drop(files);
+
+        #[cfg(feature = "multiarch-hints")]
+        {
+            if let Some(hints) = self.multiarch_hints_store.get().await {
+                let uri = params.text_document.uri.clone();
+                let diagnostics = params.context.diagnostics.clone();
+                let range = params.range;
+                let workspace_for_mh = workspace.clone();
+                let open_files_for_mh = open_files_snapshot.clone();
+                let mh_actions = match tokio::task::spawn_blocking(move || {
+                    multiarch_hints::fixers::run_fixers_for_uri(
+                        &uri,
+                        &workspace_for_mh,
+                        &open_files_for_mh,
+                        &diagnostics,
+                        Some(range),
+                        hints.as_slice(),
+                    )
+                })
+                .await
+                {
+                    Ok(actions) => actions,
+                    Err(e) => {
+                        let msg = format!("multiarch-hints fixer task panicked: {:?}", e);
+                        tracing::error!("{}", msg);
+                        self.client.log_message(MessageType::ERROR, msg).await;
+                        Vec::new()
+                    }
+                };
+                actions.extend(mh_actions);
+            }
+        }
+
+        // Silence unused-variable warnings when neither extension feature
+        // is enabled.
+        let _ = &workspace;
 
         // Filter actions based on client's requested kinds
         if let Some(requested_kinds) = requested_kinds {
@@ -2380,6 +2491,8 @@ async fn run_check(paths: &[std::path::PathBuf]) -> i32 {
             HashMap::new(),
             RunPhase::Explicit,
             None,
+            #[cfg(feature = "multiarch-hints")]
+            None,
         )
         .await
         {
@@ -2466,6 +2579,8 @@ async fn main() {
                     lintian_overrides::LintianTagCache::new(),
                 )),
                 upstream_cache: upstream_metadata::upstream_cache::new_shared(),
+                #[cfg(feature = "multiarch-hints")]
+                multiarch_hints_store: multiarch_hints::hints::HintsStore::default(),
                 settings: Arc::new(Mutex::new(Settings::default())),
             });
 

@@ -31,6 +31,8 @@ async fn setup_server() -> (LspService<Backend>, tower_lsp_server::ClientSocket)
             lintian_overrides::LintianTagCache::new(),
         )),
         upstream_cache: upstream_metadata::upstream_cache::new_shared(),
+        #[cfg(feature = "multiarch-hints")]
+        multiarch_hints_store: multiarch_hints::hints::HintsStore::default(),
         settings: Arc::new(Mutex::new(Settings::default())),
     });
     (service, socket)
