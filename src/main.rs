@@ -12,13 +12,25 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use clap::{Parser, Subcommand};
 
 /// Server settings received from the client via initializationOptions.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 struct Settings {
     /// Allow the upstream-ontologist to make network requests when guessing
     /// upstream metadata values. Defaults to `false`.
     upstream_ontologist_net_access: bool,
+    /// Surface lintian-brush issues that are suppressed by a lintian
+    /// override as faded, informational diagnostics. Defaults to `true`.
+    show_overridden_issues: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            upstream_ontologist_net_access: false,
+            show_overridden_issues: true,
+        }
+    }
 }
 
 mod architecture;
@@ -274,6 +286,7 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        show_overridden: bool,
         #[cfg(feature = "multiarch-hints")] multiarch_hints_store: Option<
             multiarch_hints::hints::HintsStore,
         >,
@@ -288,6 +301,7 @@ impl Backend {
             open_files.clone(),
             phase,
             changed_ranges.clone(),
+            show_overridden,
         )
         .await?;
         #[cfg(not(feature = "lintian-brush"))]
@@ -307,7 +321,14 @@ impl Backend {
 
         // Silence unused-variable warnings when neither extension feature
         // is enabled — the bindings are only consumed inside the cfg arms.
-        let _ = (uri, workspace, open_files, phase, changed_ranges);
+        let _ = (
+            uri,
+            workspace,
+            open_files,
+            phase,
+            changed_ranges,
+            show_overridden,
+        );
 
         let combined = match (builtin, lb) {
             (None, None) => None,
@@ -374,6 +395,7 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        show_overridden: bool,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
         if !matches!(
             file_type,
@@ -394,6 +416,7 @@ impl Backend {
                 &open_files,
                 phase,
                 changed_ranges.as_deref(),
+                show_overridden,
             )
         })
         .await
@@ -786,6 +809,7 @@ impl LanguageServer for Backend {
         let open_files_snapshot = files.clone();
         drop(files);
 
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -794,6 +818,7 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Open,
             None,
+            show_overridden,
             #[cfg(feature = "multiarch-hints")]
             Some(self.multiarch_hints_store.clone()),
         )
@@ -892,6 +917,7 @@ impl LanguageServer for Backend {
         // changed_ranges is intentionally `None`: narrowing by touched
         // fields would skip detectors for unchanged fields and wipe
         // their already-published diagnostics from the rest of the file.
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -900,6 +926,7 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Keystroke,
             None,
+            show_overridden,
             #[cfg(feature = "multiarch-hints")]
             Some(self.multiarch_hints_store.clone()),
         )
@@ -2564,6 +2591,10 @@ async fn run_check(
             HashMap::new(),
             RunPhase::Explicit,
             None,
+            // CLI lint: an overridden issue is intentionally suppressed,
+            // so don't report it. There is no faded rendering in a
+            // terminal anyway.
+            false,
             #[cfg(feature = "multiarch-hints")]
             multiarch_hints_store.clone(),
         )

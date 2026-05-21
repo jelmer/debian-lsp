@@ -20,14 +20,21 @@ use crate::debian_workspace::triggers::{triggers_match, ChangeContext, Deb822Cha
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use ::debian_workspace::action::{LintianOverridesAction, OverrideLineSelector};
 use ::lintian_brush::detector::iter_detector_registrations;
-use ::lintian_brush::diagnostic::ActionPlan;
+use ::lintian_brush::diagnostic::{Action, ActionPlan};
 use ::lintian_brush::{FixerPreferences, LintianIssue, Version};
 use serde::{Deserialize, Serialize};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, NumberOrString, Range, Uri,
     WorkspaceEdit,
 };
+
+use crate::debian_workspace::workspace::LspDebianWorkspace;
+use crate::workspace::{SourceFile, Workspace};
+use crate::FileInfo;
+
+pub use super::triggers::RunPhase;
 
 /// Fix data carried on a published [`Diagnostic`] via its `data` field.
 ///
@@ -45,13 +52,34 @@ pub struct LbDiagnosticData {
     /// action without re-running the detector.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub issue: Option<LintianIssue>,
+    /// When the issue is suppressed by a lintian override, the override
+    /// line that suppresses it. The diagnostic is published faded;
+    /// `code_action` uses this to offer a "Remove lintian override"
+    /// action. `None` for a normal, un-overridden diagnostic.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub overridden_in: Option<super::overrides::OverrideMatch>,
 }
 
-use crate::debian_workspace::workspace::LspDebianWorkspace;
-use crate::workspace::{SourceFile, Workspace};
-use crate::FileInfo;
-
-pub use super::triggers::RunPhase;
+/// Build an [`ActionPlan`] that removes the lintian override `m`.
+///
+/// The inverse of [`::lintian_brush::diagnostic::override_action_plan`]:
+/// it emits a [`LintianOverridesAction::DropLine`] whose selector is
+/// taken from the matched override line verbatim, so it addresses that
+/// exact line regardless of how the issue itself is shaped.
+fn drop_override_action_plan(m: &super::overrides::OverrideMatch) -> ActionPlan {
+    ActionPlan {
+        label: format!("Remove lintian override for {}", m.tag),
+        opinionated: false,
+        actions: vec![Action::LintianOverrides(LintianOverridesAction::DropLine {
+            file: m.file.clone(),
+            selector: OverrideLineSelector {
+                tag: m.tag.clone(),
+                info: m.info.clone(),
+                package: m.package.clone(),
+            },
+        })],
+    }
+}
 
 /// Run every registered lintian-brush detector against the package
 /// rooted by `uri` and return the resulting code actions. `uri` may
@@ -292,18 +320,25 @@ pub fn actions_from_diagnostics(
             ));
         }
 
-        // For a tagged diagnostic, also offer the "suppress with lintian
-        // override" action. The override plan is derived from the issue
-        // alone, so no detector run is needed to reconstruct it.
-        if let Some(issue) = &parsed.issue {
-            if let Some(plan) = ::lintian_brush::diagnostic::override_action_plan(issue) {
-                if let Some(edit) = plan_to_workspace_edit(&plan, &ws) {
-                    actions.push(build_action_with_diagnostics(
-                        &plan.label,
-                        edit,
-                        vec![lsp_diag.clone()],
-                    ));
-                }
+        // For a tagged diagnostic, offer an override-management action.
+        // The plan is derived from the issue / override match alone, so
+        // no detector run is needed to reconstruct it:
+        //
+        // * already overridden -> "Remove lintian override", dropping the
+        //   exact line the diagnostic recorded in `overridden_in`
+        // * not overridden     -> "Add lintian override" to suppress it
+        let plan = match (&parsed.overridden_in, &parsed.issue) {
+            (Some(m), _) => Some(drop_override_action_plan(m)),
+            (None, Some(issue)) => ::lintian_brush::diagnostic::override_action_plan(issue),
+            (None, None) => None,
+        };
+        if let Some(plan) = plan {
+            if let Some(edit) = plan_to_workspace_edit(&plan, &ws) {
+                actions.push(build_action_with_diagnostics(
+                    &plan.label,
+                    edit,
+                    vec![lsp_diag.clone()],
+                ));
             }
         }
     }
@@ -320,12 +355,19 @@ pub fn actions_from_diagnostics(
 /// is derived from the action that targets `uri`, anchoring on the
 /// specific field/paragraph/entry where possible and falling back to a
 /// whole-document range otherwise.
+///
+/// An issue suppressed by a lintian override is, when `show_overridden`
+/// is set, still surfaced — but faded ([`DiagnosticTag::UNNECESSARY`]) at
+/// [`DiagnosticSeverity::HINT`], with an `Overridden: ` message prefix.
+/// When `show_overridden` is clear, overridden issues are dropped
+/// entirely.
 pub fn run_diagnostics_for_uri(
     uri: &Uri,
     workspace: &Workspace,
     open_files: &HashMap<Uri, FileInfo>,
     phase: RunPhase,
     changed_ranges: Option<&[rowan::TextRange]>,
+    show_overridden: bool,
 ) -> Vec<Diagnostic> {
     let Some(base_path) = base_path_for_debian_file(uri) else {
         return Vec::new();
@@ -388,14 +430,24 @@ pub fn run_diagnostics_for_uri(
             Err(_) => continue,
         };
         for diag in diags {
-            // Honour lintian overrides — same filter used in
-            // `run_fixers_for_uri`. A user who suppressed the tag
-            // shouldn't see a squiggle for it.
-            if let Some(issue) = &diag.issue {
-                if !super::overrides::should_fix(&ws, issue) {
-                    continue;
-                }
-            }
+            use tower_lsp_server::ls_types::{DiagnosticSeverity, DiagnosticTag};
+
+            // Resolve lintian-override status. An overridden issue is
+            // either dropped (when `show_overridden` is clear) or
+            // surfaced faded — never shown as a normal squiggle.
+            let overridden_in = match &diag.issue {
+                Some(issue) => match super::overrides::override_status(&ws, issue) {
+                    super::overrides::OverrideStatus::NotOverridden => None,
+                    super::overrides::OverrideStatus::Overridden(m) => {
+                        if !show_overridden {
+                            continue;
+                        }
+                        Some(m)
+                    }
+                },
+                None => None,
+            };
+
             // Only surface diagnostics whose plan touches the current
             // file. A control-only detector firing while the user edits
             // copyright would otherwise produce a useless whole-document
@@ -415,6 +467,7 @@ pub fn run_diagnostics_for_uri(
             let data = match serde_json::to_value(LbDiagnosticData {
                 plans: diag.plans.clone(),
                 issue: diag.issue.clone(),
+                overridden_in: overridden_in.clone(),
             }) {
                 Ok(value) => Some(value),
                 Err(e) => {
@@ -426,19 +479,33 @@ pub fn run_diagnostics_for_uri(
                     None
                 }
             };
+            // Prefer the plan's imperative label ("Fix X.") over the
+            // diagnostic's explanatory message ("X is wrong."). The
+            // squiggle hover then reads as a fix the user can take.
+            let label = diag
+                .plans
+                .first()
+                .map(|p| p.label.clone())
+                .unwrap_or_else(|| diag.message.clone());
+            // An overridden issue is rendered faded (UNNECESSARY) at the
+            // lowest severity, with an `Overridden: ` prefix so the hover
+            // makes the suppressed state explicit.
+            let (severity, tags, message) = if overridden_in.is_some() {
+                (
+                    DiagnosticSeverity::HINT,
+                    Some(vec![DiagnosticTag::UNNECESSARY]),
+                    format!("Overridden: {label}"),
+                )
+            } else {
+                (DiagnosticSeverity::INFORMATION, None, label)
+            };
             out.push(Diagnostic {
                 range,
-                severity: Some(tower_lsp_server::ls_types::DiagnosticSeverity::INFORMATION),
+                severity: Some(severity),
                 code: Some(NumberOrString::String(tag)),
                 source: Some("lintian-brush".to_string()),
-                // Prefer the plan's imperative label ("Fix X.") over the
-                // diagnostic's explanatory message ("X is wrong."). The
-                // squiggle hover then reads as a fix the user can take.
-                message: diag
-                    .plans
-                    .first()
-                    .map(|p| p.label.clone())
-                    .unwrap_or_else(|| diag.message.clone()),
+                message,
+                tags,
                 data,
                 ..Default::default()
             });
@@ -753,6 +820,7 @@ mod tests {
             &open_files,
             RunPhase::Explicit,
             None,
+            true,
         );
         let qa = diagnostics
             .iter()
@@ -934,6 +1002,7 @@ mod tests {
             &open_files,
             RunPhase::Explicit,
             None,
+            true,
         );
         let qa_diag = diagnostics
             .iter()
@@ -1031,6 +1100,162 @@ mod tests {
         assert!(
             actions.is_empty(),
             "a diagnostic without lintian-brush data should produce no actions"
+        );
+    }
+
+    /// Build a temp package whose `debian/control` triggers the QA-group
+    /// detector, with a `debian/source/lintian-overrides` that suppresses
+    /// the resulting tag. Returns everything the run_* helpers need.
+    fn setup_overridden_qa_package() -> (tempfile::TempDir, Workspace, HashMap<Uri, FileInfo>, Uri)
+    {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let debian = tmp.path().join("debian");
+        std::fs::create_dir_all(debian.join("source")).unwrap();
+        std::fs::write(
+            debian.join("control"),
+            "Source: foo\nMaintainer: QA Folks <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
+        )
+        .unwrap();
+        std::fs::write(
+            debian.join("changelog"),
+            "foo (1.0) unstable; urgency=medium\n\n  * Initial.\n\n -- A B <a@b>  Mon, 01 Jan 2024 00:00:00 +0000\n",
+        )
+        .unwrap();
+        std::fs::write(
+            debian.join("source/lintian-overrides"),
+            "faulty-debian-qa-group-phrase\n",
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::new();
+        let control_uri = Uri::from_file_path(debian.join("control")).unwrap();
+        let source_file = workspace.update_file(
+            control_uri.clone(),
+            std::fs::read_to_string(debian.join("control")).unwrap(),
+        );
+        let mut open_files = HashMap::new();
+        open_files.insert(
+            control_uri.clone(),
+            FileInfo {
+                source_file,
+                file_type: FileType::Control,
+            },
+        );
+        (tmp, workspace, open_files, control_uri)
+    }
+
+    /// An overridden issue is surfaced faded — UNNECESSARY tag, HINT
+    /// severity, `Overridden:` message prefix — when `show_overridden`
+    /// is set.
+    #[test]
+    fn overridden_issue_surfaces_faded() {
+        use tower_lsp_server::ls_types::{DiagnosticSeverity, DiagnosticTag};
+
+        let (_tmp, workspace, open_files, control_uri) = setup_overridden_qa_package();
+
+        let diagnostics = run_diagnostics_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            RunPhase::Explicit,
+            None,
+            true,
+        );
+        let qa = diagnostics
+            .iter()
+            .find(|d| matches!(&d.code, Some(NumberOrString::String(s)) if s == "faulty-debian-qa-group-phrase"))
+            .expect("overridden issue should still be surfaced when show_overridden is set");
+        assert_eq!(qa.severity, Some(DiagnosticSeverity::HINT));
+        assert_eq!(qa.tags, Some(vec![DiagnosticTag::UNNECESSARY]));
+        assert_eq!(qa.message, "Overridden: Fix Debian QA group name.");
+    }
+
+    /// With `show_overridden` clear, an overridden issue is dropped
+    /// entirely — no squiggle at all.
+    #[test]
+    fn overridden_issue_dropped_when_disabled() {
+        let (_tmp, workspace, open_files, control_uri) = setup_overridden_qa_package();
+
+        let diagnostics = run_diagnostics_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            RunPhase::Explicit,
+            None,
+            false,
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(&d.code, Some(NumberOrString::String(s)) if s == "faulty-debian-qa-group-phrase")),
+            "overridden issue should be dropped when show_overridden is clear"
+        );
+    }
+
+    /// An overridden diagnostic offers a "Remove lintian override"
+    /// action that edits the override file, reconstructed from the
+    /// diagnostic `data`.
+    #[test]
+    fn overridden_issue_offers_remove_override_action() {
+        let (tmp, workspace, open_files, control_uri) = setup_overridden_qa_package();
+
+        let diagnostics = run_diagnostics_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            RunPhase::Explicit,
+            None,
+            true,
+        );
+        let qa = diagnostics
+            .iter()
+            .find(|d| matches!(&d.code, Some(NumberOrString::String(s)) if s == "faulty-debian-qa-group-phrase"))
+            .expect("expected the overridden QA diagnostic")
+            .clone();
+
+        let actions = actions_from_diagnostics(
+            &control_uri,
+            &workspace,
+            &open_files,
+            std::slice::from_ref(&qa),
+        );
+        let titles: Vec<_> = actions
+            .iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(act) => Some(act.title.clone()),
+                _ => None,
+            })
+            .collect();
+        let remove = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(act)
+                    if act.title == "Remove lintian override for faulty-debian-qa-group-phrase" =>
+                {
+                    Some(act)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("expected a 'Remove lintian override' action, got {titles:?}")
+            });
+
+        // The edit targets the override file, not the control file.
+        let overrides_uri =
+            Uri::from_file_path(tmp.path().join("debian/source/lintian-overrides")).unwrap();
+        let edits = first_text_edits_for(remove.edit.as_ref().unwrap(), &overrides_uri)
+            .expect("remove-override action must target the overrides file");
+        assert!(!edits.is_empty(), "expected at least one edit");
+
+        // The fix action is still offered alongside the remove-override
+        // action — the user can fix the issue rather than keep it
+        // suppressed.
+        assert!(
+            actions.iter().any(|a| matches!(a,
+                CodeActionOrCommand::CodeAction(act)
+                    if act.title == "Fix Debian QA group name."
+            )),
+            "the fix action should still be offered on an overridden issue"
         );
     }
 
