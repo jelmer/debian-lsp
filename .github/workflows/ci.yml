@@ -63,7 +63,13 @@ jobs:
         run: >-
           sudo apt-get install -y
           nettle-dev clang libclang-dev pkg-config
-          python3-dev libssl-dev libsqlite3-dev libbz2-dev brz
+          python3-dev python3-pip libssl-dev libsqlite3-dev libbz2-dev
+
+      - name: Install a recent Breezy
+        if: matrix.features.id != 'none'
+        # The python3-breezy packaged in the runner image is too old for
+        # the breezyshim version the detector features link against.
+        run: python3 -m pip install --break-system-packages --upgrade breezy
 
       - name: Check formatting
         if: matrix.features.id == 'none'
