@@ -58,6 +58,7 @@ jobs:
     needs: [check-versions]
     if: always() && (needs.check-versions.result == 'success' || needs.check-versions.result == 'skipped')
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -92,8 +93,49 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y base-files
 
+      # The lintian-brush and multiarch-hints features pull in a heavy
+      # native dependency tree (pyo3/breezyshim, nettle, sequoia-openpgp)
+      # and read lintian's data files at build time.
+      - name: Install detector build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get install -y
+          nettle-dev clang libclang-dev pkg-config
+          python3-dev libsqlite3-dev libbz2-dev lintian
+
+      # Best-effort cross setup for the heavy native dependency tree; the
+      # aarch64 build may still need follow-up tuning.
+      - name: Install arm64 cross libraries
+        if: matrix.cross
+        run: |
+          suite=$(lsb_release -cs)
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^Signed-By:/Architectures: amd64\nSigned-By:/' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          sudo tee /etc/apt/sources.list.d/ubuntu-ports.sources >/dev/null <<EOF
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: $suite $suite-updates $suite-backports
+          Components: main universe restricted multiverse
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y \
+            nettle-dev:arm64 libpython3-dev:arm64 \
+            libsqlite3-dev:arm64 libbz2-dev:arm64 zlib1g-dev:arm64
+          {
+            echo "PYO3_CROSS_LIB_DIR=/usr/lib/aarch64-linux-gnu"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
+
+      # The lintian-brush and multiarch-hints detector features are only
+      # built for the Linux targets; macOS ships the base build.
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --features openssl-vendored --verbose
+        run: >-
+          cargo build --release --target ${{ matrix.target }}
+          --features ${{ runner.os == 'Linux' && 'openssl-vendored,lintian-brush,multiarch-hints' || 'openssl-vendored' }}
+          --verbose
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           PYO3_CROSS_PYTHON_VERSION: "3.12"
