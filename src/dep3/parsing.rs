@@ -21,10 +21,7 @@ pub fn parse_dep3_header(content: &str) -> Option<(PatchHeader, usize)> {
     PatchHeader::parse_relaxed(content).ok()
 }
 
-#[cfg(all(
-    test,
-    any(feature = "lintian-brush", feature = "multiarch-hints")
-))]
+#[cfg(all(test, any(feature = "lintian-brush", feature = "multiarch-hints")))]
 mod tests {
     use super::*;
 

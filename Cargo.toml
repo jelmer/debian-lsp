@@ -15,18 +15,7 @@ include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/R
 default = ["launchpad"]
 launchpad = ["dep:launchpadlib"]
 openssl-vendored = ["dep:openssl"]
-# Surfaces migrated lintian-brush fixers as code actions. Pulls in the
-# full lintian-brush dependency tree (pyo3, breezyshim, sqlx, sequoia,
-# ...); leave it off if those are unwanted in the server binary.
-#
-# Pulls in the `debian-workspace` crate transitively — the generic
-# adapter from our salsa workspace to its `Workspace` trait plus the
-# action-plan -> LSP-edit translator lives under
-# `src/debian_workspace/` and is enabled whenever this feature (or
-# `multiarch-hints`) is on.
 lintian-brush = ["dep:lintian-brush", "dep:debian-workspace"]
-# Surfaces multiarch-hints (https://dedup.debian.net/) as code actions
-# on debian/control. Hints are fetched lazily and cached on disk.
 multiarch-hints = ["dep:multiarch-hints", "dep:debian-workspace"]
 
 [dependencies]
@@ -62,9 +51,9 @@ patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = ">=0.12,<0.19"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
-lintian-brush = { version = "0.176", optional = true }
-multiarch-hints = { version = "0.176", default-features = false, features = ["async"], optional = true }
-debian-workspace = { version = "0.1", optional = true }
+lintian-brush = { version = "0.179", optional = true }
+multiarch-hints = { version = "0.179", default-features = false, features = ["async"], optional = true }
+debian-workspace = { version = "0.179", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -76,13 +65,3 @@ tower-test = "0.4"
 [[bin]]
 name = "debian-lsp"
 test = true
-
-# Local development against in-tree multiarch-hints with the unpublished
-# `async` feature. The matching `debian-workspace` patch keeps a single
-# version of that crate in the graph — without it, the registry copy
-# (pulled in via `lintian-brush` and our own dep) clashes with the
-# path copy that multiarch-hints sees, producing "expected ActionPlan,
-# found ActionPlan" type errors. Drop both once the new feature ships.
-[patch.crates-io]
-multiarch-hints = { path = "../debian-codemods/multiarch-hints" }
-debian-workspace = { path = "../debian-codemods/debian-workspace" }
