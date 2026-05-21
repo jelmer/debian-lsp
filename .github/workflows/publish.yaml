@@ -197,9 +197,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: coc-debian/package-lock.json
 
-      - name: Update npm
-        run: npm install -g npm@latest
-
       - name: Install dependencies
         run: npm ci
 
