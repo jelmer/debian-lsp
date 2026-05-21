@@ -14,8 +14,21 @@ env:
 
 jobs:
   rust-check:
-    name: Rust checks
+    name: Rust checks (${{ matrix.features.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - name: no features
+            id: none
+            flags: "--no-default-features"
+          - name: lintian-brush
+            id: lintian-brush
+            flags: "--no-default-features --features lintian-brush"
+          - name: multiarch-hints
+            id: multiarch-hints
+            flags: "--no-default-features --features multiarch-hints"
     steps:
       - uses: actions/checkout@v6
 
@@ -40,19 +53,27 @@ jobs:
         uses: actions/cache@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ matrix.features.id }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install base-files
         run: sudo apt-get update && sudo apt-get install -y base-files
 
+      - name: Install detector build dependencies
+        if: matrix.features.id != 'none'
+        run: >-
+          sudo apt-get install -y
+          nettle-dev clang libclang-dev pkg-config
+          python3-dev libssl-dev libsqlite3-dev libbz2-dev brz
+
       - name: Check formatting
+        if: matrix.features.id == 'none'
         run: cargo fmt --all -- --check
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test ${{ matrix.features.flags }} --verbose
 
       - name: Build
-        run: cargo build --release --verbose
+        run: cargo build --release ${{ matrix.features.flags }} --verbose
 
   coc-debian-check:
     name: coc-debian checks
