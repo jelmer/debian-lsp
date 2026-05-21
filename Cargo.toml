@@ -15,15 +15,8 @@ include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/R
 default = ["launchpad"]
 launchpad = ["dep:launchpadlib"]
 openssl-vendored = ["dep:openssl"]
-# Generic adapter from our salsa workspace to the `debian-workspace`
-# crate's `Workspace` trait, plus the action-plan -> LSP-edit translator.
-# Required by detector hosts (lintian-brush, multiarch-hints, ...) but
-# carries no detector code itself, so it's cheap to enable on its own.
-debian-workspace = ["dep:debian-workspace"]
-# Surfaces migrated lintian-brush fixers as code actions. Pulls in the
-# full lintian-brush dependency tree (pyo3, breezyshim, sqlx, sequoia,
-# ...); leave it off if those are unwanted in the server binary.
-lintian-brush = ["dep:lintian-brush", "debian-workspace"]
+lintian-brush = ["dep:lintian-brush", "dep:debian-workspace"]
+multiarch-hints = ["dep:multiarch-hints", "dep:debian-workspace"]
 
 [dependencies]
 # debian-analyzer = "0.159.0"
@@ -58,8 +51,9 @@ patchkit = "0.2.4"
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = ">=0.12,<0.19"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
-lintian-brush = { version = "0.176", optional = true }
-debian-workspace = { version = "0.1", optional = true }
+lintian-brush = { version = "0.179", optional = true }
+multiarch-hints = { version = "0.179", default-features = false, features = ["async"], optional = true }
+debian-workspace = { version = "0.179", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -10,9 +10,10 @@
 
 use super::triggers::{phase_allow_net, phase_max_cost};
 use crate::debian_workspace::translate::{
-    diag_touches_file, diagnostic_range, diagnostic_range_in_file, is_action_translatable,
-    parse_for_trigger_filtering_changelog, parse_for_trigger_filtering_deb822,
-    parse_for_trigger_filtering_watch, parse_for_trigger_filtering_yaml, plan_to_workspace_edit,
+    is_action_translatable, parse_for_trigger_filtering_changelog,
+    parse_for_trigger_filtering_deb822, parse_for_trigger_filtering_watch,
+    parse_for_trigger_filtering_yaml, plan_to_workspace_edit, plans_range, plans_range_in_file,
+    plans_touch_file,
 };
 use crate::debian_workspace::triggers::{triggers_match, ChangeContext, Deb822ChangeIndex};
 
@@ -113,7 +114,7 @@ pub fn run_fixers_for_uri(
             // anchor file, this diagnostic doesn't belong here and we
             // skip it — falling back to full_document_range would cause
             // the action to appear on every line of the file.
-            let Some(lb_range) = diagnostic_range_in_file(&diag, &ws, &rel, original_src) else {
+            let Some(lb_range) = plans_range_in_file(&diag.plans, &ws, &rel, original_src) else {
                 continue;
             };
 
@@ -296,13 +297,13 @@ pub fn run_diagnostics_for_uri(
             // file. A control-only detector firing while the user edits
             // copyright would otherwise produce a useless whole-document
             // squiggle on the wrong file.
-            if !diag_touches_file(&diag, &rel) {
+            if !plans_touch_file(&diag.plans, &rel) {
                 continue;
             }
             let Some(tag) = diag.issue.as_ref().and_then(|i| i.tag.clone()) else {
                 continue;
             };
-            let range = diagnostic_range(&diag, &ws, &rel, original_src);
+            let range = plans_range(&diag.plans, &ws, &rel, original_src);
             out.push(Diagnostic {
                 range,
                 severity: Some(tower_lsp_server::ls_types::DiagnosticSeverity::INFORMATION),

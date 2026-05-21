@@ -993,6 +993,7 @@ dependencies = [
  "lintian-overrides",
  "lru",
  "makefile-lossless",
+ "multiarch-hints",
  "openssl",
  "patchkit",
  "rowan",
@@ -1036,9 +1037,9 @@ dependencies = [
 
 [[package]]
 name = "debian-workspace"
-version = "0.1.0"
+version = "0.179.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd2b2a12d0d22f0889ff315b31dc498f8e8d081087d6a7baae16bd34054722f1"
+checksum = "5da8c49c7af08db89886dd42093942f2a082b4cca0398fa5ad95c6b460db7677"
 dependencies = [
  "chrono",
  "deb822-lossless",
@@ -2829,9 +2830,9 @@ dependencies = [
 
 [[package]]
 name = "lintian-brush"
-version = "0.176.0"
+version = "0.179.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f7c21459eb5bac25d2238534be4a45b9305529bc31180758e9c5c354e6d0851"
+checksum = "eb269d2691a4617bd9467570ab0da6ff43754e3c76f762d90525be5428cafbd2"
 dependencies = [
  "breezyshim",
  "chrono",
@@ -2951,6 +2952,17 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lzma-sys"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -3170,6 +3182,35 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "multiarch-hints"
+version = "0.179.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b437856507b9d8481eeb033472408b5f5a15816c54bb9a493a72218985680e23"
+dependencies = [
+ "breezyshim",
+ "chrono",
+ "configparser",
+ "deb822-lossless",
+ "debian-analyzer",
+ "debian-changelog",
+ "debian-control",
+ "debian-workspace",
+ "debversion",
+ "lazy-regex",
+ "lazy_static",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "svp-client",
+ "tempfile",
+ "tokio",
+ "url",
+ "xz2",
 ]
 
 [[package]]
@@ -6717,6 +6758,15 @@ name = "xxhash-rust"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+
+[[package]]
+name = "xz2"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
+dependencies = [
+ "lzma-sys",
+]
 
 [[package]]
 name = "yaml-edit"
