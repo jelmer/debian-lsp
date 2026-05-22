@@ -12,13 +12,25 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use clap::{Parser, Subcommand};
 
 /// Server settings received from the client via initializationOptions.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 struct Settings {
     /// Allow the upstream-ontologist to make network requests when guessing
     /// upstream metadata values. Defaults to `false`.
     upstream_ontologist_net_access: bool,
+    /// Surface lintian-brush issues that are suppressed by a lintian
+    /// override as faded, informational diagnostics. Defaults to `true`.
+    show_overridden_issues: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            upstream_ontologist_net_access: false,
+            show_overridden_issues: true,
+        }
+    }
 }
 
 mod architecture;
@@ -274,6 +286,7 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        show_overridden: bool,
         #[cfg(feature = "multiarch-hints")] multiarch_hints_store: Option<
             multiarch_hints::hints::HintsStore,
         >,
@@ -288,6 +301,7 @@ impl Backend {
             open_files.clone(),
             phase,
             changed_ranges.clone(),
+            show_overridden,
         )
         .await?;
         #[cfg(not(feature = "lintian-brush"))]
@@ -307,7 +321,14 @@ impl Backend {
 
         // Silence unused-variable warnings when neither extension feature
         // is enabled — the bindings are only consumed inside the cfg arms.
-        let _ = (uri, workspace, open_files, phase, changed_ranges);
+        let _ = (
+            uri,
+            workspace,
+            open_files,
+            phase,
+            changed_ranges,
+            show_overridden,
+        );
 
         let combined = match (builtin, lb) {
             (None, None) => None,
@@ -374,6 +395,7 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        show_overridden: bool,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
         if !matches!(
             file_type,
@@ -394,6 +416,7 @@ impl Backend {
                 &open_files,
                 phase,
                 changed_ranges.as_deref(),
+                show_overridden,
             )
         })
         .await
@@ -786,6 +809,7 @@ impl LanguageServer for Backend {
         let open_files_snapshot = files.clone();
         drop(files);
 
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -794,6 +818,7 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Open,
             None,
+            show_overridden,
             #[cfg(feature = "multiarch-hints")]
             Some(self.multiarch_hints_store.clone()),
         )
@@ -892,6 +917,7 @@ impl LanguageServer for Backend {
         // changed_ranges is intentionally `None`: narrowing by touched
         // fields would skip detectors for unchanged fields and wipe
         // their already-published diagnostics from the rest of the file.
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -900,6 +926,7 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Keystroke,
             None,
+            show_overridden,
             #[cfg(feature = "multiarch-hints")]
             Some(self.multiarch_hints_store.clone()),
         )
@@ -1313,16 +1340,39 @@ impl LanguageServer for Backend {
             let diagnostics = params.context.diagnostics.clone();
             let workspace_for_lb = workspace.clone();
             let open_files_for_lb = open_files_snapshot.clone();
+            // Two distinct requests come through here, told apart by
+            // `context.only`:
+            //
+            // * `source.fixAll` — the user (or an on-save hook) asked to
+            //   fix everything in the package. Run the full detector
+            //   registry at `Explicit` cost so even high-cost,
+            //   network-using detectors that were never published as a
+            //   squiggle are caught. Slowness is acceptable here; it is a
+            //   deliberate action, not an automatic hover.
+            //
+            // * Anything else (the automatic "Checking for quick fixes"
+            //   hover) — reconstruct fixes from the plans carried on the
+            //   echoed-back diagnostics' `data` field. No detector runs,
+            //   so the response is immediate.
             let range = params.range;
             let lb_actions = match tokio::task::spawn_blocking(move || {
-                lintian_brush::fixers::run_fixers_for_uri(
-                    &uri,
-                    &workspace_for_lb,
-                    &open_files_for_lb,
-                    &diagnostics,
-                    Some(range),
-                    RunPhase::Explicit,
-                )
+                if wants_fix_all {
+                    lintian_brush::fixers::run_fixers_for_uri(
+                        &uri,
+                        &workspace_for_lb,
+                        &open_files_for_lb,
+                        &diagnostics,
+                        Some(range),
+                        RunPhase::Explicit,
+                    )
+                } else {
+                    lintian_brush::fixers::actions_from_diagnostics(
+                        &uri,
+                        &workspace_for_lb,
+                        &open_files_for_lb,
+                        &diagnostics,
+                    )
+                }
             })
             .await
             {
@@ -1345,15 +1395,28 @@ impl LanguageServer for Backend {
                 let range = params.range;
                 let workspace_for_mh = workspace.clone();
                 let open_files_for_mh = open_files_snapshot.clone();
+                // Same split as the lintian-brush path: `source.fixAll`
+                // re-runs the detector for a full package scan, while the
+                // automatic quick-fix hover reconstructs fixes from the
+                // plans carried on the echoed-back diagnostics' `data`.
                 let mh_actions = match tokio::task::spawn_blocking(move || {
-                    multiarch_hints::fixers::run_fixers_for_uri(
-                        &uri,
-                        &workspace_for_mh,
-                        &open_files_for_mh,
-                        &diagnostics,
-                        Some(range),
-                        hints.as_slice(),
-                    )
+                    if wants_fix_all {
+                        multiarch_hints::fixers::run_fixers_for_uri(
+                            &uri,
+                            &workspace_for_mh,
+                            &open_files_for_mh,
+                            &diagnostics,
+                            Some(range),
+                            hints.as_slice(),
+                        )
+                    } else {
+                        multiarch_hints::fixers::actions_from_diagnostics(
+                            &uri,
+                            &workspace_for_mh,
+                            &open_files_for_mh,
+                            &diagnostics,
+                        )
+                    }
                 })
                 .await
                 {
@@ -2528,6 +2591,10 @@ async fn run_check(
             HashMap::new(),
             RunPhase::Explicit,
             None,
+            // CLI lint: an overridden issue is intentionally suppressed,
+            // so don't report it. There is no faded rendering in a
+            // terminal anyway.
+            false,
             #[cfg(feature = "multiarch-hints")]
             multiarch_hints_store.clone(),
         )

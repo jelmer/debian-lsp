@@ -52,6 +52,11 @@
           "type": "boolean",
           "default": false,
           "description": "Allow the upstream-ontologist to make network requests when guessing upstream metadata values."
+        },
+        "debian.showOverriddenIssues": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show lintian-brush issues that are suppressed by a lintian override, rendered faded. Disable for a diagnostics view that hides overridden issues entirely."
         }
       }
     },

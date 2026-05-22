@@ -123,6 +123,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     ],
     initializationOptions: {
       upstreamOntologistNetAccess: config.get<boolean>('upstreamOntologistNetAccess', false),
+      showOverriddenIssues: config.get<boolean>('showOverriddenIssues', true),
     },
     synchronize: {
       fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,changelog.dch,tests/control,source/format,source/options,source/local-options,upstream/metadata,rules,patches/series}')

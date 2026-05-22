@@ -11,9 +11,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use ::debian_workspace::action::ActionPlan;
 use multiarch_hints::{
     detect_multiarch_hints, multiarch_hints_by_binary, Certainty, Hint, Severity,
 };
+use serde::{Deserialize, Serialize};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeDescription, Diagnostic,
     DiagnosticSeverity, NumberOrString, Range, Uri, WorkspaceEdit,
@@ -26,6 +28,20 @@ use crate::debian_workspace::translate::{
 use crate::debian_workspace::workspace::LspDebianWorkspace;
 use crate::workspace::{SourceFile, Workspace};
 use crate::FileInfo;
+
+/// Fix data carried on a published multiarch-hints [`Diagnostic`] via its
+/// `data` field.
+///
+/// The detector pass already computes the [`ActionPlan`] that fixes each
+/// hint. Serialising it here lets `code_action` reconstruct the quick fix
+/// from the diagnostic the client echoes back, instead of re-running the
+/// detector. A multiarch hint maps to exactly one plan, so this carries a
+/// single `ActionPlan` rather than a list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MhDiagnosticData {
+    /// The plan that fixes this hint.
+    pub plan: ActionPlan,
+}
 
 /// Run the multiarch-hints detector against the package rooted by `uri`
 /// and return the resulting code actions.
@@ -171,6 +187,22 @@ pub fn run_diagnostics_for_uri(
         } else {
             change.hint.description.clone()
         };
+        // Carry the fix plan on the diagnostic's `data` field so
+        // `code_action` can reconstruct the quick fix without re-running
+        // the detector. A serialisation failure is logged and the
+        // diagnostic is still published — the fix just won't be available
+        // until the file is reopened.
+        let data = match serde_json::to_value(MhDiagnosticData { plan: plan.clone() }) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                tracing::error!(
+                    "multiarch-hints: failed to serialise fix data for {}: {}",
+                    change.hint.kind(),
+                    e
+                );
+                None
+            }
+        };
         out.push(Diagnostic {
             range,
             severity: Some(hint_severity_to_lsp(change.hint.severity)),
@@ -180,10 +212,74 @@ pub fn run_diagnostics_for_uri(
                 .map(|href| CodeDescription { href }),
             source: Some("multiarch-hints".to_string()),
             message,
+            data,
             ..Default::default()
         });
     }
     out
+}
+
+/// Reconstruct multiarch-hints quick fixes from the diagnostics the
+/// client echoes back in a `textDocument/codeAction` request — without
+/// re-running the detector.
+///
+/// Each multiarch-hints diagnostic carries its fix [`ActionPlan`] in the
+/// LSP `data` field (see [`MhDiagnosticData`], attached by
+/// [`run_diagnostics_for_uri`]). This function deserialises that data and
+/// translates the plan into a [`CodeAction`]. Diagnostics without our
+/// `data` (a different source, or published before this field existed)
+/// are skipped.
+pub fn actions_from_diagnostics(
+    uri: &Uri,
+    workspace: &Workspace,
+    open_files: &HashMap<Uri, FileInfo>,
+    diagnostics: &[Diagnostic],
+) -> Vec<CodeActionOrCommand> {
+    let Some(base_path) = base_path_for_debian_file(uri) else {
+        return Vec::new();
+    };
+    let Some(rel) = package_relative_path(&base_path, uri) else {
+        return Vec::new();
+    };
+    // The detector only edits debian/control; a code action elsewhere
+    // can carry no multiarch-hints fix.
+    if rel != Path::new("debian/control") {
+        return Vec::new();
+    }
+
+    let ws = LspDebianWorkspace::new(
+        workspace,
+        base_path,
+        None,
+        None,
+        relevant_open_files(open_files),
+    );
+
+    let mut actions = Vec::new();
+    for lsp_diag in diagnostics {
+        let Some(data) = &lsp_diag.data else {
+            continue;
+        };
+        let parsed: MhDiagnosticData = match serde_json::from_value(data.clone()) {
+            Ok(d) => d,
+            // The diagnostic carries `data` we don't recognise — it
+            // belongs to another source (e.g. lintian-brush). Skip it
+            // silently rather than failing the whole request.
+            Err(_) => continue,
+        };
+        if !parsed.plan.actions.iter().all(is_action_translatable) {
+            continue;
+        }
+        let Some(edit) = plan_to_workspace_edit(&parsed.plan, &ws) else {
+            continue;
+        };
+        actions.push(build_action_with_diagnostics(
+            &parsed.plan.label,
+            edit,
+            vec![lsp_diag.clone()],
+        ));
+    }
+    actions
 }
 
 /// Map a multiarch-hints `Severity` to its LSP counterpart.
@@ -607,6 +703,94 @@ mod tests {
         assert_eq!(
             applied,
             "Source: src\n\nPackage: foo\nArchitecture: any\nMulti-Arch: foreign\nDescription: bar\n bar\n",
+        );
+    }
+
+    /// A published diagnostic carries its fix plan on the `data` field,
+    /// and `actions_from_diagnostics` reconstructs the quick fix from that
+    /// data alone — producing the same edit `run_fixers_for_uri` would,
+    /// without re-running the detector.
+    #[test]
+    fn actions_from_diagnostics_reconstructs_fix_from_data() {
+        let original = "Source: src\n\nPackage: foo\nArchitecture: any\nDescription: bar\n bar\n";
+        let (_tmp, workspace, open_files, control_uri) = setup_control(original);
+
+        let hints = parse(&hint_yaml("foo", "ma-foreign", "foo could be MA: foreign"));
+
+        // Publish phase: the detector run attaches the fix plan to `data`.
+        let diags = run_diagnostics_for_uri(&control_uri, &workspace, &open_files, &hints);
+        assert_eq!(diags.len(), 1);
+        let diag = diags[0].clone();
+        assert!(
+            diag.data.is_some(),
+            "published diagnostic should carry fix data"
+        );
+
+        // code_action phase: reconstruct the fix from the echoed-back
+        // diagnostic, with no detector run.
+        let actions = actions_from_diagnostics(
+            &control_uri,
+            &workspace,
+            &open_files,
+            std::slice::from_ref(&diag),
+        );
+        let action = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(act) if act.title == "Add Multi-Arch: foreign." => {
+                    Some(act)
+                }
+                _ => None,
+            })
+            .expect("expected the ma-foreign fix reconstructed from diagnostic data");
+        // The reconstructed action produces the same edit and links back
+        // to the diagnostic it fixes.
+        let edits = text_edits_for(
+            action.edit.as_ref().expect("action carries an edit"),
+            &control_uri,
+        );
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            apply_text_edit(original, &edits[0]),
+            "Source: src\n\nPackage: foo\nArchitecture: any\nMulti-Arch: foreign\nDescription: bar\n bar\n",
+        );
+        assert!(
+            action
+                .diagnostics
+                .as_ref()
+                .is_some_and(|d| d.contains(&diag)),
+            "reconstructed action should link to its diagnostic"
+        );
+    }
+
+    /// A diagnostic without our `data` (a different source, or one
+    /// published before the `data` field existed) yields no actions
+    /// rather than failing the request.
+    #[test]
+    fn actions_from_diagnostics_skips_diagnostics_without_data() {
+        let (_tmp, workspace, open_files, control_uri) = setup_control(
+            "Source: src\n\nPackage: foo\nArchitecture: any\nDescription: bar\n bar\n",
+        );
+
+        let bare_diag = Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 2,
+                    character: 10,
+                },
+            },
+            code: Some(NumberOrString::String("some-other-tag".to_string())),
+            message: "from another source".to_string(),
+            ..Default::default()
+        };
+        let actions = actions_from_diagnostics(&control_uri, &workspace, &open_files, &[bare_diag]);
+        assert!(
+            actions.is_empty(),
+            "a diagnostic without multiarch-hints data should produce no actions"
         );
     }
 }

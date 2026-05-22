@@ -181,9 +181,11 @@ async fn test_lintian_brush_diagnostics_integration() {
         .await
         .unwrap();
 
-    // Wait for the diagnostic with a timeout
+    // Wait for the diagnostic with a timeout. Collect the lintian-brush
+    // diagnostics so they can be fed back into the codeAction request
+    // the way a real editor does.
     let mut found_builtin = false;
-    let mut found_lb = false;
+    let mut lb_diags: Vec<serde_json::Value> = Vec::new();
 
     let _ = timeout(Duration::from_secs(15), async {
         while let Some(msg) = rx.recv().await {
@@ -196,13 +198,15 @@ async fn test_lintian_brush_diagnostics_integration() {
                 {
                     found_builtin = true;
                 }
-                if diags
+                let lb: Vec<_> = diags
                     .iter()
-                    .any(|d| d["source"].as_str() == Some("lintian-brush"))
-                {
-                    found_lb = true;
+                    .filter(|d| d["source"].as_str() == Some("lintian-brush"))
+                    .cloned()
+                    .collect();
+                if !lb.is_empty() {
+                    lb_diags = lb;
                 }
-                if found_builtin && found_lb {
+                if found_builtin && !lb_diags.is_empty() {
                     return;
                 }
             }
@@ -211,9 +215,25 @@ async fn test_lintian_brush_diagnostics_integration() {
     .await;
 
     assert!(found_builtin, "Did not receive built-in diagnostics");
-    assert!(found_lb, "Did not receive lintian-brush diagnostics");
+    assert!(
+        !lb_diags.is_empty(),
+        "Did not receive lintian-brush diagnostics"
+    );
 
-    // Now request code actions to see the lintian-brush fix
+    // Each published lintian-brush diagnostic must carry its fix plans
+    // on the `data` field — that is what lets codeAction reconstruct the
+    // quick fix without re-running detectors.
+    for d in &lb_diags {
+        assert!(
+            !d["data"].is_null(),
+            "lintian-brush diagnostic should carry fix data, got {d}"
+        );
+    }
+
+    // Request code actions over the Standards-Version line, feeding the
+    // published lintian-brush diagnostic back in `context.diagnostics`
+    // the way a real editor does. The handler reconstructs the fix from
+    // the diagnostic's `data`.
     let ca_req: Request = serde_json::from_value(json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -221,20 +241,25 @@ async fn test_lintian_brush_diagnostics_integration() {
         "params": {
             "textDocument": { "uri": uri },
             "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 6 }
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 24 }
             },
-            "context": { "diagnostics": [] }
+            "context": { "diagnostics": lb_diags }
         }
     }))
     .unwrap();
     let response = service.call(ca_req).await.unwrap();
     let res = serde_json::to_value(response.unwrap()).unwrap();
 
-    let actions = res["result"].as_array().expect("result should be an array");
-    assert!(actions
-        .iter()
-        .any(|a| a["title"].as_str().unwrap_or("").contains("Source")));
+    let actions = res["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("result should be an array, got {res}"));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["kind"].as_str() == Some("quickfix") && a["diagnostics"].is_array()),
+        "expected a lintian-brush quickfix reconstructed from diagnostic data, got {actions:?}"
+    );
 }
 
 #[tokio::test]
