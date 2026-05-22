@@ -1,3 +1,13 @@
+debian-lsp (0.1.10) unstable; urgency=low
+
+  * Add manpage and include icon in package.
+  * Packaging: install `debian/debian-lsp.svg` to the hicolor icon theme
+    and add `debian/debian-lsp.1` manpage.
+  * Note: rebuild attempted; native compile failed in a dependency (aws-lc-sys)
+    due to missing or misconfigured C toolchain in the build environment.
+
+ -- Vítězslav Dvořák <info@vitexsoftware.cz>  Fri, 22 May 2026 23:30:00 +0200
+
 debian-lsp (0.1.7) UNRELEASED; urgency=low
 
   * Initial release. Closes: #nnnn
