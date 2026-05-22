@@ -1,9 +1,11 @@
 //! Buffer-aware lintian-override lookup.
 //!
-//! `LintianIssue::should_fix` reads `debian/source/lintian-overrides`
+//! lintian-brush's own override check reads `debian/source/lintian-overrides`
 //! straight from disk. In an editor, the user might be in the middle of
 //! adding an override and not have saved yet — we want the new override
-//! to suppress its diagnostic immediately, not after a save.
+//! to suppress (fade) its diagnostic immediately, not after a save. So
+//! [`override_status`] reads override files through the
+//! [`LspDebianWorkspace`], which honours open buffers.
 
 use std::path::PathBuf;
 
@@ -49,17 +51,17 @@ pub enum OverrideStatus {
 /// open buffers as well as on-disk override files.
 pub fn override_status(ws: &LspDebianWorkspace<'_>, issue: &LintianIssue) -> OverrideStatus {
     use ::lintian_brush::lintian_overrides::OverrideLineMatch as _;
-    use lintian_overrides::{find_override_files, LintianOverrides};
+    use lintian_overrides::find_override_files;
 
     let base_path = ws.base_path();
     for path in find_override_files(base_path) {
         let Ok(rel) = path.strip_prefix(base_path) else {
             continue;
         };
-        let text = ws
-            .current_text(rel)
-            .unwrap_or_else(|| std::sync::Arc::from(""));
-        let Ok(parsed) = LintianOverrides::parse(&text).ok() else {
+        // Use the workspace's parse: salsa-cached for open override
+        // buffers (so an unsaved edit takes effect at once), a one-shot
+        // disk parse otherwise.
+        let Some(parsed) = ws.parsed_lintian_overrides_for(rel) else {
             continue;
         };
         for line in parsed.lines() {
