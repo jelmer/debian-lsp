@@ -383,3 +383,170 @@ async fn test_binary_package_fix_targets_correct_paragraph() {
         edit["range"]["start"]["line"]
     );
 }
+
+/// Editing a `lintian-overrides` buffer re-publishes the diagnostics of
+/// open sibling files: a changelog issue suppressed by an override shows
+/// faded, and clearing the override un-fades it — without reopening the
+/// changelog.
+#[tokio::test]
+#[cfg(feature = "lintian-brush")]
+async fn test_overrides_change_refreshes_sibling_changelog() {
+    use tokio::time::{timeout, Duration};
+
+    let temp = tempfile::tempdir().unwrap();
+    let debian_dir = temp.path().join("debian");
+    std::fs::create_dir_all(debian_dir.join("source")).unwrap();
+
+    // 2024-03-09 is a Saturday, so "Mon, 09 Mar 2024" is a wrong
+    // day-of-week — the detector emits info "2024-03-09 is a Saturday".
+    let changelog_text = "test-pkg (1.0-1) unstable; urgency=low\n\n  * Initial release.\n\n -- Alice <alice@example.com>  Mon, 09 Mar 2024 00:00:00 +0000\n";
+    std::fs::write(debian_dir.join("changelog"), changelog_text).unwrap();
+    // The override suppresses that exact issue.
+    let overrides_path = debian_dir.join("source/lintian-overrides");
+    std::fs::write(
+        &overrides_path,
+        "debian-changelog-has-wrong-day-of-week 2024-03-09 is a Saturday\n",
+    )
+    .unwrap();
+
+    let changelog_uri = Uri::from_file_path(debian_dir.join("changelog")).unwrap();
+    let overrides_uri = Uri::from_file_path(&overrides_path).unwrap();
+
+    let (mut service, mut socket) = setup_server().await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(msg) = socket.next().await {
+            let _ = tx.send(msg);
+        }
+    });
+
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Open the changelog. Its day-of-week issue is overridden, so the
+    // published diagnostic must be faded (UNNECESSARY tag, HINT severity).
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": changelog_uri.clone(),
+                        "languageId": "debchangelog",
+                        "version": 1,
+                        "text": changelog_text
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Wait for the faded day-of-week diagnostic on the changelog.
+    let day_of_week_diag = |msg_json: &serde_json::Value| -> Option<serde_json::Value> {
+        if msg_json["method"] != "textDocument/publishDiagnostics"
+            || msg_json["params"]["uri"] != serde_json::to_value(&changelog_uri).unwrap()
+        {
+            return None;
+        }
+        msg_json["params"]["diagnostics"]
+            .as_array()?
+            .iter()
+            .find(|d| d["code"].as_str() == Some("debian-changelog-has-wrong-day-of-week"))
+            .cloned()
+    };
+
+    let faded = timeout(Duration::from_secs(15), async {
+        while let Some(msg) = rx.recv().await {
+            let msg_json = serde_json::to_value(msg).unwrap();
+            if let Some(d) = day_of_week_diag(&msg_json) {
+                return Some(d);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("expected a day-of-week diagnostic on the changelog");
+    // 1 == DiagnosticSeverity::WARNING, 4 == HINT; UNNECESSARY tag == 1.
+    assert_eq!(faded["severity"], 4, "overridden diagnostic should be HINT");
+    assert_eq!(
+        faded["tags"],
+        json!([1]),
+        "overridden diagnostic should carry the UNNECESSARY tag"
+    );
+
+    // Open the override file, then change it to remove the override.
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": overrides_uri.clone(),
+                        "languageId": "plaintext",
+                        "version": 1,
+                        "text": "debian-changelog-has-wrong-day-of-week 2024-03-09 is a Saturday\n"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": overrides_uri.clone(), "version": 2 },
+                    "contentChanges": [{ "text": "" }]
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The changelog must be re-published with the issue no longer faded:
+    // a normal INFORMATION diagnostic, no UNNECESSARY tag.
+    let unfaded = timeout(Duration::from_secs(15), async {
+        while let Some(msg) = rx.recv().await {
+            let msg_json = serde_json::to_value(msg).unwrap();
+            if let Some(d) = day_of_week_diag(&msg_json) {
+                if d["tags"].is_null() {
+                    return Some(d);
+                }
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("changelog diagnostic should be re-published un-faded after the override is removed");
+    // 3 == DiagnosticSeverity::INFORMATION.
+    assert_eq!(
+        unfaded["severity"], 3,
+        "un-overridden diagnostic should be INFORMATION"
+    );
+    assert!(
+        unfaded["tags"].is_null(),
+        "un-overridden diagnostic should carry no tags"
+    );
+}
