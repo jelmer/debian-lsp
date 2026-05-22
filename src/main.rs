@@ -493,6 +493,74 @@ impl Backend {
             .map(|p| p.to_path_buf())
     }
 
+    /// Re-analyse the open files in the same package as `overrides_uri`
+    /// after its lintian-overrides content changed.
+    ///
+    /// An override line suppresses (fades) a lintian-brush diagnostic in
+    /// a *different* file — `debian/changelog`, `debian/control`, ... —
+    /// so editing the override file must re-publish those siblings'
+    /// diagnostics for the faded state to track the edit. The override
+    /// file itself is skipped (its own diagnostics don't depend on it).
+    ///
+    /// Each sibling is recomputed at [`RunPhase::Open`] — the cheap
+    /// detectors (the day-of-week fader among them) cover the override
+    /// fade state. Network-cost detectors are not re-run here.
+    #[cfg(feature = "lintian-brush")]
+    async fn refresh_sibling_diagnostics(&self, overrides_uri: &Uri) {
+        let Some(debian_dir) = Self::find_debian_dir(overrides_uri) else {
+            return;
+        };
+
+        // Collect the open siblings (same `debian/` dir, not the
+        // override file itself) up front, releasing the lock before the
+        // analysis work.
+        let siblings: Vec<(Uri, FileInfo)> = {
+            let files = self.files.lock().await;
+            files
+                .iter()
+                .filter(|(uri, _)| *uri != overrides_uri)
+                .filter(|(uri, _)| Self::find_debian_dir(uri).as_deref() == Some(&debian_dir))
+                .map(|(uri, info)| (uri.clone(), *info))
+                .collect()
+        };
+        if siblings.is_empty() {
+            return;
+        }
+
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
+        for (uri, info) in siblings {
+            // Lock `files` and `workspace` one at a time, never nested —
+            // other handlers take them in the opposite order, and holding
+            // both at once risks an AB-BA deadlock.
+            let open_files_snapshot = self.files.lock().await.clone();
+            let workspace = self.workspace.lock().await.clone();
+            let diagnostics = match Self::collect_diagnostics(
+                uri.clone(),
+                info.source_file,
+                info.file_type,
+                workspace,
+                open_files_snapshot,
+                RunPhase::Open,
+                None,
+                show_overridden,
+                #[cfg(feature = "multiarch-hints")]
+                Some(self.multiarch_hints_store.clone()),
+            )
+            .await
+            {
+                Ok(Some(d)) => d,
+                Ok(None) => continue,
+                Err(e) => {
+                    self.client.log_message(MessageType::ERROR, &e).await;
+                    continue;
+                }
+            };
+            self.client
+                .publish_diagnostics(uri.clone(), diagnostics, None)
+                .await;
+        }
+    }
+
     /// Get or load the changelog source file for the debian directory
     /// containing the given URI. If the changelog is already open, reuses the
     /// existing workspace entry; otherwise reads it from disk and inserts it
@@ -837,6 +905,15 @@ impl LanguageServer for Backend {
                 .await;
         }
 
+        // Opening a lintian-overrides file may change which sibling
+        // diagnostics are suppressed (its on-disk content is now an open
+        // buffer that may differ) — re-analyse the open siblings.
+        #[cfg(feature = "lintian-brush")]
+        if file_type == FileType::LintianOverrides {
+            self.refresh_sibling_diagnostics(&params.text_document.uri)
+                .await;
+        }
+
         self.send_package_status(&params.text_document.uri).await;
     }
 
@@ -942,6 +1019,15 @@ impl LanguageServer for Backend {
         if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
+        }
+
+        // Editing a lintian-overrides file changes which sibling
+        // diagnostics are suppressed — re-analyse the open files in the
+        // same package so their faded state tracks the edit.
+        #[cfg(feature = "lintian-brush")]
+        if file_type == FileType::LintianOverrides {
+            self.refresh_sibling_diagnostics(&params.text_document.uri)
                 .await;
         }
 
