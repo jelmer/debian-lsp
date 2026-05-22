@@ -21,11 +21,31 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ::lintian_brush::detector::iter_detector_registrations;
-use ::lintian_brush::{FixerPreferences, Version};
+use ::lintian_brush::diagnostic::ActionPlan;
+use ::lintian_brush::{FixerPreferences, LintianIssue, Version};
+use serde::{Deserialize, Serialize};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, NumberOrString, Range, Uri,
     WorkspaceEdit,
 };
+
+/// Fix data carried on a published [`Diagnostic`] via its `data` field.
+///
+/// The detector pass that produces a squiggle already computes the
+/// [`ActionPlan`]s that fix it. Serialising them here lets `code_action`
+/// reconstruct the quick fix from the diagnostic the client echoes back,
+/// instead of re-running the whole detector registry. Both fields are
+/// `serde`-serialisable by design (see `lintian_brush::diagnostic`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LbDiagnosticData {
+    /// Alternative plans that fix this diagnostic, in priority order.
+    pub plans: Vec<ActionPlan>,
+    /// The lintian issue, when the diagnostic corresponds to a tag.
+    /// Carried so `code_action` can offer the "suppress with override"
+    /// action without re-running the detector.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub issue: Option<LintianIssue>,
+}
 
 use crate::debian_workspace::workspace::LspDebianWorkspace;
 use crate::workspace::{SourceFile, Workspace};
@@ -207,6 +227,89 @@ fn build_action_with_diagnostics(
     CodeActionOrCommand::CodeAction(action)
 }
 
+/// Reconstruct lintian-brush quick fixes from the diagnostics the client
+/// echoes back in a `textDocument/codeAction` request — without running
+/// any detectors.
+///
+/// Each lintian-brush diagnostic carries its fix [`ActionPlan`]s in the
+/// LSP `data` field (see [`LbDiagnosticData`], attached by
+/// [`run_diagnostics_for_uri`]). This function deserialises that data and
+/// translates the plans into [`CodeAction`]s. Diagnostics without our
+/// `data` (a different source, or published before this field existed)
+/// are skipped.
+///
+/// `uri` may point at any file inside the package's `debian/` tree; the
+/// package root is derived from it so plans targeting sibling files
+/// still translate.
+pub fn actions_from_diagnostics(
+    uri: &Uri,
+    workspace: &Workspace,
+    open_files: &HashMap<Uri, FileInfo>,
+    diagnostics: &[Diagnostic],
+) -> Vec<CodeActionOrCommand> {
+    let Some(base_path) = base_path_for_debian_file(uri) else {
+        return Vec::new();
+    };
+    let (package, version) = match resolve_package_version(&base_path, workspace, open_files) {
+        Some((p, v)) => (Some(p), Some(v)),
+        None => (None, None),
+    };
+    let ws = LspDebianWorkspace::new(
+        workspace,
+        base_path,
+        package,
+        version,
+        relevant_open_files(open_files),
+    );
+
+    let mut actions = Vec::new();
+    for lsp_diag in diagnostics {
+        let Some(data) = &lsp_diag.data else {
+            continue;
+        };
+        let parsed: LbDiagnosticData = match serde_json::from_value(data.clone()) {
+            Ok(d) => d,
+            // The diagnostic carries `data` we don't recognise — it
+            // belongs to another source (e.g. multiarch-hints). Skip it
+            // silently rather than failing the whole request.
+            Err(_) => continue,
+        };
+
+        // Offer every plan whose actions we can fully translate. The
+        // emitted action links back to this specific diagnostic so the
+        // editor attaches it to the right squiggle.
+        for plan in &parsed.plans {
+            if !plan.actions.iter().all(is_action_translatable) {
+                continue;
+            }
+            let Some(edit) = plan_to_workspace_edit(plan, &ws) else {
+                continue;
+            };
+            actions.push(build_action_with_diagnostics(
+                &plan.label,
+                edit,
+                vec![lsp_diag.clone()],
+            ));
+        }
+
+        // For a tagged diagnostic, also offer the "suppress with lintian
+        // override" action. The override plan is derived from the issue
+        // alone, so no detector run is needed to reconstruct it.
+        if let Some(issue) = &parsed.issue {
+            if let Some(plan) = ::lintian_brush::diagnostic::override_action_plan(issue) {
+                if let Some(edit) = plan_to_workspace_edit(&plan, &ws) {
+                    actions.push(build_action_with_diagnostics(
+                        &plan.label,
+                        edit,
+                        vec![lsp_diag.clone()],
+                    ));
+                }
+            }
+        }
+    }
+    actions
+}
+
 /// Run every registered lintian-brush detector and surface the resulting
 /// diagnostics as LSP [`Diagnostic`]s on `uri`. Only diagnostics whose
 /// plan touches `uri` are surfaced — a control-only detector fires
@@ -304,6 +407,25 @@ pub fn run_diagnostics_for_uri(
                 continue;
             };
             let range = plans_range(&diag.plans, &ws, &rel, original_src);
+            // Carry the fix plans on the diagnostic's `data` field so
+            // `code_action` can reconstruct the quick fix without re-running
+            // any detectors. A serialisation failure is logged and the
+            // diagnostic is still published — the fix just won't be
+            // available until the file is reopened.
+            let data = match serde_json::to_value(LbDiagnosticData {
+                plans: diag.plans.clone(),
+                issue: diag.issue.clone(),
+            }) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::error!(
+                        "lintian-brush: failed to serialise fix data for {}: {}",
+                        tag,
+                        e
+                    );
+                    None
+                }
+            };
             out.push(Diagnostic {
                 range,
                 severity: Some(tower_lsp_server::ls_types::DiagnosticSeverity::INFORMATION),
@@ -317,6 +439,7 @@ pub fn run_diagnostics_for_uri(
                     .first()
                     .map(|p| p.label.clone())
                     .unwrap_or_else(|| diag.message.clone()),
+                data,
                 ..Default::default()
             });
         }
@@ -766,6 +889,148 @@ mod tests {
                 .as_ref()
                 .map_or(false, |d| d.contains(&matching_diag)),
             "action should be linked to the matching diagnostic"
+        );
+    }
+
+    /// A published diagnostic carries its fix plans on the `data` field,
+    /// and `actions_from_diagnostics` reconstructs the quick fix from that
+    /// data alone — producing the same edit `run_fixers_for_uri` would,
+    /// without running any detector.
+    #[test]
+    fn actions_from_diagnostics_reconstructs_fix_from_data() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let debian = tmp.path().join("debian");
+        std::fs::create_dir(&debian).unwrap();
+        std::fs::write(
+            debian.join("control"),
+            "Source: foo\nMaintainer: QA Folks <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
+        )
+        .unwrap();
+        std::fs::write(
+            debian.join("changelog"),
+            "foo (1.0) unstable; urgency=medium\n\n  * Initial.\n\n -- A B <a@b>  Mon, 01 Jan 2024 00:00:00 +0000\n",
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::new();
+        let control_uri = Uri::from_file_path(debian.join("control")).unwrap();
+        let source_file = workspace.update_file(
+            control_uri.clone(),
+            std::fs::read_to_string(debian.join("control")).unwrap(),
+        );
+        let mut open_files = HashMap::new();
+        open_files.insert(
+            control_uri.clone(),
+            FileInfo {
+                source_file,
+                file_type: FileType::Control,
+            },
+        );
+
+        // Publish phase: the detector run attaches fix plans to `data`.
+        let diagnostics = run_diagnostics_for_uri(
+            &control_uri,
+            &workspace,
+            &open_files,
+            RunPhase::Explicit,
+            None,
+        );
+        let qa_diag = diagnostics
+            .iter()
+            .find(|d| matches!(&d.code, Some(NumberOrString::String(s)) if s == "faulty-debian-qa-group-phrase"))
+            .expect("expected a faulty-debian-qa-group-phrase diagnostic")
+            .clone();
+        assert!(
+            qa_diag.data.is_some(),
+            "published diagnostic should carry fix data"
+        );
+
+        // code_action phase: reconstruct the fix from the echoed-back
+        // diagnostic, with no detector run.
+        let actions = actions_from_diagnostics(
+            &control_uri,
+            &workspace,
+            &open_files,
+            std::slice::from_ref(&qa_diag),
+        );
+        let qa_action = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(act)
+                    if act.title == "Fix Debian QA group name." =>
+                {
+                    Some(act)
+                }
+                _ => None,
+            })
+            .expect("expected the QA fix reconstructed from diagnostic data");
+        // The reconstructed action carries the same edit and links back to
+        // the diagnostic it fixes.
+        let edit = qa_action.edit.as_ref().expect("action carries an edit");
+        let edits = first_text_edits_for(edit, &control_uri).expect("edit targets the control URI");
+        assert_eq!(edits.len(), 1);
+        assert!(
+            qa_action
+                .diagnostics
+                .as_ref()
+                .map_or(false, |d| d.contains(&qa_diag)),
+            "reconstructed action should link to its diagnostic"
+        );
+    }
+
+    /// A diagnostic without our `data` (a different source, or one
+    /// published before the `data` field existed) yields no actions
+    /// rather than failing the request.
+    #[test]
+    fn actions_from_diagnostics_skips_diagnostics_without_data() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let debian = tmp.path().join("debian");
+        std::fs::create_dir(&debian).unwrap();
+        std::fs::write(
+            debian.join("control"),
+            "Source: foo\nMaintainer: QA Folks <packages@qa.debian.org>\n\nPackage: foo\nDescription: bar\n bar\n",
+        )
+        .unwrap();
+        std::fs::write(
+            debian.join("changelog"),
+            "foo (1.0) unstable; urgency=medium\n\n  * Initial.\n\n -- A B <a@b>  Mon, 01 Jan 2024 00:00:00 +0000\n",
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::new();
+        let control_uri = Uri::from_file_path(debian.join("control")).unwrap();
+        let source_file = workspace.update_file(
+            control_uri.clone(),
+            std::fs::read_to_string(debian.join("control")).unwrap(),
+        );
+        let mut open_files = HashMap::new();
+        open_files.insert(
+            control_uri.clone(),
+            FileInfo {
+                source_file,
+                file_type: FileType::Control,
+            },
+        );
+
+        let bare_diag = Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: Position {
+                    line: 1,
+                    character: 10,
+                },
+            },
+            code: Some(NumberOrString::String("some-other-tag".to_string())),
+            message: "from another source".to_string(),
+            ..Default::default()
+        };
+        let actions = actions_from_diagnostics(&control_uri, &workspace, &open_files, &[bare_diag]);
+        assert!(
+            actions.is_empty(),
+            "a diagnostic without lintian-brush data should produce no actions"
         );
     }
 

@@ -1313,16 +1313,39 @@ impl LanguageServer for Backend {
             let diagnostics = params.context.diagnostics.clone();
             let workspace_for_lb = workspace.clone();
             let open_files_for_lb = open_files_snapshot.clone();
+            // Two distinct requests come through here, told apart by
+            // `context.only`:
+            //
+            // * `source.fixAll` — the user (or an on-save hook) asked to
+            //   fix everything in the package. Run the full detector
+            //   registry at `Explicit` cost so even high-cost,
+            //   network-using detectors that were never published as a
+            //   squiggle are caught. Slowness is acceptable here; it is a
+            //   deliberate action, not an automatic hover.
+            //
+            // * Anything else (the automatic "Checking for quick fixes"
+            //   hover) — reconstruct fixes from the plans carried on the
+            //   echoed-back diagnostics' `data` field. No detector runs,
+            //   so the response is immediate.
             let range = params.range;
             let lb_actions = match tokio::task::spawn_blocking(move || {
-                lintian_brush::fixers::run_fixers_for_uri(
-                    &uri,
-                    &workspace_for_lb,
-                    &open_files_for_lb,
-                    &diagnostics,
-                    Some(range),
-                    RunPhase::Explicit,
-                )
+                if wants_fix_all {
+                    lintian_brush::fixers::run_fixers_for_uri(
+                        &uri,
+                        &workspace_for_lb,
+                        &open_files_for_lb,
+                        &diagnostics,
+                        Some(range),
+                        RunPhase::Explicit,
+                    )
+                } else {
+                    lintian_brush::fixers::actions_from_diagnostics(
+                        &uri,
+                        &workspace_for_lb,
+                        &open_files_for_lb,
+                        &diagnostics,
+                    )
+                }
             })
             .await
             {
@@ -1345,15 +1368,28 @@ impl LanguageServer for Backend {
                 let range = params.range;
                 let workspace_for_mh = workspace.clone();
                 let open_files_for_mh = open_files_snapshot.clone();
+                // Same split as the lintian-brush path: `source.fixAll`
+                // re-runs the detector for a full package scan, while the
+                // automatic quick-fix hover reconstructs fixes from the
+                // plans carried on the echoed-back diagnostics' `data`.
                 let mh_actions = match tokio::task::spawn_blocking(move || {
-                    multiarch_hints::fixers::run_fixers_for_uri(
-                        &uri,
-                        &workspace_for_mh,
-                        &open_files_for_mh,
-                        &diagnostics,
-                        Some(range),
-                        hints.as_slice(),
-                    )
+                    if wants_fix_all {
+                        multiarch_hints::fixers::run_fixers_for_uri(
+                            &uri,
+                            &workspace_for_mh,
+                            &open_files_for_mh,
+                            &diagnostics,
+                            Some(range),
+                            hints.as_slice(),
+                        )
+                    } else {
+                        multiarch_hints::fixers::actions_from_diagnostics(
+                            &uri,
+                            &workspace_for_mh,
+                            &open_files_for_mh,
+                            &diagnostics,
+                        )
+                    }
                 })
                 .await
                 {
