@@ -1,0 +1,27 @@
+.TH DEBIAN-LSP 1 "2026-05-22" "debian-lsp 0.1.10" "User Commands"
+.SH NAME
+debian-lsp \- Language Server Protocol implementation for Debian packaging files
+.SH SYNOPSIS
+.B debian-lsp
+.RI [ options ]
+.SH DESCRIPTION
+debian-lsp provides Language Server Protocol support for Debian packaging
+related files (control, changelog, copyright, watch, etc.). It can be
+run as a standalone server for editors that support LSP.
+.SH OPTIONS
+.TP
+\fB--help\fR
+Show help and exit.
+.TP
+\fB--version\fR
+Show version information and exit.
+.SH EXAMPLES
+Start the server in the foreground:
+
+.nf
+$ debian-lsp
+.fi
+.SH AUTHOR
+Written by Vitexus.
+.SH BUGS
+Report bugs to: https://github.com/Vitexus/debian-lsp/issues

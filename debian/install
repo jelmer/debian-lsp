@@ -1,0 +1,3 @@
+target/release/debian-lsp usr/bin
+debian/debian-lsp.svg usr/share/icons/hicolor/scalable/apps/
+debian/debian-lsp.1 usr/share/man/man1/

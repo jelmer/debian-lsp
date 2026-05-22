@@ -1,0 +1,198 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: debian-lsp
+Upstream-Contact: <preferred name and address to reach the upstream project>
+Source: <url://example.com>
+#
+# Please double check copyright with the licensecheck(1) command.
+
+Files:     .github/CODEOWNERS
+           .github/FUNDING.yml
+           .github/dependabot.yml
+           .github/workflows/auto-merge.yaml
+           .github/workflows/ci.yml
+           .github/workflows/publish.yaml
+           .github/workflows/test.yml
+           .gitignore
+           CONTRIBUTING.md
+           Cargo.lock
+           Cargo.toml
+           README.md
+           ale-debian-lsp.vim
+           coc-debian/.npmignore
+           coc-debian/README.md
+           coc-debian/jest.config.js
+           coc-debian/package-lock.json
+           coc-debian/package.json
+           coc-debian/src/index.ts
+           coc-debian/src/test.ts
+           coc-debian/tsconfig.json
+           emacs-lspconfig/README.md
+           helix-lspconfig/README.md
+           nvim-lspconfig/README.md
+           nvim-lspconfig/lsp/debian_lsp.lua
+           src/architecture.rs
+           src/bugs.rs
+           src/bugs/debbugs.rs
+           src/bugs/launchpad.rs
+           src/changelog/actions.rs
+           src/changelog/completion.rs
+           src/changelog/detection.rs
+           src/changelog/fields.rs
+           src/changelog/folding.rs
+           src/changelog/hover.rs
+           src/changelog/inlay_hints.rs
+           src/changelog/mod.rs
+           src/changelog/on_type_formatting.rs
+           src/changelog/selection_range.rs
+           src/changelog/semantic.rs
+           src/changelog/symbols.rs
+           src/control/actions.rs
+           src/control/code_lens.rs
+           src/control/completion.rs
+           src/control/detection.rs
+           src/control/diagnostics.rs
+           src/control/fields.rs
+           src/control/hover.rs
+           src/control/inlay_hints.rs
+           src/control/mod.rs
+           src/control/relation_completion.rs
+           src/control/semantic.rs
+           src/copyright/detection.rs
+           src/copyright/fields.rs
+           src/copyright/hover.rs
+           src/copyright/mod.rs
+           src/copyright/semantic.rs
+           src/deb822/completion.rs
+           src/deb822/hover.rs
+           src/deb822/mod.rs
+           src/deb822/on_type_formatting.rs
+           src/deb822/semantic.rs
+           src/debcargo/completion.rs
+           src/debcargo/detection.rs
+           src/debcargo/fields.rs
+           src/debcargo/hover.rs
+           src/debcargo/mod.rs
+           src/debcargo/semantic.rs
+           src/debian_workspace/changelog_edits.rs
+           src/debian_workspace/format_edits.rs
+           src/debian_workspace/mod.rs
+           src/debian_workspace/translate.rs
+           src/debian_workspace/triggers.rs
+           src/dep3/completion.rs
+           src/dep3/detection.rs
+           src/dep3/diagnostics.rs
+           src/dep3/fields.rs
+           src/dep3/hover.rs
+           src/dep3/mod.rs
+           src/dep3/parsing.rs
+           src/dep3/semantic.rs
+           src/dep3/symbols.rs
+           src/distros.rs
+           src/lintian_brush/mod.rs
+           src/lintian_brush/overrides.rs
+           src/lintian_brush/triggers.rs
+           src/lintian_overrides/completion.rs
+           src/lintian_overrides/detection.rs
+           src/lintian_overrides/mod.rs
+           src/lintian_overrides/semantic.rs
+           src/lintian_overrides/tags.rs
+           src/lsp_integration_tests.rs
+           src/package_cache.rs
+           src/patches_series/completion.rs
+           src/patches_series/definition.rs
+           src/patches_series/detection.rs
+           src/patches_series/mod.rs
+           src/patches_series/semantic.rs
+           src/phase.rs
+           src/popcon.rs
+           src/position.rs
+           src/rdeps.rs
+           src/rules/completion.rs
+           src/rules/detection.rs
+           src/rules/fields.rs
+           src/rules/mod.rs
+           src/rules/semantic.rs
+           src/source_format/completion.rs
+           src/source_format/detection.rs
+           src/source_format/fields.rs
+           src/source_format/mod.rs
+           src/source_options/completion.rs
+           src/source_options/detection.rs
+           src/source_options/fields.rs
+           src/source_options/mod.rs
+           src/source_options/selection_range.rs
+           src/source_options/semantic.rs
+           src/tests/completion.rs
+           src/tests/detection.rs
+           src/tests/mod.rs
+           src/tests/semantic.rs
+           src/udd.rs
+           src/upstream_metadata/completion.rs
+           src/upstream_metadata/detection.rs
+           src/upstream_metadata/document_link.rs
+           src/upstream_metadata/fields.rs
+           src/upstream_metadata/hover.rs
+           src/upstream_metadata/mod.rs
+           src/upstream_metadata/on_type_formatting.rs
+           src/upstream_metadata/semantic.rs
+           src/upstream_metadata/upstream_cache.rs
+           src/vcswatch.rs
+           src/watch/completion.rs
+           src/watch/detection.rs
+           src/watch/fields.rs
+           src/watch/folding.rs
+           src/watch/hover.rs
+           src/watch/mod.rs
+           src/watch/selection_range.rs
+           src/watch/semantic.rs
+           vscode-debian/.eslintrc.json
+           vscode-debian/.gitignore
+           vscode-debian/.vscodeignore
+           vscode-debian/README.md
+           vscode-debian/images/debian-logo-256.png
+           vscode-debian/images/debian-logo.png
+           vscode-debian/language-configuration.json
+           vscode-debian/package-lock.json
+           vscode-debian/package.json
+           vscode-debian/publishing.md
+           vscode-debian/src/extension.ts
+           vscode-debian/tsconfig.json
+Copyright: __NO_COPYRIGHT_NOR_LICENSE__
+License:   __NO_COPYRIGHT_NOR_LICENSE__
+
+Files:     src/lintian_brush/fixers.rs
+           src/main.rs
+           src/workspace.rs
+Copyright: : 2024 Test Author License: MIT "#;
+           ::get_completions(&parsed, src, position) }
+           would otherwise produce a useless whole-document squiggle on the wrong file.
+License:   __NO_LICENSE__
+
+Files:     src/control/definition.rs
+           src/control/references.rs
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: debian-lsp
+Upstream-Contact: Jelmer Vernooĳ <jelmer@debian.org>
+Source: https://github.com/jelmer/debian-lsp
+
+Files: *
+Copyright: 2020-2026 Jelmer Vernooĳ
+License: MIT OR Apache-2.0
+
+Files: Cargo.toml
+Copyright: 2020-2026 Jelmer Vernooĳ
+License: MIT OR Apache-2.0
+
+Files: README.md
+Copyright: 2020-2026 Jelmer Vernooĳ
+License: MIT OR Apache-2.0
+
+Files: src/**
+Copyright: 2020-2026 Jelmer Vernooĳ
+License: MIT OR Apache-2.0
+
+Comment: The upstream project declares the crate license as "MIT OR Apache-2.0" in
+the Cargo.toml manifest. This file states that licensing for the sources is
+covered by that dual-license; the full license texts are available from the
+upstream repository.
+ pool,

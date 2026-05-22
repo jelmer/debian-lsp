@@ -1,0 +1,23 @@
+<component type="console-application">
+  <id>io.github.vitexus.debian-lsp</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>debian-lsp</name>
+  <summary>Language Server Protocol implementation for Debian packaging files</summary>
+  <description>
+    <p>debian-lsp provides Language Server Protocol support for editing Debian packaging files such as debian/control, debian/changelog, debian/copyright and debian/watch.</p>
+    <p>See the project repository for integration instructions and editor plugins.</p>
+  </description>
+  <url type="homepage">https://github.com/Vitexus/debian-lsp</url>
+  <icon>debian/debian-lsp.svg</icon>
+  <developer>
+    <name>Vitexus</name>
+    <url>https://github.com/Vitexus</url>
+  </developer>
+  <releases>
+    <release version="0.1.10" date="2026-05-22" />
+  </releases>
+  <provides>
+    <binary>debian-lsp</binary>
+  </provides>
+</component>

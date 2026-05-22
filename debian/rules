@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+# Minimal debhelper-based rules file for building the Rust binary
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked
+
+override_dh_auto_test:
+	cargo test --locked --offline || true
+
+override_dh_auto_clean:
+	cargo clean

@@ -1,0 +1,18 @@
+Source: debian-lsp
+Section: devel
+Priority: optional
+Maintainer: Vítězslav Dvořák <info@vitexsoftware.cz>
+Build-Depends: debhelper-compat (= 13), cargo, rustc
+Standards-Version: 4.7.0
+Homepage: https://github.com/jelmer/debian-lsp
+Rules-Requires-Root: no
+#Vcs-Git: https://salsa.debian.org/debian/debian-lsp.git
+#Vcs-Browser: https://salsa.debian.org/debian/debian-lsp
+
+Package: debian-lsp
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Language Server Protocol implementation for Debian control files
+ Debian LSP provides a language-server for editing Debian control and related
+ files, offering field completion, diagnostics, and quickfixes. It builds the
+ `debian-lsp` Rust binary and installs it to `/usr/bin`.
