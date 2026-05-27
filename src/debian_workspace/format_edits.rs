@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ::lintian_brush::diagnostic::{
+use ::debian_workspace::action::{
     Dep3Action, FilesystemAction, LintianOverridesAction, MaintscriptAction, MakefileAction,
     OverrideLineSelector, WatchAction, YamlAction, YamlPathComponent,
 };

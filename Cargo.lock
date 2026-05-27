@@ -357,7 +357,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
 dependencies = [
  "memchr",
- "regex-automata 0.4.14",
+ "regex-automata",
  "serde",
 ]
 
@@ -493,12 +493,12 @@ dependencies = [
 
 [[package]]
 name = "chumsky"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba4a05c9ce83b07de31b31c874e87c069881ac4355db9e752e3a55c11ec75a6"
+checksum = "e0d2bfadce76f963d776feff99db6dc33783829539258314776383b33e2a00f8"
 dependencies = [
  "hashbrown 0.15.5",
- "regex-automata 0.3.9",
+ "regex-automata",
  "serde",
  "stacker",
  "unicode-ident",
@@ -820,9 +820,9 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "dashmap"
-version = "6.1.0"
+version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
 dependencies = [
  "cfg-if",
  "crossbeam-utils",
@@ -860,9 +860,9 @@ dependencies = [
 
 [[package]]
 name = "deb822-lossless"
-version = "0.5.15"
+version = "0.5.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3010ab21b879670c60b013a500a9afe82094921707b151a4dac4a17f5676134f"
+checksum = "a3d30d7b078b5d4ef37be971b8ac29ca3147bf8ff5803e4adf1fdd6c276969b5"
 dependencies = [
  "pyo3",
  "regex",
@@ -888,9 +888,9 @@ dependencies = [
 
 [[package]]
 name = "debian-analyzer"
-version = "0.160.17"
+version = "0.160.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6c31ea90a1e9aff95341c30bf66e4026c9106c1c404c6acbfafa269043d6759"
+checksum = "1d2e7347b5516d15e991841f64a0320d6ab85ddcebe125506d8c613281e846e0"
 dependencies = [
  "breezyshim",
  "chrono",
@@ -929,9 +929,9 @@ dependencies = [
 
 [[package]]
 name = "debian-changelog"
-version = "0.2.19"
+version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde041307fba55972c33c26fe5570d83726b78a50bdebf69654ce1d219287ef1"
+checksum = "8432f86dfdbd2ec36002df08c6e08d616389a503683f07a446c50e4c52425ba9"
 dependencies = [
  "chrono",
  "debversion",
@@ -944,9 +944,9 @@ dependencies = [
 
 [[package]]
 name = "debian-control"
-version = "0.3.9"
+version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44cdba1df6fd278ee83ff86565d4cff7b9fe94d1b8d26912da8810f9d3063ad4"
+checksum = "89c15968faa2af77e39dc0c05482a178dd48df6678acff69f5c449904a236415"
 dependencies = [
  "chrono",
  "deb822-fast",
@@ -961,9 +961,9 @@ dependencies = [
 
 [[package]]
 name = "debian-copyright"
-version = "0.1.48"
+version = "0.1.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3424ff8ed8521aa2ad9ef969000ed34cd7d8bd62098d4ca382f5d9f5ca277a"
+checksum = "48606276b823910e8a95f2699b63555f30feeb059245caf9001810f331886083"
 dependencies = [
  "deb822-fast",
  "deb822-lossless",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "debian-lsp"
-version = "0.1.8"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -993,6 +993,7 @@ dependencies = [
  "lintian-overrides",
  "lru",
  "makefile-lossless",
+ "multiarch-hints",
  "openssl",
  "patchkit",
  "rowan",
@@ -1017,9 +1018,9 @@ dependencies = [
 
 [[package]]
 name = "debian-watch"
-version = "0.4.10"
+version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "990fc0b20c98392dc7e83e164f2603f6627dab8f17466fa33ead80a6cb428373"
+checksum = "9ceff681f7ca411c95fb0effa024b3a192f2f5a99722ba9326e1132a5fbbbc9c"
 dependencies = [
  "anyhow",
  "clap",
@@ -1036,7 +1037,9 @@ dependencies = [
 
 [[package]]
 name = "debian-workspace"
-version = "0.1.0"
+version = "0.179.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5da8c49c7af08db89886dd42093942f2a082b4cca0398fa5ad95c6b460db7677"
 dependencies = [
  "chrono",
  "deb822-lossless",
@@ -1062,9 +1065,9 @@ dependencies = [
 
 [[package]]
 name = "debversion"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8ba0e270fb9f27dbb4c46e08d2ad27e69501d6ca573bfdf9e0aa793e7377929"
+checksum = "f79ef0d110ecfe7c87db7ff3a87756cd31d601073f440619963bea29f06694dc"
 dependencies = [
  "chrono",
  "lazy-regex",
@@ -1281,9 +1284,9 @@ checksum = "b04dc5a38e4f151a79d9f2451ae6037fb6eaf5cba34771f44781f80e508498e3"
 
 [[package]]
 name = "either"
-version = "1.15.0"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 dependencies = [
  "serde",
 ]
@@ -1999,11 +2002,6 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-dependencies = [
- "allocator-api2",
- "equivalent",
- "foldhash 0.2.0",
-]
 
 [[package]]
 name = "hashbrown"
@@ -2716,7 +2714,7 @@ version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "884f3e747ed2dcee867cda1b0c31a048f9e20de2d916a248949319921a2e666e"
 dependencies = [
- "regex-automata 0.4.14",
+ "regex-automata",
 ]
 
 [[package]]
@@ -2782,9 +2780,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libbz2-rs-sys"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8fc329e1457d97a9d58a4e2ca49e3be572431a7e096008efc2e3a3c19d428f4"
+checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
@@ -2832,7 +2830,9 @@ dependencies = [
 
 [[package]]
 name = "lintian-brush"
-version = "0.176.0"
+version = "0.179.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb269d2691a4617bd9467570ab0da6ff43754e3c76f762d90525be5428cafbd2"
 dependencies = [
  "breezyshim",
  "chrono",
@@ -2890,9 +2890,9 @@ dependencies = [
 
 [[package]]
 name = "lintian-overrides"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7612be64e27dd0d1310694bc16e38544b9465f44450a34f930125faeda46684b"
+checksum = "5a8b7bfd52c707bb29fda10bdde433ad4bd5ccd4e872878fe25a0da84b086a61"
 dependencies = [
  "lazy_static",
  "regex",
@@ -2928,11 +2928,11 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru"
-version = "0.16.4"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -2952,6 +2952,17 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lzma-sys"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -3065,7 +3076,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
- "regex-automata 0.4.14",
+ "regex-automata",
 ]
 
 [[package]]
@@ -3171,6 +3182,35 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "multiarch-hints"
+version = "0.179.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b437856507b9d8481eeb033472408b5f5a15816c54bb9a493a72218985680e23"
+dependencies = [
+ "breezyshim",
+ "chrono",
+ "configparser",
+ "deb822-lossless",
+ "debian-analyzer",
+ "debian-changelog",
+ "debian-control",
+ "debian-workspace",
+ "debversion",
+ "lazy-regex",
+ "lazy_static",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "svp-client",
+ "tempfile",
+ "tokio",
+ "url",
+ "xz2",
 ]
 
 [[package]]
@@ -3334,9 +3374,9 @@ dependencies = [
 
 [[package]]
 name = "openssl"
-version = "0.10.79"
+version = "0.10.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf0b434746ee2832f4f0baf10137e1cabb18cbe6912c69e2e33263c45250f542"
+checksum = "a45fa2aa886c42762255da344f0a0d313e254066c46aad76f300c3d3da62d967"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
@@ -3374,9 +3414,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.115"
+version = "0.9.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
+checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
 dependencies = [
  "cc",
  "libc",
@@ -3831,9 +3871,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.3"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c3a14896dfa883796f1cb410461aef38810ea05f2b2c33c5aded3649095fdad"
+checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
 dependencies = [
  "bitflags 2.11.1",
  "getopts",
@@ -4178,19 +4218,8 @@ checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
 dependencies = [
  "aho-corasick",
  "memchr",
- "regex-automata 0.4.14",
+ "regex-automata",
  "regex-syntax 0.8.10",
-]
-
-[[package]]
-name = "regex-automata"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59b23e92ee4318893fa3fe3e6fb365258efbfe6ac6ab30f090cdcbb7aa37efa9"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax 0.7.5",
 ]
 
 [[package]]
@@ -4209,12 +4238,6 @@ name = "regex-syntax"
 version = "0.6.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f162c6dd7b008981e4d40210aca20b4bd0f9b60ca9271061b07f78537722f2e1"
-
-[[package]]
-name = "regex-syntax"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbb5fb1acd8a1a18b3dd5be62d25485eb770e05afb408a9627d14d451bae12da"
 
 [[package]]
 name = "regex-syntax"
@@ -4268,9 +4291,9 @@ dependencies = [
 
 [[package]]
 name = "rfc2047-decoder"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "504ea008279c473dfeafce327fa26bf8825463cfcc06ef82f866187e81334d16"
+checksum = "b36447d5e70933adee73cefff22b0851edbc162f2b3951918de43717a22d92de"
 dependencies = [
  "base64",
  "charset",
@@ -5313,9 +5336,9 @@ dependencies = [
 
 [[package]]
 name = "tar"
-version = "0.4.45"
+version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",
@@ -5654,9 +5677,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.10"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68d6fdd9f81c2819c9a8b0e0cd91660e7746a8e6ea2ba7c6b2b057985f6bcb51"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags 2.11.1",
  "bytes",
@@ -5769,7 +5792,7 @@ dependencies = [
  "matchers",
  "nu-ansi-term",
  "once_cell",
- "regex-automata 0.4.14",
+ "regex-automata",
  "sharded-slab",
  "smallvec",
  "thread_local",
@@ -6735,6 +6758,15 @@ name = "xxhash-rust"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+
+[[package]]
+name = "xz2"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
+dependencies = [
+ "lzma-sys",
+]
 
 [[package]]
 name = "yaml-edit"

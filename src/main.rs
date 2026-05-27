@@ -12,13 +12,25 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use clap::{Parser, Subcommand};
 
 /// Server settings received from the client via initializationOptions.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 struct Settings {
     /// Allow the upstream-ontologist to make network requests when guessing
     /// upstream metadata values. Defaults to `false`.
     upstream_ontologist_net_access: bool,
+    /// Surface lintian-brush issues that are suppressed by a lintian
+    /// override as faded, informational diagnostics. Defaults to `true`.
+    show_overridden_issues: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            upstream_ontologist_net_access: false,
+            show_overridden_issues: true,
+        }
+    }
 }
 
 mod architecture;
@@ -28,7 +40,7 @@ mod control;
 mod copyright;
 mod deb822;
 mod debcargo;
-#[cfg(feature = "debian-workspace")]
+#[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
 mod debian_workspace;
 mod dep3;
 mod distros;
@@ -36,6 +48,8 @@ mod distros;
 mod lintian_brush;
 mod lintian_overrides;
 mod maintainers;
+#[cfg(feature = "multiarch-hints")]
+mod multiarch_hints;
 mod package_cache;
 mod patches_series;
 mod phase;
@@ -241,6 +255,8 @@ struct Backend {
     git_file_cache: copyright::code_lens::SharedGitFileCache,
     lintian_tag_cache: lintian_overrides::SharedLintianTagCache,
     upstream_cache: upstream_metadata::SharedUpstreamCache,
+    #[cfg(feature = "multiarch-hints")]
+    multiarch_hints_store: multiarch_hints::hints::HintsStore,
     settings: Arc<Mutex<Settings>>,
 }
 
@@ -261,6 +277,7 @@ impl Backend {
         self.workspace.lock().await.clone()
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn collect_diagnostics(
         uri: Uri,
         source_file: workspace::SourceFile,
@@ -269,31 +286,65 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        show_overridden: bool,
+        #[cfg(feature = "multiarch-hints")] multiarch_hints_store: Option<
+            multiarch_hints::hints::HintsStore,
+        >,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
         let builtin = Self::builtin_diagnostics(source_file, file_type, &workspace);
 
         #[cfg(feature = "lintian-brush")]
         let lb = Self::lintian_brush_diagnostics(
-            uri,
+            uri.clone(),
             file_type,
+            workspace.clone(),
+            open_files.clone(),
+            phase,
+            changed_ranges.clone(),
+            show_overridden,
+        )
+        .await?;
+        #[cfg(not(feature = "lintian-brush"))]
+        let lb: Option<Vec<Diagnostic>> = None;
+
+        #[cfg(feature = "multiarch-hints")]
+        let mh = Self::multiarch_hints_diagnostics(
+            uri.clone(),
+            file_type,
+            workspace.clone(),
+            open_files.clone(),
+            multiarch_hints_store,
+        )
+        .await?;
+        #[cfg(not(feature = "multiarch-hints"))]
+        let mh: Option<Vec<Diagnostic>> = None;
+
+        // Silence unused-variable warnings when neither extension feature
+        // is enabled — the bindings are only consumed inside the cfg arms.
+        let _ = (
+            uri,
             workspace,
             open_files,
             phase,
             changed_ranges,
-        )
-        .await?;
-        #[cfg(not(feature = "lintian-brush"))]
-        let lb: Option<Vec<Diagnostic>> = {
-            let _ = (uri, workspace, open_files, phase, changed_ranges);
-            None
-        };
+            show_overridden,
+        );
 
-        Ok(match (builtin, lb) {
+        let combined = match (builtin, lb) {
             (None, None) => None,
             (Some(b), None) => Some(b),
             (None, Some(l)) => Some(l),
             (Some(mut b), Some(l)) => {
                 b.extend(l);
+                Some(b)
+            }
+        };
+        Ok(match (combined, mh) {
+            (None, None) => None,
+            (Some(b), None) => Some(b),
+            (None, Some(m)) => Some(m),
+            (Some(mut b), Some(m)) => {
+                b.extend(m);
                 Some(b)
             }
         })
@@ -344,6 +395,7 @@ impl Backend {
         open_files: HashMap<Uri, FileInfo>,
         phase: RunPhase,
         changed_ranges: Option<Vec<rowan::TextRange>>,
+        show_overridden: bool,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
         if !matches!(
             file_type,
@@ -364,6 +416,7 @@ impl Backend {
                 &open_files,
                 phase,
                 changed_ranges.as_deref(),
+                show_overridden,
             )
         })
         .await
@@ -375,12 +428,137 @@ impl Backend {
         Ok(Some(diags))
     }
 
+    /// Surface multiarch-hints suggestions as diagnostics on
+    /// `debian/control`. The detector itself is sync, but the hint feed
+    /// is fetched (and cached on disk) asynchronously through
+    /// [`multiarch_hints::hints::HintsStore`].
+    #[cfg(feature = "multiarch-hints")]
+    async fn multiarch_hints_diagnostics(
+        uri: Uri,
+        file_type: FileType,
+        workspace: Workspace,
+        open_files: HashMap<Uri, FileInfo>,
+        store: Option<multiarch_hints::hints::HintsStore>,
+    ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
+        if file_type != FileType::Control {
+            tracing::debug!(
+                "multiarch-hints: skipping {} ({:?} is not Control)",
+                uri.as_str(),
+                file_type
+            );
+            return Ok(None);
+        }
+        let Some(store) = store else {
+            tracing::debug!(
+                "multiarch-hints: no HintsStore configured, skipping {}",
+                uri.as_str()
+            );
+            return Ok(None);
+        };
+        let Some(hints) = store.get().await else {
+            tracing::debug!(
+                "multiarch-hints: no hints available, skipping {}",
+                uri.as_str()
+            );
+            return Ok(None);
+        };
+        let uri_for_log = uri.as_str().to_string();
+        let diags = tokio::task::spawn_blocking(move || {
+            multiarch_hints::fixers::run_diagnostics_for_uri(
+                &uri,
+                &workspace,
+                &open_files,
+                hints.as_slice(),
+            )
+        })
+        .await
+        .map_err(|e| {
+            let msg = format!("multiarch-hints detector task panicked: {:?}", e);
+            tracing::error!("{}", msg);
+            tower_lsp_server::jsonrpc::Error::internal_error()
+        })?;
+        tracing::debug!(
+            "multiarch-hints: produced {} diagnostic(s) for {}",
+            diags.len(),
+            uri_for_log
+        );
+        Ok(Some(diags))
+    }
+
     /// Find the `debian/` directory by walking up from the given URI.
     fn find_debian_dir(uri: &Uri) -> Option<std::path::PathBuf> {
         let path = uri.to_file_path()?;
         path.ancestors()
             .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("debian"))
             .map(|p| p.to_path_buf())
+    }
+
+    /// Re-analyse the open files in the same package as `overrides_uri`
+    /// after its lintian-overrides content changed.
+    ///
+    /// An override line suppresses (fades) a lintian-brush diagnostic in
+    /// a *different* file — `debian/changelog`, `debian/control`, ... —
+    /// so editing the override file must re-publish those siblings'
+    /// diagnostics for the faded state to track the edit. The override
+    /// file itself is skipped (its own diagnostics don't depend on it).
+    ///
+    /// Each sibling is recomputed at [`RunPhase::Open`] — the cheap
+    /// detectors (the day-of-week fader among them) cover the override
+    /// fade state. Network-cost detectors are not re-run here.
+    #[cfg(feature = "lintian-brush")]
+    async fn refresh_sibling_diagnostics(&self, overrides_uri: &Uri) {
+        let Some(debian_dir) = Self::find_debian_dir(overrides_uri) else {
+            return;
+        };
+
+        // Collect the open siblings (same `debian/` dir, not the
+        // override file itself) up front, releasing the lock before the
+        // analysis work.
+        let siblings: Vec<(Uri, FileInfo)> = {
+            let files = self.files.lock().await;
+            files
+                .iter()
+                .filter(|(uri, _)| *uri != overrides_uri)
+                .filter(|(uri, _)| Self::find_debian_dir(uri).as_deref() == Some(&debian_dir))
+                .map(|(uri, info)| (uri.clone(), *info))
+                .collect()
+        };
+        if siblings.is_empty() {
+            return;
+        }
+
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
+        for (uri, info) in siblings {
+            // Lock `files` and `workspace` one at a time, never nested —
+            // other handlers take them in the opposite order, and holding
+            // both at once risks an AB-BA deadlock.
+            let open_files_snapshot = self.files.lock().await.clone();
+            let workspace = self.workspace.lock().await.clone();
+            let diagnostics = match Self::collect_diagnostics(
+                uri.clone(),
+                info.source_file,
+                info.file_type,
+                workspace,
+                open_files_snapshot,
+                RunPhase::Open,
+                None,
+                show_overridden,
+                #[cfg(feature = "multiarch-hints")]
+                Some(self.multiarch_hints_store.clone()),
+            )
+            .await
+            {
+                Ok(Some(d)) => d,
+                Ok(None) => continue,
+                Err(e) => {
+                    self.client.log_message(MessageType::ERROR, &e).await;
+                    continue;
+                }
+            };
+            self.client
+                .publish_diagnostics(uri.clone(), diagnostics, None)
+                .await;
+        }
     }
 
     /// Get or load the changelog source file for the debian directory
@@ -699,6 +877,7 @@ impl LanguageServer for Backend {
         let open_files_snapshot = files.clone();
         drop(files);
 
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -707,6 +886,9 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Open,
             None,
+            show_overridden,
+            #[cfg(feature = "multiarch-hints")]
+            Some(self.multiarch_hints_store.clone()),
         )
         .await
         {
@@ -720,6 +902,15 @@ impl LanguageServer for Backend {
         if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
+        }
+
+        // Opening a lintian-overrides file may change which sibling
+        // diagnostics are suppressed (its on-disk content is now an open
+        // buffer that may differ) — re-analyse the open siblings.
+        #[cfg(feature = "lintian-brush")]
+        if file_type == FileType::LintianOverrides {
+            self.refresh_sibling_diagnostics(&params.text_document.uri)
                 .await;
         }
 
@@ -803,6 +994,7 @@ impl LanguageServer for Backend {
         // changed_ranges is intentionally `None`: narrowing by touched
         // fields would skip detectors for unchanged fields and wipe
         // their already-published diagnostics from the rest of the file.
+        let show_overridden = self.settings.lock().await.show_overridden_issues;
         let diagnostics = match Self::collect_diagnostics(
             params.text_document.uri.clone(),
             source_file,
@@ -811,6 +1003,9 @@ impl LanguageServer for Backend {
             open_files_snapshot,
             RunPhase::Keystroke,
             None,
+            show_overridden,
+            #[cfg(feature = "multiarch-hints")]
+            Some(self.multiarch_hints_store.clone()),
         )
         .await
         {
@@ -824,6 +1019,15 @@ impl LanguageServer for Backend {
         if let Some(diagnostics) = diagnostics {
             self.client
                 .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+                .await;
+        }
+
+        // Editing a lintian-overrides file changes which sibling
+        // diagnostics are suppressed — re-analyse the open files in the
+        // same package so their faded state tracks the edit.
+        #[cfg(feature = "lintian-brush")]
+        if file_type == FileType::LintianOverrides {
+            self.refresh_sibling_diagnostics(&params.text_document.uri)
                 .await;
         }
 
@@ -1212,21 +1416,49 @@ impl LanguageServer for Backend {
             _ => unreachable!(),
         }
 
+        #[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
+        let open_files_snapshot = files.clone();
+        drop(files);
+
         #[cfg(feature = "lintian-brush")]
         {
-            let open_files_snapshot = files.clone();
-            drop(files);
             let uri = params.text_document.uri.clone();
             let diagnostics = params.context.diagnostics.clone();
+            let workspace_for_lb = workspace.clone();
+            let open_files_for_lb = open_files_snapshot.clone();
+            // Two distinct requests come through here, told apart by
+            // `context.only`:
+            //
+            // * `source.fixAll` — the user (or an on-save hook) asked to
+            //   fix everything in the package. Run the full detector
+            //   registry at `Explicit` cost so even high-cost,
+            //   network-using detectors that were never published as a
+            //   squiggle are caught. Slowness is acceptable here; it is a
+            //   deliberate action, not an automatic hover.
+            //
+            // * Anything else (the automatic "Checking for quick fixes"
+            //   hover) — reconstruct fixes from the plans carried on the
+            //   echoed-back diagnostics' `data` field. No detector runs,
+            //   so the response is immediate.
+            let range = params.range;
             let lb_actions = match tokio::task::spawn_blocking(move || {
-                lintian_brush::fixers::run_fixers_for_uri(
-                    &uri,
-                    &workspace,
-                    &open_files_snapshot,
-                    &diagnostics,
-                    Some(params.range),
-                    RunPhase::Explicit,
-                )
+                if wants_fix_all {
+                    lintian_brush::fixers::run_fixers_for_uri(
+                        &uri,
+                        &workspace_for_lb,
+                        &open_files_for_lb,
+                        &diagnostics,
+                        Some(range),
+                        RunPhase::Explicit,
+                    )
+                } else {
+                    lintian_brush::fixers::actions_from_diagnostics(
+                        &uri,
+                        &workspace_for_lb,
+                        &open_files_for_lb,
+                        &diagnostics,
+                    )
+                }
             })
             .await
             {
@@ -1240,8 +1472,55 @@ impl LanguageServer for Backend {
             };
             actions.extend(lb_actions);
         }
-        #[cfg(not(feature = "lintian-brush"))]
-        drop(files);
+
+        #[cfg(feature = "multiarch-hints")]
+        {
+            if let Some(hints) = self.multiarch_hints_store.get().await {
+                let uri = params.text_document.uri.clone();
+                let diagnostics = params.context.diagnostics.clone();
+                let range = params.range;
+                let workspace_for_mh = workspace.clone();
+                let open_files_for_mh = open_files_snapshot.clone();
+                // Same split as the lintian-brush path: `source.fixAll`
+                // re-runs the detector for a full package scan, while the
+                // automatic quick-fix hover reconstructs fixes from the
+                // plans carried on the echoed-back diagnostics' `data`.
+                let mh_actions = match tokio::task::spawn_blocking(move || {
+                    if wants_fix_all {
+                        multiarch_hints::fixers::run_fixers_for_uri(
+                            &uri,
+                            &workspace_for_mh,
+                            &open_files_for_mh,
+                            &diagnostics,
+                            Some(range),
+                            hints.as_slice(),
+                        )
+                    } else {
+                        multiarch_hints::fixers::actions_from_diagnostics(
+                            &uri,
+                            &workspace_for_mh,
+                            &open_files_for_mh,
+                            &diagnostics,
+                        )
+                    }
+                })
+                .await
+                {
+                    Ok(actions) => actions,
+                    Err(e) => {
+                        let msg = format!("multiarch-hints fixer task panicked: {:?}", e);
+                        tracing::error!("{}", msg);
+                        self.client.log_message(MessageType::ERROR, msg).await;
+                        Vec::new()
+                    }
+                };
+                actions.extend(mh_actions);
+            }
+        }
+
+        // Silence unused-variable warnings when neither extension feature
+        // is enabled.
+        let _ = &workspace;
 
         // Filter actions based on client's requested kinds
         if let Some(requested_kinds) = requested_kinds {
@@ -2261,10 +2540,18 @@ enum Command {
     /// and any recognized Debian files are checked.
     Check {
         /// Files or directories to check.
-        paths: Vec<std::path::PathBuf>,
+        paths: Vec<std::path::PathBuf>
+
         /// Emit results as SARIF 2.1.0 JSON on stdout instead of gcc-style lines.
         #[arg(long)]
         sarif: bool,
+
+        /// Skip the multiarch-hints detector. The detector fetches a hints
+        /// feed from the network (cached on disk after the first call);
+        /// pass this flag for fully offline runs or to keep `check` fast.
+        #[cfg(feature = "multiarch-hints")]
+        #[arg(long)]
+        no_multiarch_hints: bool,
     },
 }
 
@@ -2317,10 +2604,23 @@ fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// log when true.
 ///
 /// Returns the number of errors found (for the exit code).
-async fn run_check(paths: &[std::path::PathBuf], sarif: bool) -> i32 {
+async fn run_check(
+    paths: &[std::path::PathBuf],
+    sarif: bool,
+    #[cfg(feature = "multiarch-hints")] enable_multiarch_hints: bool,
+) -> i32 {
     let mut workspace = Workspace::new();
     let mut error_count: i32 = 0;
     let mut sarif_results: Vec<serde_json::Value> = Vec::new();
+
+    // Construct (but don't pre-warm) the multiarch-hints store. The
+    // first per-file diagnostics pass that needs it triggers the
+    // network fetch; subsequent passes hit the in-process cache. Pass
+    // mode is `Explicit`, so a one-off network round-trip is fine.
+    // `None` here skips the detector entirely (see --no-multiarch-hints).
+    #[cfg(feature = "multiarch-hints")]
+    let multiarch_hints_store =
+        enable_multiarch_hints.then(multiarch_hints::hints::HintsStore::default);
 
     // Expand directories into individual files, tracking which were explicit.
     let explicit_paths: std::collections::HashSet<std::path::PathBuf> =
@@ -2387,6 +2687,12 @@ async fn run_check(paths: &[std::path::PathBuf], sarif: bool) -> i32 {
             HashMap::new(),
             RunPhase::Explicit,
             None,
+            // CLI lint: an overridden issue is intentionally suppressed,
+            // so don't report it. There is no faded rendering in a
+            // terminal anyway.
+            false,
+            #[cfg(feature = "multiarch-hints")]
+            multiarch_hints_store.clone(),
         )
         .await
         {
@@ -2506,8 +2812,28 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Check { paths, sarif }) => {
-            let errors = run_check(&paths, sarif).await;
+        Some(Command::Check {
+            paths,
+            sarif,
+            #[cfg(feature = "multiarch-hints")]
+            no_multiarch_hints,
+        }) => {
+            // ANSI colours and the more readable `pretty` formatter
+            // are fine for `check` — it's a terminal-facing CLI. The
+            // LSP-server path leaves both off because the client reads
+            // stderr as plain text.
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+                .with_target(false)
+                .compact()
+                .init();
+            let errors = run_check(
+                &paths,
+                #[cfg(feature = "multiarch-hints")]
+                !no_multiarch_hints,
+            )
+            .await;
             std::process::exit(if errors > 0 { 1 } else { 0 });
         }
         None => {
@@ -2557,6 +2883,8 @@ async fn main() {
                     lintian_overrides::LintianTagCache::new(),
                 )),
                 upstream_cache: upstream_metadata::upstream_cache::new_shared(),
+                #[cfg(feature = "multiarch-hints")]
+                multiarch_hints_store: multiarch_hints::hints::HintsStore::default(),
                 settings: Arc::new(Mutex::new(Settings::default())),
             });
 

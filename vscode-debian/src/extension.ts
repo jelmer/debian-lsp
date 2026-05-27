@@ -61,6 +61,7 @@ export function activate(context: ExtensionContext) {
     ],
     initializationOptions: {
       upstreamOntologistNetAccess: config.get<boolean>('upstreamOntologistNetAccess', false),
+      showOverriddenIssues: config.get<boolean>('showOverriddenIssues', true),
     },
     synchronize: {
       fileEvents: workspace.createFileSystemWatcher('**/debian/{control,copyright,watch,changelog,tests/control,source/format,source/options,source/local-options,upstream/metadata,rules,patches/series}')

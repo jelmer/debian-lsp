@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "lintian-brush")]
 use futures::StreamExt;
 use serde_json::json;
 use tower_lsp_server::jsonrpc::Request;
@@ -31,6 +32,8 @@ async fn setup_server() -> (LspService<Backend>, tower_lsp_server::ClientSocket)
             lintian_overrides::LintianTagCache::new(),
         )),
         upstream_cache: upstream_metadata::upstream_cache::new_shared(),
+        #[cfg(feature = "multiarch-hints")]
+        multiarch_hints_store: multiarch_hints::hints::HintsStore::default(),
         settings: Arc::new(Mutex::new(Settings::default())),
     });
     (service, socket)
@@ -178,9 +181,11 @@ async fn test_lintian_brush_diagnostics_integration() {
         .await
         .unwrap();
 
-    // Wait for the diagnostic with a timeout
+    // Wait for the diagnostic with a timeout. Collect the lintian-brush
+    // diagnostics so they can be fed back into the codeAction request
+    // the way a real editor does.
     let mut found_builtin = false;
-    let mut found_lb = false;
+    let mut lb_diags: Vec<serde_json::Value> = Vec::new();
 
     let _ = timeout(Duration::from_secs(15), async {
         while let Some(msg) = rx.recv().await {
@@ -193,13 +198,15 @@ async fn test_lintian_brush_diagnostics_integration() {
                 {
                     found_builtin = true;
                 }
-                if diags
+                let lb: Vec<_> = diags
                     .iter()
-                    .any(|d| d["source"].as_str() == Some("lintian-brush"))
-                {
-                    found_lb = true;
+                    .filter(|d| d["source"].as_str() == Some("lintian-brush"))
+                    .cloned()
+                    .collect();
+                if !lb.is_empty() {
+                    lb_diags = lb;
                 }
-                if found_builtin && found_lb {
+                if found_builtin && !lb_diags.is_empty() {
                     return;
                 }
             }
@@ -208,9 +215,25 @@ async fn test_lintian_brush_diagnostics_integration() {
     .await;
 
     assert!(found_builtin, "Did not receive built-in diagnostics");
-    assert!(found_lb, "Did not receive lintian-brush diagnostics");
+    assert!(
+        !lb_diags.is_empty(),
+        "Did not receive lintian-brush diagnostics"
+    );
 
-    // Now request code actions to see the lintian-brush fix
+    // Each published lintian-brush diagnostic must carry its fix plans
+    // on the `data` field — that is what lets codeAction reconstruct the
+    // quick fix without re-running detectors.
+    for d in &lb_diags {
+        assert!(
+            !d["data"].is_null(),
+            "lintian-brush diagnostic should carry fix data, got {d}"
+        );
+    }
+
+    // Request code actions over the Standards-Version line, feeding the
+    // published lintian-brush diagnostic back in `context.diagnostics`
+    // the way a real editor does. The handler reconstructs the fix from
+    // the diagnostic's `data`.
     let ca_req: Request = serde_json::from_value(json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -218,20 +241,25 @@ async fn test_lintian_brush_diagnostics_integration() {
         "params": {
             "textDocument": { "uri": uri },
             "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 6 }
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 24 }
             },
-            "context": { "diagnostics": [] }
+            "context": { "diagnostics": lb_diags }
         }
     }))
     .unwrap();
     let response = service.call(ca_req).await.unwrap();
     let res = serde_json::to_value(response.unwrap()).unwrap();
 
-    let actions = res["result"].as_array().expect("result should be an array");
-    assert!(actions
-        .iter()
-        .any(|a| a["title"].as_str().unwrap_or("").contains("Source")));
+    let actions = res["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("result should be an array, got {res}"));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["kind"].as_str() == Some("quickfix") && a["diagnostics"].is_array()),
+        "expected a lintian-brush quickfix reconstructed from diagnostic data, got {actions:?}"
+    );
 }
 
 #[tokio::test]
@@ -353,5 +381,172 @@ async fn test_binary_package_fix_targets_correct_paragraph() {
         edit["range"]["start"]["line"], 6,
         "Edit should target line 6, but targeted line {}",
         edit["range"]["start"]["line"]
+    );
+}
+
+/// Editing a `lintian-overrides` buffer re-publishes the diagnostics of
+/// open sibling files: a changelog issue suppressed by an override shows
+/// faded, and clearing the override un-fades it — without reopening the
+/// changelog.
+#[tokio::test]
+#[cfg(feature = "lintian-brush")]
+async fn test_overrides_change_refreshes_sibling_changelog() {
+    use tokio::time::{timeout, Duration};
+
+    let temp = tempfile::tempdir().unwrap();
+    let debian_dir = temp.path().join("debian");
+    std::fs::create_dir_all(debian_dir.join("source")).unwrap();
+
+    // 2024-03-09 is a Saturday, so "Mon, 09 Mar 2024" is a wrong
+    // day-of-week — the detector emits info "2024-03-09 is a Saturday".
+    let changelog_text = "test-pkg (1.0-1) unstable; urgency=low\n\n  * Initial release.\n\n -- Alice <alice@example.com>  Mon, 09 Mar 2024 00:00:00 +0000\n";
+    std::fs::write(debian_dir.join("changelog"), changelog_text).unwrap();
+    // The override suppresses that exact issue.
+    let overrides_path = debian_dir.join("source/lintian-overrides");
+    std::fs::write(
+        &overrides_path,
+        "debian-changelog-has-wrong-day-of-week 2024-03-09 is a Saturday\n",
+    )
+    .unwrap();
+
+    let changelog_uri = Uri::from_file_path(debian_dir.join("changelog")).unwrap();
+    let overrides_uri = Uri::from_file_path(&overrides_path).unwrap();
+
+    let (mut service, mut socket) = setup_server().await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(msg) = socket.next().await {
+            let _ = tx.send(msg);
+        }
+    });
+
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Open the changelog. Its day-of-week issue is overridden, so the
+    // published diagnostic must be faded (UNNECESSARY tag, HINT severity).
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": changelog_uri.clone(),
+                        "languageId": "debchangelog",
+                        "version": 1,
+                        "text": changelog_text
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Wait for the faded day-of-week diagnostic on the changelog.
+    let day_of_week_diag = |msg_json: &serde_json::Value| -> Option<serde_json::Value> {
+        if msg_json["method"] != "textDocument/publishDiagnostics"
+            || msg_json["params"]["uri"] != serde_json::to_value(&changelog_uri).unwrap()
+        {
+            return None;
+        }
+        msg_json["params"]["diagnostics"]
+            .as_array()?
+            .iter()
+            .find(|d| d["code"].as_str() == Some("debian-changelog-has-wrong-day-of-week"))
+            .cloned()
+    };
+
+    let faded = timeout(Duration::from_secs(15), async {
+        while let Some(msg) = rx.recv().await {
+            let msg_json = serde_json::to_value(msg).unwrap();
+            if let Some(d) = day_of_week_diag(&msg_json) {
+                return Some(d);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("expected a day-of-week diagnostic on the changelog");
+    // 1 == DiagnosticSeverity::WARNING, 4 == HINT; UNNECESSARY tag == 1.
+    assert_eq!(faded["severity"], 4, "overridden diagnostic should be HINT");
+    assert_eq!(
+        faded["tags"],
+        json!([1]),
+        "overridden diagnostic should carry the UNNECESSARY tag"
+    );
+
+    // Open the override file, then change it to remove the override.
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": overrides_uri.clone(),
+                        "languageId": "plaintext",
+                        "version": 1,
+                        "text": "debian-changelog-has-wrong-day-of-week 2024-03-09 is a Saturday\n"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = service
+        .call(
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": overrides_uri.clone(), "version": 2 },
+                    "contentChanges": [{ "text": "" }]
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The changelog must be re-published with the issue no longer faded:
+    // a normal INFORMATION diagnostic, no UNNECESSARY tag.
+    let unfaded = timeout(Duration::from_secs(15), async {
+        while let Some(msg) = rx.recv().await {
+            let msg_json = serde_json::to_value(msg).unwrap();
+            if let Some(d) = day_of_week_diag(&msg_json) {
+                if d["tags"].is_null() {
+                    return Some(d);
+                }
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("changelog diagnostic should be re-published un-faded after the override is removed");
+    // 3 == DiagnosticSeverity::INFORMATION.
+    assert_eq!(
+        unfaded["severity"], 3,
+        "un-overridden diagnostic should be INFORMATION"
+    );
+    assert!(
+        unfaded["tags"].is_null(),
+        "un-overridden diagnostic should carry no tags"
     );
 }

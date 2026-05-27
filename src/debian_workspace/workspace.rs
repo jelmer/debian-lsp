@@ -98,6 +98,7 @@ impl<'a> LspDebianWorkspace<'a> {
 
     /// Absolute path to the package root (the directory containing
     /// `debian/`).
+    #[cfg(feature = "lintian-brush")]
     pub fn base_path(&self) -> &Path {
         &self.base_path
     }
@@ -160,6 +161,30 @@ impl<'a> LspDebianWorkspace<'a> {
     ) -> Option<(deb822_lossless::Parse<deb822_lossless::Deb822>, usize)> {
         let sf = self.source_file_for(rel)?;
         Some(self.workspace.get_parsed_dep3_header(sf))
+    }
+
+    /// Parsed `LintianOverrides` for `rel`.
+    ///
+    /// Uses the salsa-cached parse when the override file is open in the
+    /// editor — so an unsaved override edit takes effect immediately and
+    /// the parse is reused across calls. Falls back to a one-shot parse
+    /// of the on-disk content when the file isn't open (override files
+    /// are usually closed while editing the file they suppress).
+    /// `None` only when the file exists nowhere.
+    ///
+    /// Returns the tree even on parse errors: lintian-overrides parsing
+    /// is resilient, so a malformed line shouldn't hide the valid
+    /// override lines around it.
+    #[cfg(feature = "lintian-brush")]
+    pub fn parsed_lintian_overrides_for(
+        &self,
+        rel: &Path,
+    ) -> Option<lintian_overrides::LintianOverrides> {
+        if let Some(sf) = self.source_file_for(rel) {
+            return Some(self.workspace.get_parsed_lintian_overrides(sf).tree());
+        }
+        let text = std::fs::read_to_string(self.base_path.join(rel)).ok()?;
+        Some(lintian_overrides::LintianOverrides::parse(&text).tree())
     }
 }
 

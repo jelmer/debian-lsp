@@ -1,6 +1,6 @@
 {
   "name": "coc-debian",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "description": "Debian language server support for coc.nvim (control, copyright, watch, changelog, tests/control, source/format, source/options, upstream/metadata, rules, patches/series)",
   "main": "lib/index.js",
   "engines": {
@@ -52,6 +52,11 @@
           "type": "boolean",
           "default": false,
           "description": "Allow the upstream-ontologist to make network requests when guessing upstream metadata values."
+        },
+        "debian.showOverriddenIssues": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show lintian-brush issues that are suppressed by a lintian override, rendered faded. Disable for a diagnostics view that hides overridden issues entirely."
         }
       }
     },

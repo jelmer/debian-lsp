@@ -2,7 +2,7 @@
   "name": "vscode-debian",
   "displayName": "Debian Language Support",
   "description": "Language Server Protocol support for Debian packaging files",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "publisher": "jelmer",
   "license": "Apache-2.0+",
   "icon": "images/debian-logo-256.png",
@@ -234,6 +234,11 @@
           "type": "boolean",
           "default": false,
           "description": "Allow the upstream-ontologist to make network requests when guessing upstream metadata values."
+        },
+        "debian.showOverriddenIssues": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show lintian-brush issues that are suppressed by a lintian override, rendered faded. Disable for a diagnostics view that hides overridden issues entirely."
         }
       }
     },

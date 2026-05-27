@@ -370,11 +370,6 @@ impl BugCache {
 
 #[cfg(not(feature = "launchpad"))]
 impl BugCache {
-    /// Return a single Launchpad bug summary by ID.
-    pub async fn get_launchpad_bug_summary(&mut self, _id: u32) -> Option<LaunchpadBugSummary> {
-        None
-    }
-
     /// Return Launchpad bug summaries for `package` that match a decimal prefix.
     pub async fn get_launchpad_bug_summaries_with_prefix(
         &mut self,
@@ -391,14 +386,6 @@ impl BugCache {
 
     /// Pre-fetch Launchpad bug IDs and their details for an Ubuntu source package.
     pub async fn prefetch_launchpad_bugs_for_package(&mut self, _package: &str) {}
-
-    #[cfg(test)]
-    pub(crate) fn insert_cached_launchpad_bugs_for_package(
-        &mut self,
-        _package: &str,
-        _bugs: Vec<(u32, Option<&str>, Option<&str>, bool)>,
-    ) {
-    }
 }
 
 #[cfg(all(test, feature = "launchpad"))]
