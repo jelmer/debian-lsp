@@ -2540,7 +2540,7 @@ enum Command {
     /// and any recognized Debian files are checked.
     Check {
         /// Files or directories to check.
-        paths: Vec<std::path::PathBuf>
+        paths: Vec<std::path::PathBuf>,
 
         /// Emit results as SARIF 2.1.0 JSON on stdout instead of gcc-style lines.
         #[arg(long)]
@@ -2830,6 +2830,7 @@ async fn main() {
                 .init();
             let errors = run_check(
                 &paths,
+                sarif,
                 #[cfg(feature = "multiarch-hints")]
                 !no_multiarch_hints,
             )
