@@ -8,7 +8,7 @@ pub mod fields;
 pub mod hover;
 pub mod inlay_hints;
 pub mod references;
-mod relation_completion;
+pub(crate) mod relation_completion;
 pub mod rename;
 pub mod semantic;
 pub mod symbols;

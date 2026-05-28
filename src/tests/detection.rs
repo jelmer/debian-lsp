@@ -6,6 +6,19 @@ pub fn is_tests_control_file(uri: &Uri) -> bool {
     path.ends_with("/debian/tests/control")
 }
 
+#[cfg(unix)]
+pub fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+pub fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

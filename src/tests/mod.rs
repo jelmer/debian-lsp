@@ -6,6 +6,7 @@
 
 pub mod completion;
 pub mod detection;
+pub mod fields;
 pub mod semantic;
 
 pub use completion::*;
