@@ -2534,12 +2534,18 @@ struct Cli {
 enum Command {
     /// Check Debian files and report diagnostics to stdout.
     ///
-    /// Output is in gcc-style format: filename:line: severity: message.
+    /// Default output is gcc-style: filename:line: severity: message.
+    /// With `--sarif`, results are emitted as a SARIF 2.1.0 JSON log instead.
     /// Paths can be files or directories; directories are walked recursively
     /// and any recognized Debian files are checked.
     Check {
         /// Files or directories to check.
         paths: Vec<std::path::PathBuf>,
+
+        /// Emit results as SARIF 2.1.0 JSON on stdout instead of gcc-style lines.
+        #[arg(long)]
+        sarif: bool,
+
         /// Skip the multiarch-hints detector. The detector fetches a hints
         /// feed from the network (cached on disk after the first call);
         /// pass this flag for fully offline runs or to keep `check` fast.
@@ -2590,18 +2596,22 @@ fn collect_files_recursive(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// Run one-off diagnostics on the given paths, printing gcc-style output.
+/// Run one-off diagnostics on the given paths.
 ///
 /// Paths can be files or directories. Directories are walked recursively
-/// and any recognized Debian files found within are checked.
+/// and any recognized Debian files found within are checked. Output format
+/// is selected by `sarif`: gcc-style lines when false, a SARIF 2.1.0 JSON
+/// log when true.
 ///
 /// Returns the number of errors found (for the exit code).
 async fn run_check(
     paths: &[std::path::PathBuf],
+    sarif: bool,
     #[cfg(feature = "multiarch-hints")] enable_multiarch_hints: bool,
 ) -> i32 {
     let mut workspace = Workspace::new();
     let mut error_count: i32 = 0;
+    let mut sarif_results: Vec<serde_json::Value> = Vec::new();
 
     // Construct (but don't pre-warm) the multiarch-hints store. The
     // first per-file diagnostics pass that needs it triggers the
@@ -2695,22 +2705,106 @@ async fn run_check(
             }
         };
 
-        let display_path = path.display();
         for diag in &diagnostics {
-            let line = diag.range.start.line + 1; // LSP lines are 0-based
-            let col = diag.range.start.character + 1;
             let severity = severity_label(diag.severity);
-            println!(
-                "{}:{}:{}: {}: {}",
-                display_path, line, col, severity, diag.message
-            );
             if severity == "error" {
                 error_count += 1;
+            }
+            if sarif {
+                sarif_results.push(diagnostic_to_sarif_result(path, diag));
+            } else {
+                let line = diag.range.start.line + 1; // LSP lines are 0-based
+                let col = diag.range.start.character + 1;
+                println!(
+                    "{}:{}:{}: {}: {}",
+                    path.display(),
+                    line,
+                    col,
+                    severity,
+                    diag.message
+                );
+            }
+        }
+    }
+
+    if sarif {
+        let log = sarif_log(sarif_results);
+        match serde_json::to_string_pretty(&log) {
+            Ok(s) => println!("{}", s),
+            Err(e) => {
+                eprintln!("error: failed to serialize SARIF log: {}", e);
+                return error_count.max(1);
             }
         }
     }
 
     error_count
+}
+
+/// SARIF level for a diagnostic.
+///
+/// Maps LSP severities onto the four SARIF levels defined by the 2.1.0 spec
+/// (`error`, `warning`, `note`, `none`). Defaults to `warning` when the LSP
+/// severity is absent, matching the SARIF spec's recommended default.
+fn sarif_level(severity: Option<DiagnosticSeverity>) -> &'static str {
+    match severity {
+        Some(DiagnosticSeverity::ERROR) => "error",
+        Some(DiagnosticSeverity::WARNING) => "warning",
+        Some(DiagnosticSeverity::INFORMATION) => "note",
+        Some(DiagnosticSeverity::HINT) => "note",
+        _ => "warning",
+    }
+}
+
+/// Convert a single LSP `Diagnostic` to a SARIF `result` object.
+fn diagnostic_to_sarif_result(path: &std::path::Path, diag: &Diagnostic) -> serde_json::Value {
+    let rule_id = diag.code.as_ref().map(|c| match c {
+        NumberOrString::Number(n) => n.to_string(),
+        NumberOrString::String(s) => s.clone(),
+    });
+
+    // SARIF uses 1-based line and column numbers, matching LSP+1.
+    let region = serde_json::json!({
+        "startLine": diag.range.start.line + 1,
+        "startColumn": diag.range.start.character + 1,
+        "endLine": diag.range.end.line + 1,
+        "endColumn": diag.range.end.character + 1,
+    });
+
+    let mut result = serde_json::json!({
+        "level": sarif_level(diag.severity),
+        "message": { "text": diag.message },
+        "locations": [{
+            "physicalLocation": {
+                "artifactLocation": { "uri": path.display().to_string() },
+                "region": region,
+            }
+        }],
+    });
+
+    if let Some(id) = rule_id {
+        result["ruleId"] = serde_json::Value::String(id);
+    }
+
+    result
+}
+
+/// Wrap a vector of SARIF results into a complete SARIF 2.1.0 log document.
+fn sarif_log(results: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "version": "2.1.0",
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "debian-lsp",
+                    "informationUri": "https://github.com/jelmer/debian-lsp",
+                    "version": env!("CARGO_PKG_VERSION"),
+                }
+            },
+            "results": results,
+        }],
+    })
 }
 
 #[tokio::main]
@@ -2720,6 +2814,7 @@ async fn main() {
     match cli.command {
         Some(Command::Check {
             paths,
+            sarif,
             #[cfg(feature = "multiarch-hints")]
             no_multiarch_hints,
         }) => {
@@ -2735,6 +2830,7 @@ async fn main() {
                 .init();
             let errors = run_check(
                 &paths,
+                sarif,
                 #[cfg(feature = "multiarch-hints")]
                 !no_multiarch_hints,
             )
