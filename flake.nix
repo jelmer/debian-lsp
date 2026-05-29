@@ -2,7 +2,7 @@
   description = "SCIP - SCIP Code Intelligence Protocol";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -49,6 +49,9 @@
                 src = pkgs.fetchCrate {
                   pname = "protobuf-codegen";
                   version = "3.7.2";
+                  # Remove once https://github.com/NixOS/nixpkgs/pull/525163
+                  # lands in the pinned nixos-26.05 channel.
+                  registryDl = "https://static.crates.io/crates";
                   hash = "sha256-0d+xjYXpl87Sq/DdE8K2olnKa5bNpEHX7RTjp/2xza4=";
                 };
                 cargoHash = "sha256-xxw1WSP0Qatf5QT+JBUQPi8HFOPRMGbnFMVLOiKnTNk=";
