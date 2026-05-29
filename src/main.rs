@@ -126,14 +126,14 @@ enum FileType {
 impl FileType {
     /// Detect the file type from a URI
     fn detect(uri: &Uri) -> Option<Self> {
-        if control::is_control_file(uri) {
+        if tests::is_tests_control_file(uri) {
+            Some(Self::TestsControl)
+        } else if control::is_control_file(uri) {
             Some(Self::Control)
         } else if copyright::is_copyright_file(uri) {
             Some(Self::Copyright)
         } else if watch::is_watch_file(uri) {
             Some(Self::Watch)
-        } else if tests::is_tests_control_file(uri) {
-            Some(Self::TestsControl)
         } else if changelog::is_changelog_file(uri) {
             Some(Self::Changelog)
         } else if source_format::is_source_format_file(uri) {
@@ -753,6 +753,7 @@ impl LanguageServer for Backend {
                         "=".to_string(),
                         ",".to_string(),
                         "#".to_string(),
+                        "/".to_string(),
                     ]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
@@ -1119,7 +1120,7 @@ impl LanguageServer for Backend {
                         control::get_field_value_completions(field_name, value_prefix)
                     }
                 } else {
-                    // Not on a field value — get field name completions
+                    // Not on a field value, get field name completions
                     // (workspace lock and parsed result already held)
                     control::get_completions(parsed.tree().as_deb822(), src, position)
                 }
@@ -1148,7 +1149,51 @@ impl LanguageServer for Backend {
                     }
                 }
             }
-            Some((FileType::TestsControl, _)) => tests::get_completions(&uri, position),
+            Some((FileType::TestsControl, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file).to_string();
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_deb822(source_file);
+                let source_root =
+                    Self::find_debian_dir(&uri).and_then(|d| d.parent().map(|p| p.to_path_buf()));
+                // Check if cursor is on a field value to try async relationship completions
+                let cursor_context =
+                    deb822::completion::get_cursor_context(&parsed.tree(), src, position);
+                drop(workspace); // Release lock before async operations
+                if let Some(deb822::completion::CursorContext::FieldValue {
+                    field_name,
+                    value_prefix,
+                }) = &cursor_context
+                {
+                    // Try async completions (relationship fields via package cache)
+                    if let Some(async_completions) = tests::get_async_field_value_completions(
+                        field_name,
+                        value_prefix,
+                        position,
+                        &self.package_cache,
+                        &self.architecture_list,
+                    )
+                    .await
+                    {
+                        async_completions
+                    } else {
+                        // Fall back to sync completions (Restrictions, Features, etc.)
+                        let offset = src.try_position_to_offset(position).unwrap_or_default();
+                        tests::get_field_value_completions(
+                            field_name,
+                            value_prefix,
+                            source_root.as_deref(),
+                            &parsed.tree(),
+                            offset,
+                        )
+                    }
+                } else {
+                    // Not on a field value, get field name completions
+                    // (workspace lock and parsed result already held)
+                    tests::get_completions(&parsed.tree(), src, position, source_root.as_deref())
+                }
+            }
             Some((FileType::Changelog, source_file)) => {
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
