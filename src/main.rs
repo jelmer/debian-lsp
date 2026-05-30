@@ -2470,6 +2470,15 @@ impl LanguageServer for Backend {
                 let location = patches_series::goto_definition(&parsed, src, position, uri);
                 Ok(location.map(GotoDefinitionResponse::Scalar))
             }
+            FileType::TestsControl => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_deb822(file.source_file);
+                let location = tests::goto_definition(&parsed.tree(), src, position, uri);
+                Ok(location.map(GotoDefinitionResponse::Scalar))
+            }
             _ => Ok(None),
         }
     }

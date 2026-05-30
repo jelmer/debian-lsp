@@ -94,15 +94,8 @@ pub fn goto_definition(
     let package_name = find_package_at_offset(raw_value, offset_in_value)?;
 
     // Look for a matching binary package paragraph.
-    for binary in control.binaries() {
-        if binary.name().as_deref() == Some(package_name.as_str()) {
-            let para = binary.as_deb822();
-            let range = src.text_range_to_lsp_range(para.syntax().text_range());
-            return Some(Location {
-                uri: uri.clone(),
-                range,
-            });
-        }
+    if let Some(location) = find_binary_package_location(&control, src, uri, &package_name) {
+        return Some(location);
     }
 
     // Also check the source paragraph name.
@@ -117,6 +110,29 @@ pub fn goto_definition(
         }
     }
 
+    None
+}
+
+/// Resolve a package name to its location in a parsed control file.
+///
+/// Returns a `Location` pointing to the matching binary package paragraph,
+/// or `None` if no binary package with that name is defined in the file.
+pub fn find_binary_package_location(
+    control: &Control,
+    src: Source<'_>,
+    uri: &Uri,
+    package_name: &str,
+) -> Option<Location> {
+    for binary in control.binaries() {
+        if binary.name().as_deref() == Some(package_name) {
+            let para = binary.as_deb822();
+            let range = src.text_range_to_lsp_range(para.syntax().text_range());
+            return Some(Location {
+                uri: uri.clone(),
+                range,
+            });
+        }
+    }
     None
 }
 
