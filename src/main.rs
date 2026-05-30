@@ -2344,6 +2344,10 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_control(file.source_file);
                 Ok(control::get_hover(parsed.tree().as_deb822(), src, position))
             }
+            FileType::TestsControl => {
+                let parsed = workspace.get_parsed_deb822(file.source_file);
+                Ok(tests::get_hover(&parsed.tree(), src, position))
+            }
             FileType::Copyright => {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 let copyright = parsed.tree();
