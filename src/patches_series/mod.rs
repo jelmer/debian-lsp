@@ -3,6 +3,7 @@
 pub mod completion;
 pub mod definition;
 pub mod detection;
+pub mod diagnostics;
 
 pub use completion::*;
 pub use detection::{is_patch_file, is_patches_series_file};

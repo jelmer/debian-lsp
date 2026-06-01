@@ -291,7 +291,7 @@ impl Backend {
             multiarch_hints::hints::HintsStore,
         >,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
-        let builtin = Self::builtin_diagnostics(source_file, file_type, &workspace);
+        let builtin = Self::builtin_diagnostics(&uri, source_file, file_type, &workspace);
 
         #[cfg(feature = "lintian-brush")]
         let lb = Self::lintian_brush_diagnostics(
@@ -351,6 +351,7 @@ impl Backend {
     }
 
     fn builtin_diagnostics(
+        uri: &Uri,
         source_file: workspace::SourceFile,
         file_type: FileType,
         workspace: &Workspace,
@@ -371,6 +372,15 @@ impl Backend {
                 let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
                 Some(dep3::get_diagnostics(&parsed.tree(), src))
             }
+            FileType::PatchesSeries => {
+                let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_patches_series(source_file);
+                Some(patches_series::diagnostics::get_diagnostics(
+                    &uri, src, &parsed,
+                ))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::Changelog
@@ -379,7 +389,6 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::PatchesSeries
             | FileType::DebcargoToml => None,
         }
     }
