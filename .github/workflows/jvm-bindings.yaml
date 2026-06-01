@@ -1,0 +1,54 @@
+name: JVM bindings
+
+# The Java and Kotlin bindings are built with Maven directly rather than Nix
+# because scip-kotlin-bindings depends on scip-java-bindings as a Maven
+# artifact, which nixpkgs' offline `maven.buildMavenPackage` sandbox cannot
+# resolve from the sibling derivation.
+
+on:
+  pull_request:
+    paths:
+      - bindings/java/**
+      - bindings/kotlin/**
+      - cmd/scip/version.txt
+      - scip.proto
+      - .github/workflows/jvm-bindings.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jvm-bindings-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 11
+          cache: maven
+
+      - name: Validate pom.xml versions match cmd/scip/version.txt
+        run: |
+          set -euo pipefail
+          sudo apt-get install -qq -y libxml2-utils
+          expected=$(cat cmd/scip/version.txt)
+          xpath='/*[local-name()="project"]/*[local-name()="version"]/text()'
+          for pom in bindings/java/pom.xml bindings/kotlin/pom.xml; do
+            actual=$(xmllint --xpath "$xpath" "$pom")
+            if [ "$actual" != "$expected" ]; then
+              echo "::error file=$pom::version is '$actual', expected '$expected'"
+              exit 1
+            fi
+          done
+
+      - name: Build scip-java-bindings and install to local Maven repo
+        run: mvn -B -ntp -Prelease -Dgpg.skip=true -f bindings/java/pom.xml install
+
+      - name: Build scip-kotlin-bindings (resolves scip-java-bindings from local repo)
+        run: mvn -B -ntp -Prelease -Dgpg.skip=true -f bindings/kotlin/pom.xml verify
