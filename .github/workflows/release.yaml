@@ -131,6 +131,39 @@ jobs:
           MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
 
+  publish-npm:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted-publishing OIDC
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ inputs.version }}
+      - uses: actions/setup-node@v6
+        with:
+          # Trusted publishing needs npm >=11.5.1; Node 22 LTS ships npm 10.x.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: bindings/typescript
+      - name: Build
+        run: npm run build
+        working-directory: bindings/typescript
+      # LICENSE is a symlink in-tree (matches bindings/{haskell,rust}); npm-pack drops symlinks.
+      - name: Materialize LICENSE for npm pack
+        run: |
+          rm -f bindings/typescript/LICENSE
+          cp LICENSE bindings/typescript/LICENSE
+      - uses: JS-DevTools/npm-publish@v4
+        with:
+          package: bindings/typescript
+          access: public
+          provenance: true
+
   build-go-binaries:
     needs: publish
     permissions:
@@ -192,7 +225,7 @@ jobs:
           gh release upload "$TAG" "$ASSET.tar.gz" "$ASSET.tar.gz.sha256" --clobber
 
   finalize-release:
-    needs: [release-crate, build-go-binaries, publish-jvm-bindings]
+    needs: [release-crate, build-go-binaries, publish-jvm-bindings, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
