@@ -111,6 +111,15 @@ pub(super) fn deb822_action_to_text_edits(
             constraint,
             original_src,
         ),
+        Deb822Action::MakeAlternativePrimary {
+            paragraph,
+            field,
+            package,
+            ..
+        } => make_alternative_primary_edits(control, paragraph, field, package, original_src),
+        Deb822Action::DropFieldComments {
+            paragraph, field, ..
+        } => drop_field_comments_edits(control, paragraph, field, original_src),
     }
 }
 
@@ -153,6 +162,7 @@ pub fn copyright_action_to_text_edits(
         | Deb822Action::RemoveField { paragraph, .. }
         | Deb822Action::RenameField { paragraph, .. }
         | Deb822Action::RemoveParagraph { paragraph, .. }
+        | Deb822Action::DropFieldComments { paragraph, .. }
         | Deb822Action::NormalizeFieldSpacing { paragraph, .. } => paragraph,
         // Relations / substvars apply only to debian/control; ignore
         // these on debian/copyright so we don't emit spurious edits.
@@ -161,6 +171,7 @@ pub fn copyright_action_to_text_edits(
         | Deb822Action::ReplaceRelation { .. }
         | Deb822Action::EnsureRelation { .. }
         | Deb822Action::MoveRelation { .. }
+        | Deb822Action::MakeAlternativePrimary { .. }
         | Deb822Action::EnsureSubstvar { .. }
         | Deb822Action::DropSubstvar { .. } => return Vec::new(),
         Deb822Action::AppendParagraph { .. } | Deb822Action::ReorderParagraphs { .. } => {
@@ -257,6 +268,7 @@ trait CopyrightFieldOps {
     fn copyright_set(&mut self, name: &str, value: &str);
     fn copyright_remove(&mut self, name: &str);
     fn copyright_get(&self, name: &str) -> Option<String>;
+    fn copyright_get_with_comments(&self, name: &str) -> Option<String>;
 }
 
 impl CopyrightFieldOps for debian_copyright::lossless::Header {
@@ -268,6 +280,9 @@ impl CopyrightFieldOps for debian_copyright::lossless::Header {
     }
     fn copyright_get(&self, name: &str) -> Option<String> {
         self.as_deb822().get(name)
+    }
+    fn copyright_get_with_comments(&self, name: &str) -> Option<String> {
+        self.as_deb822().get_with_comments(name)
     }
 }
 
@@ -281,6 +296,9 @@ impl CopyrightFieldOps for debian_copyright::lossless::FilesParagraph {
     fn copyright_get(&self, name: &str) -> Option<String> {
         self.as_deb822().get(name)
     }
+    fn copyright_get_with_comments(&self, name: &str) -> Option<String> {
+        self.as_deb822().get_with_comments(name)
+    }
 }
 
 impl CopyrightFieldOps for debian_copyright::lossless::LicenseParagraph {
@@ -292,6 +310,9 @@ impl CopyrightFieldOps for debian_copyright::lossless::LicenseParagraph {
     }
     fn copyright_get(&self, name: &str) -> Option<String> {
         self.as_deb822().get(name)
+    }
+    fn copyright_get_with_comments(&self, name: &str) -> Option<String> {
+        self.as_deb822().get_with_comments(name)
     }
 }
 
@@ -333,6 +354,19 @@ fn apply_typed_copyright_field_op<T: CopyrightFieldOps>(
             target.copyright_set(to, &value);
             target.copyright_remove(from);
             Some(true)
+        }
+        Deb822Action::DropFieldComments { field, .. } => {
+            // Drop `#`-prefixed lines the parser kept embedded in the
+            // field's value. No-op when the field is absent or carries no
+            // embedded comments.
+            let value = target.copyright_get(field)?;
+            match target.copyright_get_with_comments(field) {
+                Some(with_comments) if with_comments != value => {
+                    target.copyright_set(field, &value);
+                    Some(true)
+                }
+                _ => Some(false),
+            }
         }
         // No typed equivalent on the copyright wrappers.
         Deb822Action::NormalizeFieldSpacing { .. } => None,
@@ -978,6 +1012,98 @@ fn replace_relation_edits(
         }
         true
     })
+}
+
+/// `Deb822Action::MakeAlternativePrimary`: move the alternative naming
+/// `package` to the front of the first relation entry that names it,
+/// keeping the other alternatives in order. Mirrors the applier's
+/// `make_alternative_primary_in_paragraph`. No-op when `package` isn't
+/// named in `field` or already heads its entry.
+fn make_alternative_primary_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    package: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    use debian_control::lossless::relations::Entry;
+    use std::str::FromStr;
+
+    relations_field_edits(control, selector, field, original_src, |relations| {
+        let Some((idx, entry)) = relations.iter_relations_for(package).next() else {
+            return false;
+        };
+        let alternatives: Vec<(Option<String>, String)> = entry
+            .relations()
+            .map(|r| (r.try_name(), r.to_string().trim().to_string()))
+            .collect();
+        let Some(pos) = alternatives
+            .iter()
+            .position(|(name, _)| name.as_deref() == Some(package))
+        else {
+            return false;
+        };
+        if pos == 0 {
+            return false;
+        }
+        let mut texts: Vec<String> = alternatives.into_iter().map(|(_, text)| text).collect();
+        let primary = texts.remove(pos);
+        texts.insert(0, primary);
+        let Ok(new_entry) = Entry::from_str(&texts.join(" | ")) else {
+            return false;
+        };
+        relations.replace(idx, new_entry);
+        true
+    })
+}
+
+/// `Deb822Action::DropFieldComments`: rewrite `field` to its comment-free
+/// value, dropping any `#`-prefixed lines the deb822 parser kept embedded
+/// in the value. Mirrors the applier's `drop_paragraph_field_comments`.
+/// No-op when the field is absent or carries no embedded comments.
+fn drop_field_comments_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    let original_text = original_src.text;
+    let Some(paragraph) = find_paragraph(control, selector) else {
+        return Vec::new();
+    };
+    let Some(value) = paragraph.get(field) else {
+        return Vec::new();
+    };
+    match paragraph.get_with_comments(field) {
+        Some(with_comments) if with_comments != value => {}
+        _ => return Vec::new(),
+    }
+    let Some(entry) = find_entry_in_paragraph(&paragraph, field) else {
+        return Vec::new();
+    };
+    let entry_range = entry.text_range();
+    let start: usize = entry_range.start().into();
+    let end: usize = entry_range.end().into();
+    if end > original_text.len() || start > end {
+        return Vec::new();
+    }
+
+    // Mutate a clone so set() re-renders the field without its embedded
+    // comment lines, then emit a TextEdit over the field entry's range.
+    let mut mutated_paragraph = paragraph.clone();
+    mutated_paragraph.set(field, &value);
+    let Some(new_entry) = find_entry_in_paragraph(&mutated_paragraph, field) else {
+        return Vec::new();
+    };
+    let new_text = new_entry.to_string();
+    if original_text[start..end] == new_text {
+        return Vec::new();
+    }
+    let lsp_range = original_src.text_range_to_lsp_range(entry_range);
+    vec![TextEdit {
+        range: lsp_range,
+        new_text,
+    }]
 }
 
 /// `Deb822Action::EnsureRelation`: ensure a relation entry is present in a

@@ -201,6 +201,12 @@ pub(super) fn locate_action_target(
                 }
                 | Deb822Action::EnsureRelation {
                     paragraph, field, ..
+                }
+                | Deb822Action::MakeAlternativePrimary {
+                    paragraph, field, ..
+                }
+                | Deb822Action::DropFieldComments {
+                    paragraph, field, ..
                 } => (paragraph, Some(field.clone())),
                 Deb822Action::ReplaceRelation {
                     paragraph, field, ..
@@ -552,7 +558,9 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | Deb822Action::DropSubstvar { file, .. }
             | Deb822Action::EnsureRelation { file, .. }
             | Deb822Action::MoveRelation { file, .. }
-            | Deb822Action::ReorderParagraphs { file, .. } => file,
+            | Deb822Action::ReorderParagraphs { file, .. }
+            | Deb822Action::MakeAlternativePrimary { file, .. }
+            | Deb822Action::DropFieldComments { file, .. } => file,
         },
         Action::Filesystem(a) => match a {
             FilesystemAction::SetMode { file, .. }
