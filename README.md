@@ -14,7 +14,7 @@ Language Server Protocol implementation for Debian packaging files.
 - `debian/source/format` - Source format declaration files
 - `debian/source/options` - dpkg-source options files
 - `debian/source/local-options` - Local dpkg-source options files
-- `debian/tests/control` - Autopkgtest control files (basic support)
+- `debian/tests/control` - Autopkgtest control files
 - `debian/upstream/metadata` - DEP-12 upstream metadata files
 - `debian/rules` - Package build rules (Makefile)
 - `debian/patches/series` - List of patches applied by dpkg-source
@@ -49,6 +49,13 @@ Language Server Protocol implementation for Debian packaging files.
 - Value completions for compression and compression-level options
 - Filters options by file type (some options are local-options only)
 
+**debian/tests/control:**
+- Field name completions for autopkgtest control fields (Tests, Test-Command, Depends, Restrictions, Features, Classes, Tests-Directory, Architecture)
+- Package name completions for the Depends field using the system package cache, including the `@`, `@builddeps@`, and `@recommends@` substitution variables
+- Value completions for Restrictions and Features (from the autopkgtest/DEP-8 spec) and architecture fields
+- Test script completions for the Tests field (executable files in the tests directory, respecting Tests-Directory)
+- Directory completions for the Tests-Directory field
+
 **debian/upstream/metadata:**
 - Field name completions for all DEP-12 fields (Repository, Bug-Database, Contact, etc.)
 
@@ -73,6 +80,18 @@ Language Server Protocol implementation for Debian packaging files.
 - **Wrap and sort** - wrap long fields to 79 characters and sort dependency lists (control and copyright files)
 - **Add changelog entry** - create a new changelog entry with incremented version, UNRELEASED distribution, and auto-populated maintainer
 - **Mark for upload** - replace UNRELEASED with the target distribution
+
+### Hover
+
+**debian/tests/control:**
+- Field descriptions for autopkgtest control fields
+
+### Go to Definition
+
+**debian/tests/control:**
+- Test names in the `Tests` field jump to the corresponding test script in the tests directory (respecting `Tests-Directory`)
+- Package names in relationship fields (`Depends`) jump to the matching binary package paragraph in `debian/control`
+- Paths in the `Tests-Directory` field jump to the directory on disk
 
 ### On-Type Formatting
 
@@ -123,7 +142,7 @@ Wrap-and-sort formatting for debian/control, debian/copyright, and debian/watch
 ### Semantic Highlighting
 
 Custom token types for syntax highlighting of Debian-specific constructs:
-- Control/copyright/watch/upstream-metadata/source-options/rules files: field names, unknown fields, values, comments
+- Control/copyright/watch/tests-control/upstream-metadata/source-options/rules files: field names, unknown fields, values, comments
 - Changelog files: package name, version, distribution, urgency, maintainer, timestamp
 
 ## Installation
