@@ -8,9 +8,9 @@
 
 use tower_lsp_server::ls_types::{CodeActionOrCommand, Diagnostic, Uri};
 
-use crate::control::inlay_hints::joined_offset_to_source_offset;
 use crate::position::Source;
-use crate::spelling::{check_text, make_actions, make_diagnostic, LocatedFinding};
+use crate::spelling::deb822::deb822_findings;
+use crate::spelling::{make_actions, make_diagnostic, LocatedFinding};
 
 /// Field names in `debian/control` whose values are free-form prose worth
 /// spell-checking. Everything else (relationships, URLs, package names,
@@ -25,40 +25,7 @@ fn control_findings(
     parsed: &debian_control::lossless::Parse<debian_control::lossless::Control>,
     src: Source<'_>,
 ) -> Vec<LocatedFinding> {
-    let control = parsed.tree();
-    let mut findings = Vec::new();
-
-    for paragraph in control.as_deb822().paragraphs() {
-        for entry in paragraph.entries() {
-            let Some(field_name) = entry.key() else {
-                continue;
-            };
-            if !is_prose_field(&field_name) {
-                continue;
-            }
-
-            let value = entry.value();
-            let line_ranges = entry.value_line_ranges();
-
-            for finding in check_text(&value) {
-                // Map the typo span back from the joined value string to
-                // absolute source offsets. `entry.value()` joins continuation
-                // lines with '\n', so the mapping is not a simple shift.
-                let span = finding.span();
-                let (Some(start), Some(end)) = (
-                    joined_offset_to_source_offset(&line_ranges, span.start),
-                    joined_offset_to_source_offset(&line_ranges, span.end),
-                ) else {
-                    continue;
-                };
-
-                let range = src.text_range_to_lsp_range(text_size::TextRange::new(start, end));
-                findings.push(LocatedFinding { range, finding });
-            }
-        }
-    }
-
-    findings
+    deb822_findings(parsed.tree().as_deb822(), src, is_prose_field)
 }
 
 /// Produce spelling diagnostics for the prose fields of a `debian/control`
