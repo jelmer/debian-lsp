@@ -370,7 +370,19 @@ impl Backend {
                 diags.extend(control::spelling::control_diagnostics(&parsed, src));
                 Some(diags)
             }
-            FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
+            FileType::Copyright => {
+                #[cfg_attr(not(feature = "spellcheck"), allow(unused_mut))]
+                let mut diags = workspace.get_copyright_diagnostics(source_file);
+                #[cfg(feature = "spellcheck")]
+                {
+                    let source_text = workspace.source_text(source_file);
+                    let idx = workspace.get_line_index(source_file);
+                    let src = Source::new(&source_text, &idx);
+                    let parsed = workspace.get_parsed_copyright(source_file);
+                    diags.extend(copyright::spelling::copyright_diagnostics(&parsed, src));
+                }
+                Some(diags)
+            }
             FileType::Patch => {
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -1442,6 +1454,14 @@ impl LanguageServer for Backend {
                     }
                 }
                 actions.extend(casing_actions);
+
+                #[cfg(feature = "spellcheck")]
+                actions.extend(copyright::spelling::copyright_actions(
+                    &params.text_document.uri,
+                    &parsed,
+                    src,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Changelog => {
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
