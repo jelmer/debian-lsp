@@ -388,7 +388,11 @@ impl Backend {
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
                 let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
-                Some(dep3::get_diagnostics(&parsed.tree(), src))
+                #[cfg_attr(not(feature = "spellcheck"), allow(unused_mut))]
+                let mut diags = dep3::get_diagnostics(&parsed.tree(), src);
+                #[cfg(feature = "spellcheck")]
+                diags.extend(dep3::spelling::dep3_diagnostics(&parsed.tree(), src));
+                Some(diags)
             }
             FileType::PatchesSeries => {
                 let source_text = workspace.source_text(source_file);
@@ -1519,10 +1523,19 @@ impl LanguageServer for Backend {
                     ));
                 }
             }
-            FileType::Watch
-            | FileType::UpstreamMetadata
-            | FileType::TestsControl
-            | FileType::Patch => {}
+            FileType::Patch => {
+                #[cfg(feature = "spellcheck")]
+                {
+                    let (parsed, _) = workspace.get_parsed_dep3_header(file_info.source_file);
+                    actions.extend(dep3::spelling::dep3_actions(
+                        &params.text_document.uri,
+                        &parsed.tree(),
+                        src,
+                        &params.context.diagnostics,
+                    ));
+                }
+            }
+            FileType::Watch | FileType::UpstreamMetadata | FileType::TestsControl => {}
             _ => unreachable!(),
         }
 
