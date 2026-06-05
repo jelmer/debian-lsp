@@ -49,16 +49,18 @@ func FindOccurrences(occurrences []*Occurrence, targetLine, targetCharacter int3
 	var filtered []*Occurrence
 	pos := Position{targetLine, targetCharacter}
 	for _, occurrence := range occurrences {
-		if NewRangeUnchecked(occurrence.Range).Contains(pos) {
+		if occurrence.Contains(pos) {
 			filtered = append(filtered, occurrence)
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		// Ordered so that the least precise (largest) range comes last
-		return NewRangeUnchecked(filtered[i].Range).CompareStrict(NewRangeUnchecked(filtered[j].Range)) > 0
+	// Ordered so that the least precise (largest) range comes last, by range
+	// only (no symbol-name tiebreaker).
+	slices.SortFunc(filtered, func(a, b *Occurrence) int {
+		ra, _ := a.SourceRange()
+		rb, _ := b.SourceRange()
+		return rb.CompareStrict(ra)
 	})
-
 	return filtered
 }
 
@@ -67,34 +69,8 @@ func FindOccurrences(occurrences []*Occurrence, targetLine, targetCharacter int3
 // come before the enclosed. If there are multiple occurrences with the exact same range, then the
 // occurrences are sorted by symbol name.
 func SortOccurrences(occurrences []*Occurrence) []*Occurrence {
-	sort.Slice(occurrences, func(i, j int) bool {
-		r1 := NewRangeUnchecked(occurrences[i].Range)
-		r2 := NewRangeUnchecked(occurrences[j].Range)
-		if ret := r1.CompareStrict(r2); ret != 0 {
-			return ret < 0
-		}
-		return occurrences[i].Symbol < occurrences[j].Symbol
-	})
-
+	slices.SortFunc(occurrences, (*Occurrence).Compare)
 	return occurrences
-}
-
-// rawRangesEqual compares the given SCIP-encoded raw ranges for equality.
-func rawRangesEqual(a, b []int32) bool {
-	if len(a) == len(b) {
-		for i, v := range a {
-			if v != b[i] {
-				return false
-			}
-		}
-
-		return true
-	}
-
-	ra := NewRangeUnchecked(a)
-	rb := NewRangeUnchecked(b)
-
-	return ra.Start.Line == rb.Start.Line && ra.Start.Character == rb.Start.Character && ra.End.Line == rb.End.Line && ra.End.Character == rb.End.Character
 }
 
 // SortRanges sorts the given range slice (in-place) and returns it (for convenience). Ranges are

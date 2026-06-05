@@ -17,10 +17,10 @@ func (i *identifier) occurrence(roles scip.SymbolRole) *scip.Occurrence {
 	}
 
 	return &scip.Occurrence{
-		Range:       i.position.SCIPRange(),
 		Symbol:      i.symbol,
 		SymbolRoles: int32(roles),
 		Diagnostics: diagnostics,
+		TypedRange:  i.position.AsTypedRange(),
 	}
 }
 

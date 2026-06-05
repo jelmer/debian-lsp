@@ -386,17 +386,19 @@ func (c *Converter) insertEnclosingRangeData(symbolToID map[string]int64, occs [
 		// Technically, local symbols could be part of the hierarchy, but
 		// ignore them for now
 		if !scip.SymbolRole_Definition.Matches(occ) ||
-			scip.IsLocalSymbol(occ.Symbol) ||
-			len(occ.EnclosingRange) < 3 {
+			scip.IsLocalSymbol(occ.Symbol) {
 			continue
+		}
+		enclRange, hasEnclosing := occ.EnclosingSourceRange()
+		if !hasEnclosing {
+			continue
+		}
+		if err := enclRange.Validate(); err != nil {
+			return fmt.Errorf("bad enclosing range %v for symbol %q: %w", enclRange, occ.Symbol, err)
 		}
 		symbolID, ok := symbolToID[occ.Symbol]
 		if !ok {
 			return fmt.Errorf("symbol %q has definition occurrence, but no SymbolInformation", occ.Symbol)
-		}
-		enclRange, err := scip.NewRange(occ.EnclosingRange)
-		if err != nil {
-			return fmt.Errorf("bad enclosing range %v for symbol %q: %w", occ.EnclosingRange, occ.Symbol, err)
 		}
 
 		defnEnclRangesStmt.BindInt64(1, docID)
@@ -584,16 +586,18 @@ func chunkOccurrences(occurrences []*scip.Occurrence, chunkSize int) []Chunk {
 		return nil
 	}
 
+	occStartLine := func(i int) int32 {
+		r, _ := occurrences[i].SourceRange()
+		return r.Start.Line
+	}
 	chunks := make([]Chunk, 0, len(occurrences)/chunkSize)
 	hi := min(len(occurrences), chunkSize)
 	for lo := 0; lo < hi && hi <= len(occurrences); {
-		for ; hi <= len(occurrences)-1 &&
-			scip.NewRangeUnchecked(occurrences[hi-1].Range).Start.Line ==
-				scip.NewRangeUnchecked(occurrences[hi].Range).Start.Line; hi++ {
+		for ; hi <= len(occurrences)-1 && occStartLine(hi-1) == occStartLine(hi); hi++ {
 		}
 		chunks = append(chunks, Chunk{
-			StartLine:   scip.NewRangeUnchecked(occurrences[lo].Range).Start.Line,
-			EndLine:     scip.NewRangeUnchecked(occurrences[hi-1].Range).Start.Line,
+			StartLine:   occStartLine(lo),
+			EndLine:     occStartLine(hi - 1),
 			Occurrences: occurrences[lo:hi],
 		})
 

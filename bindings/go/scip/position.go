@@ -82,6 +82,18 @@ func NewRange(scipRange []int32) (Range, error) {
 	return Range{Start: Position{Line: startLine, Character: startChar}, End: Position{Line: endLine, Character: endChar}}, nil
 }
 
+// Validate reports an error if the range has negative offsets or if its end
+// position precedes its start.
+func (r Range) Validate() error {
+	if r.Start.Line < 0 || r.Start.Character < 0 || r.End.Line < 0 || r.End.Character < 0 {
+		return NegativeOffsetsRangeError
+	}
+	if r.Start.Compare(r.End) > 0 {
+		return EndBeforeStartRangeError
+	}
+	return nil
+}
+
 type RangeError int32
 
 const (
@@ -137,6 +149,27 @@ func (r Range) SCIPRange() []int32 {
 		return []int32{r.Start.Line, r.Start.Character, r.End.Character}
 	}
 	return []int32{r.Start.Line, r.Start.Character, r.End.Line, r.End.Character}
+}
+
+// ToSingleLineRange returns r as a SingleLineRange.
+//
+// Pre-condition: r.IsSingleLine() must be true.
+func (r Range) ToSingleLineRange() *SingleLineRange {
+	return &SingleLineRange{
+		Line:           r.Start.Line,
+		StartCharacter: r.Start.Character,
+		EndCharacter:   r.End.Character,
+	}
+}
+
+// ToMultiLineRange returns r as a MultiLineRange.
+func (r Range) ToMultiLineRange() *MultiLineRange {
+	return &MultiLineRange{
+		StartLine:      r.Start.Line,
+		StartCharacter: r.Start.Character,
+		EndLine:        r.End.Line,
+		EndCharacter:   r.End.Character,
+	}
 }
 
 // Contains checks if position is within the range

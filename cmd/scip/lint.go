@@ -111,7 +111,8 @@ type occurrenceKey struct {
 }
 
 func scipOccurrenceKey(occ *scip.Occurrence) occurrenceKey {
-	return occurrenceKey{scip.NewRangeUnchecked(occ.Range), occ.SymbolRoles}
+	r, _ := occ.SourceRange()
+	return occurrenceKey{r, occ.SymbolRoles}
 }
 
 type occurrenceMap = map[occurrenceKey]*scip.Occurrence
@@ -199,21 +200,25 @@ func (st *symbolTable) addRelationship(sym string, path string, rel *scip.Relati
 }
 
 func (st *symbolTable) addOccurrence(path string, occ *scip.Occurrence) error {
+	occRange, ok := occ.SourceRange()
+	if !ok {
+		return invalidOccurrenceRangeError{occ.Symbol, path}
+	}
 	err := lintSymbolString(
 		occ.Symbol,
-		fmt.Sprintf("occurrence at %s @ %s", path, scipRangeToString(scip.NewRangeUnchecked(occ.Range))),
+		fmt.Sprintf("occurrence at %s @ %s", path, scipRangeToString(occRange)),
 	)
 	if err != nil {
 		return err
 	}
 	if scip.SymbolRole_Definition.Matches(occ) && scip.SymbolRole_ForwardDefinition.Matches(occ) {
-		return forwardDefIsDefinitionError{occ.Symbol, path, scip.NewRangeUnchecked(occ.Range)}
+		return forwardDefIsDefinitionError{occ.Symbol, path, occRange}
 	}
 	tryInsertOccurrence := func(occMap fileOccurrenceMap) error {
 		occKey := scipOccurrenceKey(occ)
 		if fileOccs, ok := occMap[path]; ok {
 			if _, ok := fileOccs[occKey]; ok {
-				return duplicateOccurrenceWarning{occ.Symbol, path, scip.NewRangeUnchecked(occ.Range), occ.SymbolRoles}
+				return duplicateOccurrenceWarning{occ.Symbol, path, occRange, occ.SymbolRoles}
 			} else {
 				fileOccs[occKey] = occ
 			}
@@ -233,7 +238,7 @@ func (st *symbolTable) addOccurrence(path string, occ *scip.Occurrence) error {
 			return err
 		}
 	} else {
-		return missingSymbolForOccurrenceError{occ.Symbol, path, scip.NewRangeUnchecked(occ.Range)}
+		return missingSymbolForOccurrenceError{occ.Symbol, path, occRange}
 	}
 	return nil
 }
@@ -349,6 +354,16 @@ type multipleRelationshipWarning struct {
 func (e multipleRelationshipWarning) Error() string {
 	return fmt.Sprintf("warning: found multiple relationships from"+
 		" '%s' to '%s', which could optimized into a single relationship", e.symbol, e.relatedSymbol)
+}
+
+type invalidOccurrenceRangeError struct {
+	symbol string
+	path   string
+}
+
+func (e invalidOccurrenceRangeError) Error() string {
+	return fmt.Sprintf("error: occurrence for symbol %s in %s has a missing or malformed range",
+		e.symbol, e.path)
 }
 
 type missingSymbolForOccurrenceError struct {
