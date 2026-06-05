@@ -293,7 +293,25 @@ impl Backend {
             multiarch_hints::hints::HintsStore,
         >,
     ) -> tower_lsp_server::jsonrpc::Result<Option<Vec<Diagnostic>>> {
-        let builtin = Self::builtin_diagnostics(&uri, source_file, file_type, &workspace);
+        #[cfg_attr(not(feature = "spellcheck"), allow(unused_mut))]
+        let mut builtin = Self::builtin_diagnostics(&uri, source_file, file_type, &workspace);
+
+        #[cfg(feature = "spellcheck")]
+        {
+            let source_text = workspace.source_text(source_file);
+            let idx = workspace.get_line_index(source_file);
+            let src = Source::new(&source_text, &idx);
+            let comment_diags: Vec<Diagnostic> =
+                Self::comment_spelling_findings(source_file, file_type, src, &workspace)
+                    .into_iter()
+                    .map(|located| {
+                        crate::spelling::make_diagnostic(located.range, &located.finding)
+                    })
+                    .collect();
+            if !comment_diags.is_empty() {
+                builtin.get_or_insert_with(Vec::new).extend(comment_diags);
+            }
+        }
 
         #[cfg(feature = "lintian-brush")]
         let lb = Self::lintian_brush_diagnostics(
@@ -423,6 +441,63 @@ impl Backend {
             | FileType::Rules
             | FileType::LintianOverrides
             | FileType::DebcargoToml => None,
+        }
+    }
+
+    /// Spell-check the comment tokens of any comment-bearing file. The generic
+    /// walker lives in [`crate::spelling::comments`]; this only selects the
+    /// right cached parse tree per file type. Returns findings located at LSP
+    /// ranges, shared by diagnostics and code actions.
+    #[cfg(feature = "spellcheck")]
+    fn comment_spelling_findings(
+        source_file: workspace::SourceFile,
+        file_type: FileType,
+        src: Source<'_>,
+        workspace: &Workspace,
+    ) -> Vec<crate::spelling::LocatedFinding> {
+        use crate::spelling::comments;
+
+        match file_type {
+            FileType::Control | FileType::TestsControl | FileType::SourceOptions => {
+                let parsed = workspace.get_parsed_deb822(source_file);
+                comments::deb822_comment_findings(&parsed.tree(), src)
+            }
+            FileType::Copyright => {
+                let parsed = workspace.get_parsed_copyright(source_file);
+                comments::deb822_comment_findings(parsed.tree().as_deb822(), src)
+            }
+            FileType::Patch => {
+                let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
+                comments::deb822_comment_findings(&parsed.tree(), src)
+            }
+            FileType::Watch => {
+                let parsed = workspace.get_parsed_watch(source_file);
+                comments::watch_comment_findings(&parsed, src)
+            }
+            FileType::Changelog => {
+                let parsed = workspace.get_parsed_changelog(source_file);
+                comments::changelog_comment_findings(&parsed, src)
+            }
+            FileType::Rules => {
+                let parsed = workspace.get_parsed_rules(source_file);
+                comments::rules_comment_findings(&parsed.tree(), src)
+            }
+            FileType::LintianOverrides => {
+                let parsed = workspace.get_parsed_lintian_overrides(source_file);
+                comments::lintian_overrides_comment_findings(&parsed.tree(), src)
+            }
+            FileType::PatchesSeries => {
+                let parsed = workspace.get_parsed_patches_series(source_file);
+                comments::patches_series_comment_findings(&parsed.tree(), src)
+            }
+            // SourceFormat has no comments; DebcargoToml is parsed line-by-line
+            // with no lossless tree; UpstreamMetadata's yaml-edit parser does
+            // not expose its comment tokens publicly.
+            // TODO: spell-check UpstreamMetadata comments once yaml-edit exposes
+            // a way to iterate comment trivia.
+            FileType::SourceFormat | FileType::UpstreamMetadata | FileType::DebcargoToml => {
+                Vec::new()
+            }
         }
     }
 
@@ -1347,7 +1422,11 @@ impl LanguageServer for Backend {
             | FileType::Watch
             | FileType::UpstreamMetadata
             | FileType::TestsControl
-            | FileType::Patch => {}
+            | FileType::Patch
+            | FileType::Rules
+            | FileType::SourceOptions
+            | FileType::LintianOverrides
+            | FileType::PatchesSeries => {}
             _ => return Ok(None),
         }
 
@@ -1356,6 +1435,24 @@ impl LanguageServer for Backend {
         let src = Source::new(&source_text, &idx);
 
         let mut actions = Vec::new();
+
+        // Quick-fix actions for misspelled words in comments. Collected up
+        // front so they are offered for every comment-bearing format, including
+        // those (rules, series, lintian-overrides) that have no other actions.
+        #[cfg(feature = "spellcheck")]
+        {
+            let findings = Self::comment_spelling_findings(
+                file_info.source_file,
+                file_info.file_type,
+                src,
+                &workspace,
+            );
+            actions.extend(crate::spelling::make_actions(
+                &params.text_document.uri,
+                findings,
+                &params.context.diagnostics,
+            ));
+        }
 
         let text_range = src.try_lsp_range_to_text_range(&params.range);
 
@@ -1369,10 +1466,14 @@ impl LanguageServer for Backend {
             })
             .unwrap_or(false);
 
-        match file_info.file_type {
+        // A labelled block so the per-format arms can bail out (e.g. on an
+        // unmappable range) without discarding the comment-spelling actions
+        // already collected above.
+        'format_actions: {
+            match file_info.file_type {
             FileType::Control => {
                 let Some(text_range) = text_range else {
-                    return Ok(None);
+                    break 'format_actions;
                 };
 
                 // Add wrap-and-sort action
@@ -1425,7 +1526,7 @@ impl LanguageServer for Backend {
             }
             FileType::Copyright => {
                 let Some(text_range) = text_range else {
-                    return Ok(None);
+                    break 'format_actions;
                 };
 
                 // Add wrap-and-sort action
@@ -1535,9 +1636,18 @@ impl LanguageServer for Backend {
                     ));
                 }
             }
-            FileType::Watch | FileType::UpstreamMetadata | FileType::TestsControl => {}
+            FileType::Watch
+            | FileType::UpstreamMetadata
+            | FileType::TestsControl
+            // These formats contribute only comment-spelling actions, which are
+            // collected before this match.
+            | FileType::Rules
+            | FileType::SourceOptions
+            | FileType::LintianOverrides
+            | FileType::PatchesSeries => {}
             _ => unreachable!(),
         }
+        } // 'format_actions
 
         #[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
         let open_files_snapshot = files.clone();
