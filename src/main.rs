@@ -59,6 +59,8 @@ mod rdeps;
 mod rules;
 mod source_format;
 mod source_options;
+#[cfg(feature = "spellcheck")]
+mod spelling;
 mod tests;
 mod udd;
 mod upstream_metadata;
@@ -362,7 +364,11 @@ impl Backend {
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
                 let parsed = workspace.get_parsed_control(source_file);
-                Some(control::diagnostics::get_diagnostics(src, &parsed))
+                #[cfg_attr(not(feature = "spellcheck"), allow(unused_mut))]
+                let mut diags = control::diagnostics::get_diagnostics(src, &parsed);
+                #[cfg(feature = "spellcheck")]
+                diags.extend(control::spelling::control_diagnostics(&parsed, src));
+                Some(diags)
             }
             FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
             FileType::Patch => {
@@ -1381,6 +1387,14 @@ impl LanguageServer for Backend {
                     }
                 }
                 actions.extend(casing_actions);
+
+                #[cfg(feature = "spellcheck")]
+                actions.extend(control::spelling::control_actions(
+                    &params.text_document.uri,
+                    &parsed,
+                    src,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Copyright => {
                 let Some(text_range) = text_range else {

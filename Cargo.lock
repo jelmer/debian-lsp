@@ -226,7 +226,7 @@ dependencies = [
  "bitflags 2.11.1",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -1065,6 +1065,9 @@ dependencies = [
  "tower-test",
  "tracing",
  "tracing-subscriber",
+ "typos",
+ "typos-dict",
+ "unicase",
  "upstream-ontologist",
  "yaml-edit",
 ]
@@ -1181,6 +1184,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8cbd24ecd7f640176cfd5f18e990dc53413870e98ed2c638ef4f98c131628d7"
 dependencies = [
  "rowan",
+]
+
+[[package]]
+name = "dictgen"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "241177aa78d646ea2434aed987729780e4792918d309cedab8859133745c64e7"
+dependencies = [
+ "phf 0.13.1",
+ "phf_shared 0.13.1",
+ "unicase",
 ]
 
 [[package]]
@@ -3359,7 +3373,7 @@ dependencies = [
  "getrandom 0.4.2",
  "libc",
  "nettle-sys",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "typenum",
 ]
 
@@ -3856,6 +3870,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "unicase",
 ]
 
 [[package]]
@@ -3883,6 +3898,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
 dependencies = [
  "siphasher 1.0.3",
+ "unicase",
 ]
 
 [[package]]
@@ -4849,7 +4865,7 @@ dependencies = [
  "regex",
  "regex-syntax 0.8.10",
  "sha1collisiondetection",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "xxhash-rust",
 ]
 
@@ -6194,6 +6210,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "typos"
+version = "0.10.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc89e9df07f00957d70c4386975fcdcaf3803fe6a924bf94702ce95a103cc9fc"
+dependencies = [
+ "bstr",
+ "itertools 0.14.0",
+ "serde",
+ "simdutf8",
+ "unicode-ident",
+ "winnow 1.0.3",
+]
+
+[[package]]
+name = "typos-dict"
+version = "0.13.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e249493f9a5d0daa41c3df2198ba951fa871a54c1d134a6a33010a9644ee16e5"
+dependencies = [
+ "dictgen",
+ "phf 0.13.1",
+]
+
+[[package]]
 name = "ucd-trie"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6294,7 +6334,7 @@ checksum = "75cabf2859e65089cefc3ef3250f9539787d927a112cf132cf890416984f8d04"
 dependencies = [
  "async-trait",
  "bit-set 0.10.0",
- "bit-vec 0.6.3",
+ "bit-vec 0.9.1",
  "breezyshim",
  "cargo_toml",
  "chrono",
@@ -6308,7 +6348,7 @@ dependencies = [
  "distro-info",
  "futures",
  "gix-config",
- "html5ever 0.26.0",
+ "html5ever 0.39.0",
  "lazy-regex",
  "lazy_static",
  "log",
@@ -6334,7 +6374,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "shlex 1.3.0",
- "tendril 0.4.3",
+ "tendril 0.5.0",
  "textwrap",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
