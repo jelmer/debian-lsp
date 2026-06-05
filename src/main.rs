@@ -399,9 +399,20 @@ impl Backend {
                     &uri, src, &parsed,
                 ))
             }
+            FileType::Changelog => {
+                #[cfg(feature = "spellcheck")]
+                {
+                    let source_text = workspace.source_text(source_file);
+                    let idx = workspace.get_line_index(source_file);
+                    let src = Source::new(&source_text, &idx);
+                    let parsed = workspace.get_parsed_changelog(source_file);
+                    Some(changelog::spelling::changelog_diagnostics(&parsed, src))
+                }
+                #[cfg(not(feature = "spellcheck"))]
+                None
+            }
             FileType::Watch
             | FileType::TestsControl
-            | FileType::Changelog
             | FileType::SourceFormat
             | FileType::SourceOptions
             | FileType::UpstreamMetadata
@@ -1495,6 +1506,17 @@ impl LanguageServer for Backend {
 
                         actions.push(CodeActionOrCommand::CodeAction(action));
                     }
+                }
+
+                #[cfg(feature = "spellcheck")]
+                {
+                    let parsed = workspace.get_parsed_changelog(file_info.source_file);
+                    actions.extend(changelog::spelling::changelog_actions(
+                        &params.text_document.uri,
+                        &parsed,
+                        src,
+                        &params.context.diagnostics,
+                    ));
                 }
             }
             FileType::Watch
