@@ -8,6 +8,8 @@ pub mod inlay_hints;
 pub mod on_type_formatting;
 pub mod selection_range;
 pub mod semantic;
+#[cfg(feature = "spellcheck")]
+pub mod spelling;
 pub mod symbols;
 
 pub use actions::*;

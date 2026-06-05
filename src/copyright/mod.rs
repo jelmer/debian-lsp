@@ -5,6 +5,8 @@ pub mod detection;
 pub mod fields;
 pub mod hover;
 pub mod semantic;
+#[cfg(feature = "spellcheck")]
+pub mod spelling;
 pub mod symbols;
 
 pub use actions::*;

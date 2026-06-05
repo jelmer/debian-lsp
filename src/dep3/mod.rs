@@ -12,6 +12,8 @@ pub mod fields;
 pub mod hover;
 pub mod parsing;
 pub mod semantic;
+#[cfg(feature = "spellcheck")]
+pub mod spelling;
 pub mod symbols;
 
 pub use completion::get_completions;

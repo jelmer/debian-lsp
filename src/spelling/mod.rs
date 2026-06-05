@@ -14,6 +14,8 @@
 
 mod dict;
 
+pub mod deb822;
+
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
     NumberOrString, Range, TextEdit, Uri, WorkspaceEdit,

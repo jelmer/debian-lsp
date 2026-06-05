@@ -370,13 +370,29 @@ impl Backend {
                 diags.extend(control::spelling::control_diagnostics(&parsed, src));
                 Some(diags)
             }
-            FileType::Copyright => Some(workspace.get_copyright_diagnostics(source_file)),
+            FileType::Copyright => {
+                #[cfg_attr(not(feature = "spellcheck"), allow(unused_mut))]
+                let mut diags = workspace.get_copyright_diagnostics(source_file);
+                #[cfg(feature = "spellcheck")]
+                {
+                    let source_text = workspace.source_text(source_file);
+                    let idx = workspace.get_line_index(source_file);
+                    let src = Source::new(&source_text, &idx);
+                    let parsed = workspace.get_parsed_copyright(source_file);
+                    diags.extend(copyright::spelling::copyright_diagnostics(&parsed, src));
+                }
+                Some(diags)
+            }
             FileType::Patch => {
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
                 let (parsed, _) = workspace.get_parsed_dep3_header(source_file);
-                Some(dep3::get_diagnostics(&parsed.tree(), src))
+                #[cfg_attr(not(feature = "spellcheck"), allow(unused_mut))]
+                let mut diags = dep3::get_diagnostics(&parsed.tree(), src);
+                #[cfg(feature = "spellcheck")]
+                diags.extend(dep3::spelling::dep3_diagnostics(&parsed.tree(), src));
+                Some(diags)
             }
             FileType::PatchesSeries => {
                 let source_text = workspace.source_text(source_file);
@@ -387,9 +403,20 @@ impl Backend {
                     &uri, src, &parsed,
                 ))
             }
+            FileType::Changelog => {
+                #[cfg(feature = "spellcheck")]
+                {
+                    let source_text = workspace.source_text(source_file);
+                    let idx = workspace.get_line_index(source_file);
+                    let src = Source::new(&source_text, &idx);
+                    let parsed = workspace.get_parsed_changelog(source_file);
+                    Some(changelog::spelling::changelog_diagnostics(&parsed, src))
+                }
+                #[cfg(not(feature = "spellcheck"))]
+                None
+            }
             FileType::Watch
             | FileType::TestsControl
-            | FileType::Changelog
             | FileType::SourceFormat
             | FileType::SourceOptions
             | FileType::UpstreamMetadata
@@ -1442,6 +1469,14 @@ impl LanguageServer for Backend {
                     }
                 }
                 actions.extend(casing_actions);
+
+                #[cfg(feature = "spellcheck")]
+                actions.extend(copyright::spelling::copyright_actions(
+                    &params.text_document.uri,
+                    &parsed,
+                    src,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Changelog => {
                 // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
@@ -1476,11 +1511,31 @@ impl LanguageServer for Backend {
                         actions.push(CodeActionOrCommand::CodeAction(action));
                     }
                 }
+
+                #[cfg(feature = "spellcheck")]
+                {
+                    let parsed = workspace.get_parsed_changelog(file_info.source_file);
+                    actions.extend(changelog::spelling::changelog_actions(
+                        &params.text_document.uri,
+                        &parsed,
+                        src,
+                        &params.context.diagnostics,
+                    ));
+                }
             }
-            FileType::Watch
-            | FileType::UpstreamMetadata
-            | FileType::TestsControl
-            | FileType::Patch => {}
+            FileType::Patch => {
+                #[cfg(feature = "spellcheck")]
+                {
+                    let (parsed, _) = workspace.get_parsed_dep3_header(file_info.source_file);
+                    actions.extend(dep3::spelling::dep3_actions(
+                        &params.text_document.uri,
+                        &parsed.tree(),
+                        src,
+                        &params.context.diagnostics,
+                    ));
+                }
+            }
+            FileType::Watch | FileType::UpstreamMetadata | FileType::TestsControl => {}
             _ => unreachable!(),
         }
 
