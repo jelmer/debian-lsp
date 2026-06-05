@@ -7,14 +7,17 @@
 //! package names, acronyms and version strings that fill packaging files.
 //!
 //! This module is file-format agnostic: it checks plain strings and builds
-//! the LSP diagnostics from findings that callers have already mapped to
-//! source ranges. The per-format wiring (which fields hold prose, how to map
-//! offsets back to the source) lives next to each file type, e.g.
-//! [`crate::control::spelling`].
+//! the LSP diagnostics and code actions from findings that callers have
+//! already mapped to source ranges. The per-format wiring (which fields hold
+//! prose, how to map offsets back to the source) lives next to each file type,
+//! e.g. [`crate::control::spelling`].
 
 mod dict;
 
-use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
+    NumberOrString, Range, TextEdit, Uri, WorkspaceEdit,
+};
 
 /// A single spelling finding within a checked string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +85,58 @@ pub fn make_diagnostic(range: Range, finding: &SpellingFinding) -> Diagnostic {
         message,
         ..Default::default()
     }
+}
+
+/// Whether a diagnostic was produced by the spell checker.
+pub fn is_spelling_diagnostic(d: &Diagnostic) -> bool {
+    d.code == Some(NumberOrString::String("spelling".to_string()))
+}
+
+/// Build quick-fix code actions for located spelling findings. One action per
+/// suggested correction.
+///
+/// When `diagnostics` is non-empty (the client requested fixes for specific
+/// diagnostics), only actions whose range matches one of them are emitted, so
+/// the quickfix doesn't appear for every nearby squiggle.
+pub fn make_actions(
+    uri: &Uri,
+    located_findings: impl IntoIterator<Item = LocatedFinding>,
+    diagnostics: &[Diagnostic],
+) -> Vec<CodeActionOrCommand> {
+    let mut actions = Vec::new();
+
+    for located in located_findings {
+        let matching: Vec<Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.range == located.range && is_spelling_diagnostic(d))
+            .cloned()
+            .collect();
+
+        if !diagnostics.is_empty() && matching.is_empty() {
+            continue;
+        }
+
+        for correction in &located.finding.corrections {
+            let edit = TextEdit {
+                range: located.range,
+                new_text: correction.clone(),
+            };
+            let workspace_edit = WorkspaceEdit {
+                changes: Some(vec![(uri.clone(), vec![edit])].into_iter().collect()),
+                ..Default::default()
+            };
+
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("Change \"{}\" to \"{}\"", located.finding.typo, correction),
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(workspace_edit),
+                diagnostics: (!matching.is_empty()).then(|| matching.clone()),
+                ..Default::default()
+            }));
+        }
+    }
+
+    actions
 }
 
 #[cfg(test)]

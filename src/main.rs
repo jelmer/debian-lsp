@@ -1387,6 +1387,14 @@ impl LanguageServer for Backend {
                     }
                 }
                 actions.extend(casing_actions);
+
+                #[cfg(feature = "spellcheck")]
+                actions.extend(control::spelling::control_actions(
+                    &params.text_document.uri,
+                    &parsed,
+                    src,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Copyright => {
                 let Some(text_range) = text_range else {
