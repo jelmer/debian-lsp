@@ -11,6 +11,8 @@ pub mod references;
 pub(crate) mod relation_completion;
 pub mod rename;
 pub mod semantic;
+#[cfg(feature = "spellcheck")]
+pub mod spelling;
 pub mod symbols;
 
 pub use actions::*;

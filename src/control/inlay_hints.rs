@@ -57,7 +57,7 @@ struct HintData {
 ///
 /// `entry.value()` joins VALUE tokens with `\n`, so for multi-line values the
 /// offsets in the joined string don't correspond 1:1 to source positions.
-pub(super) fn joined_offset_to_source_offset(
+pub(crate) fn joined_offset_to_source_offset(
     line_ranges: &[text_size::TextRange],
     joined_offset: usize,
 ) -> Option<TextSize> {

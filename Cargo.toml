@@ -12,8 +12,9 @@ categories = ["development-tools", "text-editors"]
 include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/README.md", "nvim-lspconfig/README.md", "src/**", "tests/**", "examples/**", "Cargo.toml", "README.md", "nvim-lspconfig/README.md", "nvim-lspconfig/lsp/debian_lsp.lua"]
 
 [features]
-default = ["launchpad"]
+default = ["launchpad", "spellcheck"]
 launchpad = ["dep:launchpadlib"]
+spellcheck = ["dep:typos", "dep:typos-dict", "dep:unicase"]
 openssl-vendored = ["dep:openssl"]
 lintian-brush = ["dep:lintian-brush", "dep:debian-workspace"]
 multiarch-hints = ["dep:multiarch-hints", "dep:debian-workspace"]
@@ -54,6 +55,9 @@ openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = tr
 lintian-brush = { version = "0.180", optional = true }
 multiarch-hints = { version = "0.180", default-features = false, features = ["async"], optional = true }
 debian-workspace = { version = "0.180", optional = true }
+typos = { version = "0.10", optional = true }
+typos-dict = { version = "0.13", optional = true }
+unicase = { version = "2.9", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
