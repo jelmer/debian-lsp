@@ -14,6 +14,7 @@
 
 mod dict;
 
+pub mod comments;
 pub mod deb822;
 
 use tower_lsp_server::ls_types::{
