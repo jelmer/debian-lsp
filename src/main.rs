@@ -697,6 +697,29 @@ impl Backend {
         }
     }
 
+    /// Get or load the control source file for the debian directory
+    /// containing the given URI.
+    fn get_control_for_uri(
+        uri: &Uri,
+        files: &HashMap<Uri, FileInfo>,
+        workspace: &mut Workspace,
+    ) -> Option<(workspace::SourceFile, Uri)> {
+        let debian_dir = Self::find_debian_dir(uri)?;
+        let control_path = debian_dir.join("control");
+        let control_uri = Uri::from_file_path(&control_path)?;
+
+        if let Some(info) = files.get(&control_uri) {
+            return Some((info.source_file, control_uri));
+        }
+
+        // Not open — read from disk and insert into the workspace.
+        let text = std::fs::read_to_string(&control_path).ok()?;
+        Some((
+            workspace.update_file(control_uri.clone(), text),
+            control_uri,
+        ))
+    }
+
     /// Get or load the changelog source file for the debian directory
     /// containing the given URI. If the changelog is already open, reuses the
     /// existing workspace entry; otherwise reads it from disk and inserts it
@@ -2748,6 +2771,36 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 let location = copyright::definition::goto_definition(&parsed, src, position, uri);
                 Ok(location.map(GotoDefinitionResponse::Scalar))
+            }
+            FileType::LintianOverrides => {
+                let files = self.files.lock().await;
+                let mut workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                let overrides = parsed.tree();
+
+                let result = if let Some((control_sf, control_uri)) =
+                    Self::get_control_for_uri(uri, &files, &mut workspace)
+                {
+                    let control_text = workspace.source_text(control_sf);
+                    let control_idx = workspace.get_line_index(control_sf);
+                    let control_src = Source::new(&control_text, &control_idx);
+                    let control_parsed = workspace.get_parsed_control(control_sf);
+                    let control = control_parsed.tree();
+                    lintian_overrides::goto_definition(
+                        &overrides,
+                        src,
+                        position,
+                        &control,
+                        control_src,
+                        &control_uri,
+                    )
+                } else {
+                    None
+                };
+                Ok(result.map(GotoDefinitionResponse::Scalar))
             }
             _ => Ok(None),
         }
