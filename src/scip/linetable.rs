@@ -3,47 +3,39 @@
 //! SCIP positions are zero-indexed. We emit them using UTF-8 code-unit offsets
 //! from the start of the line, which is what [`scip::types::PositionEncoding::UTF8CodeUnitOffsetFromLineStart`]
 //! specifies.
+//!
+//! This is a thin wrapper over [`crate::position::LineIndex`], which owns the
+//! line-start table and offset/position conversions shared with the LSP server.
+
+use crate::position::LineIndex;
+use text_size::{TextRange, TextSize};
 
 /// Precomputed table of line-start byte offsets for a single document.
-///
-/// Built once per file, then queried to convert byte offsets to `(line, col)`
-/// pairs in `O(log n)` time.
 pub struct LineTable {
-    /// Byte offset of the start of each line. Always begins with `0`.
-    starts: Vec<u32>,
+    index: LineIndex,
 }
 
 impl LineTable {
     /// Build a line table for `text`.
     pub fn new(text: &str) -> Self {
-        let mut starts = Vec::with_capacity(text.len() / 40 + 1);
-        starts.push(0);
-        for (i, b) in text.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push((i + 1) as u32);
-            }
+        Self {
+            index: LineIndex::new(text),
         }
-        Self { starts }
     }
 
     /// Convert a byte offset into a `(line, col)` pair, both zero-indexed.
     ///
     /// `col` is measured in UTF-8 code units from the start of the line.
     pub fn line_col(&self, offset: u32) -> (i32, i32) {
-        let idx = match self.starts.binary_search(&offset) {
-            Ok(i) => i,
-            Err(i) => i - 1,
-        };
-        let line_start = self.starts[idx];
-        (idx as i32, (offset - line_start) as i32)
+        let (line, col) = self.index.offset_to_line_col_utf8(TextSize::from(offset));
+        (line as i32, col as i32)
     }
 
     /// Convert a byte range into a SCIP four-element range
     /// `[start_line, start_col, end_line, end_col]`.
     pub fn range(&self, start: u32, end: u32) -> Vec<i32> {
-        let (sl, sc) = self.line_col(start);
-        let (el, ec) = self.line_col(end);
-        vec![sl, sc, el, ec]
+        self.index
+            .scip_range(TextRange::new(TextSize::from(start), TextSize::from(end)))
     }
 }
 

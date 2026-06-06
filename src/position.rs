@@ -102,6 +102,33 @@ impl LineIndex {
         None
     }
 
+    /// Convert a byte offset to a zero-indexed `(line, col)` pair where
+    /// `col` is measured in UTF-8 code units from the start of the line.
+    ///
+    /// This is the encoding SCIP uses
+    /// ([`scip::types::PositionEncoding::UTF8CodeUnitOffsetFromLineStart`]),
+    /// as opposed to the UTF-16 columns LSP positions use.
+    #[cfg(feature = "scip")]
+    pub fn offset_to_line_col_utf8(&self, offset: TextSize) -> (u32, u32) {
+        let offset = offset.min(self.text_len);
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let line_start = self.line_starts[line];
+        (line as u32, u32::from(offset - line_start))
+    }
+
+    /// Convert a byte range to a SCIP four-element range
+    /// `[start_line, start_col, end_line, end_col]`, with columns in
+    /// UTF-8 code units. See [`Self::offset_to_line_col_utf8`].
+    #[cfg(feature = "scip")]
+    pub fn scip_range(&self, range: TextRange) -> Vec<i32> {
+        let (sl, sc) = self.offset_to_line_col_utf8(range.start());
+        let (el, ec) = self.offset_to_line_col_utf8(range.end());
+        vec![sl as i32, sc as i32, el as i32, ec as i32]
+    }
+
     /// Convert a `TextRange` to an LSP `Range`.
     pub fn text_range_to_lsp_range(&self, text: &str, range: TextRange) -> Range {
         Range {
