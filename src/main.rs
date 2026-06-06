@@ -57,6 +57,8 @@ mod popcon;
 mod position;
 mod rdeps;
 mod rules;
+#[cfg(feature = "scip")]
+mod scip;
 mod source_format;
 mod source_options;
 #[cfg(feature = "spellcheck")]
@@ -2799,6 +2801,24 @@ enum Command {
         #[arg(long)]
         no_multiarch_hints: bool,
     },
+    /// Emit a SCIP (Sourcegraph Code Intelligence Protocol) index for a
+    /// Debian source tree.
+    #[cfg(feature = "scip")]
+    Scip {
+        /// Path to a directory containing a `debian/` subdirectory.
+        #[arg(default_value = ".")]
+        root: std::path::PathBuf,
+        /// Output path for the SCIP index.
+        #[arg(short, long, default_value = "index.scip")]
+        output: std::path::PathBuf,
+        /// Override the project root recorded in the index metadata.
+        #[arg(long)]
+        project_root: Option<String>,
+        /// Skip diagnostics that require network access (lintian-brush,
+        /// multiarch-hints). Builtin diagnostics still run.
+        #[arg(long)]
+        offline: bool,
+    },
 }
 
 /// Severity level for a diagnostic, used in gcc-style output.
@@ -3053,6 +3073,172 @@ fn sarif_log(results: Vec<serde_json::Value>) -> serde_json::Value {
     })
 }
 
+/// Build a SCIP index for the source tree at `root` and write it to `output`.
+///
+/// Diagnostics from the same producers the LSP uses (builtin parsers plus, when
+/// `offline` is false, lintian-brush and multiarch-hints) are attached to the
+/// indexed documents. Returns the process exit code (0 on success, 1 on write
+/// failure).
+#[cfg(feature = "scip")]
+async fn run_scip(
+    root: &std::path::Path,
+    output: &std::path::Path,
+    project_root: Option<&str>,
+    offline: bool,
+) -> i32 {
+    let mut indexer = scip::Indexer::new(root);
+    if let Some(pr) = project_root {
+        indexer = indexer.with_project_root(pr.to_owned());
+    }
+    // Record the invocation in the index metadata for reproducibility.
+    let mut arguments = vec![format!("--root={}", root.display())];
+    if let Some(pr) = project_root {
+        arguments.push(format!("--project-root={pr}"));
+    }
+    if offline {
+        arguments.push("--offline".to_owned());
+    }
+    indexer = indexer.with_arguments(arguments);
+    let mut index = indexer.build();
+
+    attach_scip_diagnostics(root, &mut index, offline).await;
+
+    let n_docs = index.documents.len();
+    let n_occ: usize = index.documents.iter().map(|d| d.occurrences.len()).sum();
+    let n_diag: usize = index
+        .documents
+        .iter()
+        .flat_map(|d| &d.occurrences)
+        .map(|o| o.diagnostics.len())
+        .sum();
+    if let Err(e) = ::scip::write_message_to_file(output, index) {
+        eprintln!(
+            "debian-lsp scip: failed to write {}: {}",
+            output.display(),
+            e
+        );
+        return 1;
+    }
+    eprintln!(
+        "debian-lsp scip: wrote {} ({} documents, {} occurrences, {} diagnostics)",
+        output.display(),
+        n_docs,
+        n_occ,
+        n_diag
+    );
+    0
+}
+
+/// Run the LSP diagnostic producers over each indexed document and attach the
+/// results to the SCIP index.
+#[cfg(feature = "scip")]
+async fn attach_scip_diagnostics(
+    root: &std::path::Path,
+    index: &mut ::scip::types::Index,
+    offline: bool,
+) {
+    use crate::scip::diagnostics::ScipDiagnostic;
+
+    let mut workspace = Workspace::new();
+
+    // The multiarch-hints store triggers a network fetch on first use; skip it
+    // entirely in offline mode.
+    #[cfg(feature = "multiarch-hints")]
+    let multiarch_hints_store = (!offline).then(multiarch_hints::hints::HintsStore::default);
+
+    // Collect the work to do first, so the immutable borrow of `index` ends
+    // before we mutate it via `attach`.
+    let targets: Vec<String> = index
+        .documents
+        .iter()
+        .map(|d| d.relative_path.clone())
+        .collect();
+
+    for relative_path in targets {
+        let abs_path = root.join(&relative_path);
+        let Ok(content) = std::fs::read_to_string(&abs_path) else {
+            continue;
+        };
+        let Some(uri) = std::fs::canonicalize(&abs_path)
+            .ok()
+            .and_then(Uri::from_file_path)
+        else {
+            continue;
+        };
+        let Some(file_type) = FileType::detect(&uri) else {
+            continue;
+        };
+
+        let source_file = workspace.update_file(uri.clone(), content.clone());
+        // Offline mode runs only the builtin (parser-based) diagnostics; the
+        // lintian-brush and multiarch-hints producers both touch the network.
+        let diagnostics = if offline {
+            match Backend::builtin_diagnostics(&uri, source_file, file_type, &workspace) {
+                Some(d) => d,
+                None => continue,
+            }
+        } else {
+            match Backend::collect_diagnostics(
+                uri,
+                source_file,
+                file_type,
+                workspace.clone(),
+                HashMap::new(),
+                RunPhase::Explicit,
+                None,
+                false,
+                #[cfg(feature = "multiarch-hints")]
+                multiarch_hints_store.clone(),
+            )
+            .await
+            {
+                Ok(Some(d)) => d,
+                Ok(None) | Err(_) => continue,
+            }
+        };
+
+        let idx = LineIndex::new(&content);
+        let scip_diags: Vec<ScipDiagnostic> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                let range = idx.try_lsp_range_to_text_range(&content, &d.range)?;
+                let code = match &d.code {
+                    Some(tower_lsp_server::ls_types::NumberOrString::String(s)) => Some(s.clone()),
+                    Some(tower_lsp_server::ls_types::NumberOrString::Number(n)) => {
+                        Some(n.to_string())
+                    }
+                    None => None,
+                };
+                Some(ScipDiagnostic {
+                    range: (range.start().into(), range.end().into()),
+                    severity: map_severity(d.severity),
+                    code,
+                    message: d.message.clone(),
+                    source: d.source.clone().unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        crate::scip::diagnostics::attach(index, &relative_path, &content, &scip_diags);
+    }
+}
+
+/// Map an LSP diagnostic severity to the scip severity, defaulting unknown or
+/// missing severities to a warning.
+#[cfg(feature = "scip")]
+fn map_severity(
+    severity: Option<DiagnosticSeverity>,
+) -> crate::scip::diagnostics::DiagnosticSeverity {
+    use crate::scip::diagnostics::DiagnosticSeverity as S;
+    match severity {
+        Some(DiagnosticSeverity::ERROR) => S::Error,
+        Some(DiagnosticSeverity::WARNING) => S::Warning,
+        Some(DiagnosticSeverity::INFORMATION) => S::Information,
+        Some(DiagnosticSeverity::HINT) => S::Hint,
+        _ => S::Warning,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -3082,6 +3268,21 @@ async fn main() {
             )
             .await;
             std::process::exit(if errors > 0 { 1 } else { 0 });
+        }
+        #[cfg(feature = "scip")]
+        Some(Command::Scip {
+            root,
+            output,
+            project_root,
+            offline,
+        }) => {
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+                .with_target(false)
+                .compact()
+                .init();
+            std::process::exit(run_scip(&root, &output, project_root.as_deref(), offline).await);
         }
         None => {
             // Default: run as LSP server

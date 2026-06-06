@@ -450,6 +450,15 @@ const BUILD_PROFILES: &[(&str, &str)] = &[
     ("stage2", "Bootstrap stage 2"),
 ];
 
+/// Look up a human-readable description for a known build profile.
+#[cfg(feature = "scip")]
+pub fn build_profile_description(name: &str) -> Option<&'static str> {
+    BUILD_PROFILES
+        .iter()
+        .find(|(p, _)| *p == name)
+        .map(|(_, desc)| *desc)
+}
+
 /// Get completion items for build profiles (inside `<...>`).
 fn get_build_profile_completions(partial: &str) -> Vec<CompletionItem> {
     let negated = partial.starts_with('!');

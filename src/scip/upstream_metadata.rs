@@ -1,0 +1,110 @@
+//! Index `debian/upstream/metadata` (YAML) into a SCIP document.
+//!
+//! Walks the top-level mapping of the first YAML document and emits a
+//! definition occurrence for each scalar key. Nested mappings and sequences
+//! are not indexed.
+
+use crate::scip::linetable::LineTable;
+use crate::scip::symbols;
+use scip::types::{Document, Occurrence, SymbolInformation, SymbolRole};
+use yaml_edit::{Parse, YamlFile};
+
+/// Indexed result for `debian/upstream/metadata`.
+pub struct UpstreamMetadataIndex {
+    /// The SCIP document.
+    pub document: Document,
+}
+
+/// Parse and index `debian/upstream/metadata`.
+pub fn index(
+    text: &str,
+    relative_path: &str,
+    source: &str,
+    version: Option<&str>,
+) -> UpstreamMetadataIndex {
+    let lines = LineTable::new(text);
+    let mut occurrences: Vec<Occurrence> = Vec::new();
+    let mut symbols_info: Vec<SymbolInformation> = Vec::new();
+
+    let yaml = Parse::<YamlFile>::parse_yaml(text).tree();
+    if let Some(mapping) = yaml.document().and_then(|d| d.as_mapping()) {
+        for entry in mapping.entries() {
+            let Some(key_node) = entry.key_node() else {
+                continue;
+            };
+            let Some(scalar) = key_node.as_scalar() else {
+                continue;
+            };
+            let key = scalar.as_string();
+            if key.is_empty() {
+                continue;
+            }
+            let range = scalar.byte_range();
+            let sym = symbols::upstream_metadata_field(source, version, &key);
+            occurrences.push(Occurrence {
+                range: lines.range(range.start, range.end),
+                symbol: sym.clone(),
+                symbol_roles: SymbolRole::Definition as i32,
+                ..Default::default()
+            });
+            symbols_info.push(SymbolInformation {
+                symbol: sym,
+                kind: scip::types::symbol_information::Kind::Field.into(),
+                display_name: key.clone(),
+                ..Default::default()
+            });
+        }
+    }
+
+    UpstreamMetadataIndex {
+        document: Document {
+            language: "yaml".to_owned(),
+            relative_path: relative_path.to_owned(),
+            text: text.to_owned(),
+            occurrences,
+            symbols: symbols_info,
+            position_encoding: scip::types::PositionEncoding::UTF8CodeUnitOffsetFromLineStart
+                .into(),
+            ..Default::default()
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = "\
+# Comment line
+Repository: https://github.com/example/hello
+Bug-Database: https://github.com/example/hello/issues
+Archive: GitHub
+Reference:
+  - Author: Doe
+    Title: Paper
+";
+
+    #[test]
+    fn indexes_toplevel_keys() {
+        let idx = index(SAMPLE, "debian/upstream/metadata", "hello", Some("2.10-3"));
+        let defs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .collect();
+        // Repository, Bug-Database, Archive, Reference — but not the nested
+        // Author/Title.
+        assert_eq!(defs.len(), 4);
+        assert!(idx
+            .document
+            .symbols
+            .iter()
+            .any(|s| s.symbol.contains("Repository")));
+        assert!(!idx
+            .document
+            .symbols
+            .iter()
+            .any(|s| s.symbol.contains("Author")));
+    }
+}
