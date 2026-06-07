@@ -51,6 +51,7 @@ impl Indexer {
         let mut build_profiles: HashSet<String> = HashSet::new();
         let mut restrictions: HashSet<String> = HashSet::new();
         let mut features: HashSet<String> = HashSet::new();
+        let mut bug_numbers: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
         // Step 1: changelog first, to learn the source name and current version.
         let changelog_text = std::fs::read_to_string(debian.join("changelog")).ok();
@@ -58,6 +59,7 @@ impl Indexer {
             let idx = changelog::index(text, "debian/changelog");
             let src = idx.source_name.clone();
             let ver = idx.topmost_version.clone();
+            bug_numbers.extend(idx.bug_numbers);
             documents.push(idx.document);
             (src, ver)
         } else {
@@ -170,6 +172,16 @@ impl Indexer {
                     .collect(),
                 ..Default::default()
             }
+        }));
+        // BTS bugs referenced from the changelog. Static documentation (a link
+        // to the bug page); `run_scip` upgrades these to live BTS summaries
+        // when not running offline.
+        external_symbols.extend(bug_numbers.iter().map(|&n| SymbolInformation {
+            symbol: symbols::bts_bug(&n.to_string()),
+            kind: scip::types::symbol_information::Kind::Constant.into(),
+            display_name: format!("#{n}"),
+            documentation: vec![symbols::bts_bug_static_doc(n)],
+            ..Default::default()
         }));
 
         let project_root = self.project_root.unwrap_or_else(|| {

@@ -104,3 +104,22 @@ impl BugCache {
 pub fn new_shared_bug_cache(pool: crate::udd::SharedPool) -> SharedBugCache {
     Arc::new(RwLock::new(BugCache::new(pool)))
 }
+
+/// Look up a Debian bug summary, fetching from UDD on a cache miss.
+///
+/// Avoids holding the cache lock across the network call: it checks the
+/// in-memory cache first; if absent, clones the pool, drops the lock, queries
+/// UDD, then re-acquires to insert.
+pub async fn debian_bug_summary(cache: &SharedBugCache, id: u32) -> Option<DebbugsBugSummary> {
+    // Fast path: already cached.
+    if let Some(s) = cache.write().await.get_cached_debian_bug_summary(id) {
+        return Some(s);
+    }
+    // Slow path: fetch from UDD. The write guard is dropped here before the
+    // network await so other callers aren't blocked.
+    let pool = cache.read().await.pool.clone();
+    let row = BugCache::query_bug_by_id(&pool, id).await?;
+    let mut guard = cache.write().await;
+    guard.insert_bug_row(id, row);
+    guard.get_cached_debian_bug_summary(id)
+}

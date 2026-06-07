@@ -364,6 +364,23 @@ pub fn bts_bug(number: &str) -> String {
     })
 }
 
+/// Recover the bug number from a symbol produced by [`bts_bug`].
+///
+/// Returns `None` for any symbol that is not a Debian BTS bug reference.
+pub fn parse_bts_bug(symbol: &str) -> Option<u32> {
+    let parsed = scip::symbol::parse_symbol(symbol).ok()?;
+    if parsed.scheme != BTS_SCHEME {
+        return None;
+    }
+    parsed.descriptors.first()?.name.parse().ok()
+}
+
+/// Static documentation for a Debian BTS bug, used when no live BTS data is
+/// available (offline mode, or a lookup that returned nothing).
+pub fn bts_bug_static_doc(number: u32) -> String {
+    format!("**[Debian Bug #{number}](https://bugs.debian.org/{number})**")
+}
+
 /// A [`Relationship`] declaring that the owning symbol is a reference of
 /// `target`.
 ///
@@ -419,5 +436,24 @@ mod tests {
         let parsed = scip::symbol::parse_symbol(&s).unwrap();
         assert_eq!(parsed.scheme, BTS_SCHEME);
         assert_eq!(parsed.descriptors[0].name, "123456");
+    }
+
+    #[test]
+    fn bts_bug_round_trips_through_parse() {
+        assert_eq!(parse_bts_bug(&bts_bug("123456")), Some(123456));
+    }
+
+    #[test]
+    fn parse_bts_bug_rejects_other_symbols() {
+        assert_eq!(parse_bts_bug(&source_package("hello", None)), None);
+        assert_eq!(parse_bts_bug("not a symbol"), None);
+    }
+
+    #[test]
+    fn bts_bug_static_doc_links_to_tracker() {
+        assert_eq!(
+            bts_bug_static_doc(123456),
+            "**[Debian Bug #123456](https://bugs.debian.org/123456)**"
+        );
     }
 }

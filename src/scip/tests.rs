@@ -139,6 +139,18 @@ fn full_tree_round_trip() {
         .expect("restriction external symbol");
     assert_eq!(needs_root.documentation, vec!["Test must be run as root"]);
 
+    // The changelog's Closes bug is an external symbol with static link
+    // documentation (live BTS enrichment happens later, only when online).
+    let bug = index
+        .external_symbols
+        .iter()
+        .find(|s| s.symbol == super::symbols::bts_bug("777111"))
+        .expect("bug external symbol");
+    assert_eq!(
+        bug.documentation,
+        vec!["**[Debian Bug #777111](https://bugs.debian.org/777111)**"]
+    );
+
     // Relationship edges are assembled into the per-document symbols. The
     // `hello` binary package references the `hello` source package.
     let control_doc = index
