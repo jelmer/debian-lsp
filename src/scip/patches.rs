@@ -94,6 +94,7 @@ fn index_series(text: &str, relative_path: &str, source: &str, version: Option<&
         occurrences.push(Occurrence {
             range: lines.range(start, end),
             symbol: sym,
+            syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
             ..Default::default()
         });
     }
@@ -125,6 +126,7 @@ fn index_patch(
         range: lines.range(0, 0),
         symbol: patch_sym.clone(),
         symbol_roles: SymbolRole::Definition as i32,
+        syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
         ..Default::default()
     });
 
@@ -161,6 +163,7 @@ fn index_patch(
         occurrences.push(Occurrence {
             range: lines.range(start, end),
             symbol: symbols::bts_bug(id_text),
+            syntax_kind: scip::types::SyntaxKind::NumericLiteral.into(),
             ..Default::default()
         });
     }
@@ -219,6 +222,7 @@ fn emit_touched_paths(
             occurrences.push(Occurrence {
                 range: lines.range(abs, abs + name.len() as u32),
                 symbol: symbols::upstream_path(source, version, stripped),
+                syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
                 ..Default::default()
             });
         }

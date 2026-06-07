@@ -79,6 +79,7 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
                 occurrences.push(Occurrence {
                     range: lines.range(id.email_range.start().into(), id.email_range.end().into()),
                     symbol: symbols::identity(&id.email),
+                    syntax_kind: scip::types::SyntaxKind::IdentifierConstant.into(),
                     ..Default::default()
                 });
             }
@@ -99,6 +100,7 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
                     range: lines.range(tr.start().into(), tr.end().into()),
                     symbol: bin_sym.clone(),
                     symbol_roles: SymbolRole::Definition as i32,
+                    syntax_kind: scip::types::SyntaxKind::IdentifierNamespace.into(),
                     enclosing_range: enclosing_range.clone(),
                     ..Default::default()
                 });
@@ -225,6 +227,7 @@ fn emit_relations(
                 occurrences.push(Occurrence {
                     range: lines.range(s, e),
                     symbol: symbols::build_profile(profile_name),
+                    syntax_kind: scip::types::SyntaxKind::IdentifierAttribute.into(),
                     ..Default::default()
                 });
             }
@@ -311,11 +314,14 @@ fn is_substvar_artifact(value_text: &str, name_range: &rowan::TextRange) -> bool
     before.ends_with('$')
 }
 
+/// A package-name occurrence (source/binary definition or provides). Package
+/// names are namespaces, so they get [`SyntaxKind::IdentifierNamespace`].
 fn occurrence(lines: &LineTable, range: (u32, u32), symbol: &str, role: SymbolRole) -> Occurrence {
     Occurrence {
         range: lines.range(range.0, range.1),
         symbol: symbol.to_owned(),
         symbol_roles: role as i32,
+        syntax_kind: scip::types::SyntaxKind::IdentifierNamespace.into(),
         ..Default::default()
     }
 }
@@ -404,6 +410,42 @@ Description: example
             !bin_def.enclosing_range.is_empty(),
             "expected an enclosing range on the binary definition"
         );
+    }
+
+    #[test]
+    fn occurrences_carry_semantic_syntax_kinds() {
+        use scip::types::SyntaxKind;
+        let idx = index(SAMPLE, "debian/control", Some("2.10-3"));
+        let occs = &idx.document.occurrences;
+
+        let has = |kind: SyntaxKind| occs.iter().any(|o| o.syntax_kind == kind.into());
+
+        // Field names (the deb822 keys) highlight as attributes.
+        assert!(
+            has(SyntaxKind::IdentifierAttribute),
+            "expected a field-name occurrence (IdentifierAttribute)"
+        );
+        // Package names (source/binary defs and dep references) are namespaces.
+        assert!(
+            has(SyntaxKind::IdentifierNamespace),
+            "expected a package-name occurrence (IdentifierNamespace)"
+        );
+        // The source definition is a package name.
+        let src_def = occs
+            .iter()
+            .find(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .expect("source definition");
+        assert_eq!(
+            src_def.syntax_kind,
+            SyntaxKind::IdentifierNamespace.into(),
+            "source definition should be a namespace"
+        );
+        // The maintainer identity is a constant.
+        let identity = occs
+            .iter()
+            .find(|o| o.symbol == symbols::identity("jelmer@debian.org"))
+            .expect("maintainer identity occurrence");
+        assert_eq!(identity.syntax_kind, SyntaxKind::IdentifierConstant.into());
     }
 
     const PROVIDES_SAMPLE: &str = "\

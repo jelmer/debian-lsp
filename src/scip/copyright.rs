@@ -45,6 +45,7 @@ pub fn index(
                     range: lines.range(tr.start().into(), tr.end().into()),
                     symbol: sym.clone(),
                     symbol_roles: SymbolRole::Definition as i32,
+                    syntax_kind: scip::types::SyntaxKind::IdentifierType.into(),
                     enclosing_range,
                     ..Default::default()
                 });
@@ -81,6 +82,7 @@ pub fn index(
                         range: lines.range(vr.start().into(), vr.end().into()),
                         symbol: glob_sym.clone(),
                         symbol_roles: SymbolRole::Definition as i32,
+                        syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
                         enclosing_range: enclosing_range.clone(),
                         ..Default::default()
                     });
@@ -116,6 +118,7 @@ pub fn index(
                 occurrences.push(Occurrence {
                     range: lines.range(tr.start().into(), tr.end().into()),
                     symbol: sym,
+                    syntax_kind: scip::types::SyntaxKind::IdentifierType.into(),
                     ..Default::default()
                 });
             }

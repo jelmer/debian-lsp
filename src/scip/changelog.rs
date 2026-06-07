@@ -53,6 +53,7 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
                     range: lines.range(vr.start().into(), vr.end().into()),
                     symbol: sym.clone(),
                     symbol_roles: SymbolRole::Definition as i32,
+                    syntax_kind: ScipSyntax::StringLiteral.into(),
                     ..Default::default()
                 });
             }
@@ -70,6 +71,7 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
                 occurrences.push(Occurrence {
                     range: lines.range(r.start().into(), r.end().into()),
                     symbol: symbols::identity(&addr),
+                    syntax_kind: ScipSyntax::IdentifierConstant.into(),
                     ..Default::default()
                 });
             }
