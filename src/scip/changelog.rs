@@ -18,6 +18,8 @@ pub struct ChangelogIndex {
     pub topmost_version: Option<String>,
     /// Debian BTS bug numbers referenced anywhere in the changelog.
     pub bug_numbers: BTreeSet<u32>,
+    /// Launchpad bug numbers referenced anywhere in the changelog.
+    pub launchpad_bug_numbers: BTreeSet<u32>,
 }
 
 /// Parse and index a `debian/changelog` file.
@@ -32,6 +34,7 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
     let mut source_name: Option<String> = None;
     let mut topmost_version: Option<String> = None;
     let mut bug_numbers: BTreeSet<u32> = BTreeSet::new();
+    let mut launchpad_bug_numbers: BTreeSet<u32> = BTreeSet::new();
 
     for (i, entry) in cl.iter().enumerate() {
         let pkg = entry.package();
@@ -82,20 +85,26 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
             }
             let detail_text = token.text();
             let detail_start = u32::from(token.text_range().start());
-            // Emit one occurrence per individual bug number. Only Debian BTS
-            // bugs get a symbol; Launchpad references are skipped. The
-            // occurrence carries both the symbol (for hover/navigation) and a
-            // numeric syntax kind (so SCIP consumers highlight the number).
+            // Emit one occurrence per individual bug number. Each carries both
+            // the symbol (for hover/navigation) and a numeric syntax kind (so
+            // SCIP consumers highlight the number). Debian BTS and Launchpad
+            // bugs get distinct symbol schemes.
             for bug_ref in iter_bug_refs(detail_text) {
-                let Bug::Debian(n) = bug_ref.bug else {
-                    continue;
-                };
                 let abs_start = detail_start + bug_ref.start as u32;
                 let abs_end = detail_start + bug_ref.end as u32;
-                bug_numbers.insert(n);
+                let symbol = match bug_ref.bug {
+                    Bug::Debian(n) => {
+                        bug_numbers.insert(n);
+                        symbols::bts_bug(&n.to_string())
+                    }
+                    Bug::Launchpad(n) => {
+                        launchpad_bug_numbers.insert(n);
+                        symbols::lp_bug(&n.to_string())
+                    }
+                };
                 occurrences.push(Occurrence {
                     range: lines.range(abs_start, abs_end),
-                    symbol: symbols::bts_bug(&n.to_string()),
+                    symbol,
                     syntax_kind: ScipSyntax::NumericLiteral.into(),
                     ..Default::default()
                 });
@@ -117,6 +126,7 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
         source_name,
         topmost_version,
         bug_numbers,
+        launchpad_bug_numbers,
     }
 }
 
@@ -140,12 +150,11 @@ hello (2.10-2) unstable; urgency=medium
 ";
 
     #[test]
-    fn indexes_versions_and_debian_bugs() {
+    fn indexes_versions_and_bugs() {
         let idx = index(SAMPLE, "debian/changelog");
         assert_eq!(idx.source_name.as_deref(), Some("hello"));
         assert_eq!(idx.topmost_version.as_deref(), Some("2.10-3"));
 
-        // Two version definitions + one Debian BTS reference (Launchpad ignored).
         let defs: Vec<_> = idx
             .document
             .occurrences
@@ -154,21 +163,32 @@ hello (2.10-2) unstable; urgency=medium
             .collect();
         assert_eq!(defs.len(), 2);
 
-        let bug_refs: Vec<_> = idx
+        let bts_refs: Vec<_> = idx
             .document
             .occurrences
             .iter()
             .filter(|o| o.symbol.starts_with("scip-debian-bts"))
             .collect();
-        assert_eq!(bug_refs.len(), 1, "expected one Debian BTS ref");
+        assert_eq!(bts_refs.len(), 1, "expected one Debian BTS ref");
 
-        // The bug reference is reported as the set of referenced numbers and
-        // is highlighted as a numeric literal.
+        let lp_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol.starts_with("scip-launchpad-bug"))
+            .collect();
+        assert_eq!(lp_refs.len(), 1, "expected one Launchpad ref");
+
+        // Bug references are reported as the sets of referenced numbers and are
+        // highlighted as numeric literals.
         assert_eq!(idx.bug_numbers, BTreeSet::from([999888]));
-        assert_eq!(
-            bug_refs[0].syntax_kind,
-            ScipSyntax::NumericLiteral.into(),
-            "bug number should be highlighted"
-        );
+        assert_eq!(idx.launchpad_bug_numbers, BTreeSet::from([1234567]));
+        for occ in [bts_refs[0], lp_refs[0]] {
+            assert_eq!(
+                occ.syntax_kind,
+                ScipSyntax::NumericLiteral.into(),
+                "bug number should be highlighted"
+            );
+        }
     }
 }

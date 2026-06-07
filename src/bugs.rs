@@ -123,3 +123,19 @@ pub async fn debian_bug_summary(cache: &SharedBugCache, id: u32) -> Option<Debbu
     guard.insert_bug_row(id, row);
     guard.get_cached_debian_bug_summary(id)
 }
+
+/// Look up a Launchpad bug summary, fetching from the Launchpad API on a cache
+/// miss.
+#[cfg(feature = "launchpad")]
+pub async fn launchpad_bug_summary(cache: &SharedBugCache, id: u32) -> Option<LaunchpadBugSummary> {
+    cache.write().await.get_launchpad_bug_summary(id).await
+}
+
+/// Stub when Launchpad support is disabled: no summary is ever available.
+#[cfg(not(feature = "launchpad"))]
+pub async fn launchpad_bug_summary(
+    _cache: &SharedBugCache,
+    _id: u32,
+) -> Option<LaunchpadBugSummary> {
+    None
+}

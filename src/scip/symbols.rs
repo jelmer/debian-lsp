@@ -26,11 +26,17 @@ pub const SCHEME: &str = "scip-debian";
 /// Scheme used for Debian BTS bug references.
 pub const BTS_SCHEME: &str = "scip-debian-bts";
 
+/// Scheme used for Launchpad bug references.
+pub const LP_SCHEME: &str = "scip-launchpad-bug";
+
 /// Manager string identifying Debian source packages.
 pub const MANAGER: &str = "debian";
 
 /// Manager string identifying the Debian BTS.
 pub const BTS_MANAGER: &str = "debian-bts";
+
+/// Manager string identifying Launchpad.
+pub const LP_MANAGER: &str = "launchpad";
 
 /// Build a `Descriptor` with the given name and suffix.
 fn desc(name: &str, suffix: Suffix) -> Descriptor {
@@ -381,6 +387,38 @@ pub fn bts_bug_static_doc(number: u32) -> String {
     format!("**[Debian Bug #{number}](https://bugs.debian.org/{number})**")
 }
 
+/// Symbol for a Launchpad bug number.
+pub fn lp_bug(number: &str) -> String {
+    fmt(Symbol {
+        scheme: LP_SCHEME.to_owned(),
+        package: Some(Package {
+            manager: LP_MANAGER.to_owned(),
+            ..Default::default()
+        })
+        .into(),
+        descriptors: vec![desc(number, Suffix::Meta)],
+        ..Default::default()
+    })
+}
+
+/// Recover the bug number from a symbol produced by [`lp_bug`].
+///
+/// Returns `None` for any symbol that is not a Launchpad bug reference.
+pub fn parse_lp_bug(symbol: &str) -> Option<u32> {
+    let parsed = scip::symbol::parse_symbol(symbol).ok()?;
+    if parsed.scheme != LP_SCHEME {
+        return None;
+    }
+    parsed.descriptors.first()?.name.parse().ok()
+}
+
+/// Static documentation for a Launchpad bug, used when no live data is
+/// available (offline mode, the `launchpad` feature disabled, or a lookup that
+/// returned nothing).
+pub fn lp_bug_static_doc(number: u32) -> String {
+    format!("**[Launchpad Bug #{number}](https://bugs.launchpad.net/bugs/{number})**")
+}
+
 /// A [`Relationship`] declaring that the owning symbol is a reference of
 /// `target`.
 ///
@@ -447,6 +485,8 @@ mod tests {
     fn parse_bts_bug_rejects_other_symbols() {
         assert_eq!(parse_bts_bug(&source_package("hello", None)), None);
         assert_eq!(parse_bts_bug("not a symbol"), None);
+        // Debian and Launchpad bugs use distinct schemes and don't cross-parse.
+        assert_eq!(parse_bts_bug(&lp_bug("123456")), None);
     }
 
     #[test]
@@ -454,6 +494,20 @@ mod tests {
         assert_eq!(
             bts_bug_static_doc(123456),
             "**[Debian Bug #123456](https://bugs.debian.org/123456)**"
+        );
+    }
+
+    #[test]
+    fn lp_bug_round_trips_through_parse() {
+        assert_eq!(parse_lp_bug(&lp_bug("2002003")), Some(2002003));
+        assert_eq!(parse_lp_bug(&bts_bug("2002003")), None);
+    }
+
+    #[test]
+    fn lp_bug_static_doc_links_to_tracker() {
+        assert_eq!(
+            lp_bug_static_doc(2002003),
+            "**[Launchpad Bug #2002003](https://bugs.launchpad.net/bugs/2002003)**"
         );
     }
 }

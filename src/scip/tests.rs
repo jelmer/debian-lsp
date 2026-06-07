@@ -8,7 +8,8 @@ fn write_tree(dir: &std::path::Path) {
     fs::write(
         debian.join("changelog"),
         "hello (2.10-3) unstable; urgency=medium\n\n  \
-        * Fix bug. (Closes: #777111)\n\n \
+        * Fix bug. (Closes: #777111)\n  \
+        * Fix another. (LP: #2002003)\n\n \
         -- Test User <test@example.org>  Tue, 27 May 2026 12:00:00 +0000\n",
     )
     .unwrap();
@@ -149,6 +150,17 @@ fn full_tree_round_trip() {
     assert_eq!(
         bug.documentation,
         vec!["**[Debian Bug #777111](https://bugs.debian.org/777111)**"]
+    );
+
+    // Launchpad bugs are indexed the same way, with their own static link.
+    let lp_bug = index
+        .external_symbols
+        .iter()
+        .find(|s| s.symbol == super::symbols::lp_bug("2002003"))
+        .expect("launchpad bug external symbol");
+    assert_eq!(
+        lp_bug.documentation,
+        vec!["**[Launchpad Bug #2002003](https://bugs.launchpad.net/bugs/2002003)**"]
     );
 
     // Relationship edges are assembled into the per-document symbols. The

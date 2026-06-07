@@ -41,26 +41,13 @@ pub async fn get_hover(
             })
         }
         Bug::Launchpad(id) => {
-            let summary = launchpad_bug_summary(bug_cache, *id).await;
+            let summary = crate::bugs::launchpad_bug_summary(bug_cache, *id).await;
             Some(match summary {
                 Some(s) => make_launchpad_hover(&s),
                 None => make_fallback_hover(&bug),
             })
         }
     }
-}
-
-#[cfg(feature = "launchpad")]
-async fn launchpad_bug_summary(bug_cache: &SharedBugCache, id: u32) -> Option<LaunchpadBugSummary> {
-    bug_cache.write().await.get_launchpad_bug_summary(id).await
-}
-
-#[cfg(not(feature = "launchpad"))]
-async fn launchpad_bug_summary(
-    _bug_cache: &SharedBugCache,
-    _id: u32,
-) -> Option<LaunchpadBugSummary> {
-    None
 }
 
 /// Minimal hover shown when bug details are not available.
@@ -126,7 +113,10 @@ fn make_debian_hover(summary: &DebbugsBugSummary) -> Hover {
     }
 }
 
-fn make_launchpad_hover(summary: &LaunchpadBugSummary) -> Hover {
+/// Render a Launchpad bug summary as markdown: a linked title line followed by
+/// status and completion. Shared by the LSP hover and the SCIP indexer's symbol
+/// documentation.
+pub fn launchpad_bug_markdown(summary: &LaunchpadBugSummary) -> String {
     let title = summary.title.as_deref().unwrap_or("(no title)");
     let mut lines = vec![format!(
         "**[Launchpad Bug #{}](https://bugs.launchpad.net/bugs/{})** — {}",
@@ -142,10 +132,14 @@ fn make_launchpad_hover(summary: &LaunchpadBugSummary) -> Hover {
         "**Completion:** open".to_string()
     });
 
+    lines.join("\n\n")
+}
+
+fn make_launchpad_hover(summary: &LaunchpadBugSummary) -> Hover {
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: lines.join("\n\n"),
+            value: launchpad_bug_markdown(summary),
         }),
         range: None,
     }
