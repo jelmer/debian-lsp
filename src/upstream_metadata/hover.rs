@@ -3,16 +3,8 @@
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 use yaml_edit::{Document, YamlNode};
 
-use super::fields::{get_standard_field_name, UPSTREAM_FIELDS};
+use super::fields::{field_description as get_field_description, get_standard_field_name};
 use crate::position::Source;
-
-fn get_field_description(field_name: &str) -> Option<(&'static str, &'static str)> {
-    let lowercase = field_name.to_lowercase();
-    UPSTREAM_FIELDS
-        .iter()
-        .find(|f| f.name.to_lowercase() == lowercase)
-        .map(|f| (f.name, f.description))
-}
 
 fn make_hover(field_name: &str, description: &str) -> Hover {
     Hover {

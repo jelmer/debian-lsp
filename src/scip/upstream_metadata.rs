@@ -51,6 +51,10 @@ pub fn index(
                 symbol: sym,
                 kind: scip::types::symbol_information::Kind::Field.into(),
                 display_name: key.clone(),
+                documentation: crate::upstream_metadata::fields::field_description(&key)
+                    .map(|(_, desc)| desc.to_owned())
+                    .into_iter()
+                    .collect(),
                 ..Default::default()
             });
         }
@@ -96,11 +100,22 @@ Reference:
         // Repository, Bug-Database, Archive, Reference — but not the nested
         // Author/Title.
         assert_eq!(defs.len(), 4);
-        assert!(idx
+        let repository = idx
             .document
             .symbols
             .iter()
-            .any(|s| s.symbol.contains("Repository")));
+            .find(|s| s.symbol.contains("Repository"))
+            .expect("Repository symbol");
+        // The field carries the same description the LSP hover shows.
+        assert_eq!(
+            repository.documentation,
+            vec![
+                crate::upstream_metadata::fields::field_description("Repository")
+                    .unwrap()
+                    .1
+                    .to_owned()
+            ]
+        );
         assert!(!idx
             .document
             .symbols
