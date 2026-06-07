@@ -9,7 +9,8 @@ fn write_tree(dir: &std::path::Path) {
         debian.join("changelog"),
         "hello (2.10-3) unstable; urgency=medium\n\n  \
         * Fix bug. (Closes: #777111)\n  \
-        * Fix another. (LP: #2002003)\n\n \
+        * Fix another. (LP: #2002003)\n  \
+        * Fix security issue (CVE-2024-12345).\n\n \
         -- Test User <test@example.org>  Tue, 27 May 2026 12:00:00 +0000\n",
     )
     .unwrap();
@@ -167,6 +168,17 @@ fn full_tree_round_trip() {
     assert_eq!(
         lp_bug.documentation,
         vec!["**[Launchpad Bug #2002003](https://bugs.launchpad.net/bugs/2002003)**"]
+    );
+
+    // CVEs are indexed the same way, with a static link to the Security Tracker.
+    let cve = index
+        .external_symbols
+        .iter()
+        .find(|s| s.symbol == super::symbols::cve("CVE-2024-12345"))
+        .expect("cve external symbol");
+    assert_eq!(
+        cve.documentation,
+        vec!["**[CVE-2024-12345](https://security-tracker.debian.org/tracker/CVE-2024-12345)**"]
     );
 
     // Relationship edges are assembled into the per-document symbols. The

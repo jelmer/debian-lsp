@@ -54,6 +54,7 @@ impl Indexer {
         let mut bug_numbers: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         let mut launchpad_bug_numbers: std::collections::BTreeSet<u32> =
             std::collections::BTreeSet::new();
+        let mut cves: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
         // Step 1: changelog first, to learn the source name and current version.
         let changelog_text = std::fs::read_to_string(debian.join("changelog")).ok();
@@ -63,6 +64,7 @@ impl Indexer {
             let ver = idx.topmost_version.clone();
             bug_numbers.extend(idx.bug_numbers);
             launchpad_bug_numbers.extend(idx.launchpad_bug_numbers);
+            cves.extend(idx.cves);
             documents.push(idx.document);
             (src, ver)
         } else {
@@ -200,6 +202,16 @@ impl Indexer {
             kind: scip::types::symbol_information::Kind::Constant.into(),
             display_name: format!("LP #{n}"),
             documentation: vec![symbols::lp_bug_static_doc(n)],
+            ..Default::default()
+        }));
+        // CVEs referenced from the changelog. Static documentation (a link to
+        // the Security Tracker); `run_scip` upgrades these to live security
+        // tracker summaries when not running offline.
+        external_symbols.extend(cves.iter().map(|id| SymbolInformation {
+            symbol: symbols::cve(id),
+            kind: scip::types::symbol_information::Kind::Constant.into(),
+            display_name: id.clone(),
+            documentation: vec![symbols::cve_static_doc(id)],
             ..Default::default()
         }));
 
