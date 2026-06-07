@@ -221,17 +221,16 @@ pub fn source_format(format: &str) -> String {
 
 /// Symbol for a build profile name (e.g. `nocheck`, `noudeb`).
 ///
-/// Cross-package, so all uses of a given profile collect under one symbol.
+/// Cross-package, so all uses of a given profile collect under one symbol. A
+/// build profile belongs to no package, so the package field is left empty and
+/// the kind is carried by a leading `build-profile` namespace descriptor.
 pub fn build_profile(name: &str) -> String {
     fmt(Symbol {
         scheme: SCHEME.to_owned(),
-        package: Some(Package {
-            manager: MANAGER.to_owned(),
-            name: "build-profile".to_owned(),
-            ..Default::default()
-        })
-        .into(),
-        descriptors: vec![desc(name, Suffix::Type)],
+        descriptors: vec![
+            desc("build-profile", Suffix::Namespace),
+            desc(name, Suffix::Type),
+        ],
         ..Default::default()
     })
 }
@@ -271,13 +270,12 @@ pub fn copyright_files_glob(source: &str, version: Option<&str>, glob: &str) -> 
 pub fn identity(email: &str) -> String {
     fmt(Symbol {
         scheme: SCHEME.to_owned(),
-        package: Some(Package {
-            manager: MANAGER.to_owned(),
-            name: "identity".to_owned(),
-            ..Default::default()
-        })
-        .into(),
-        descriptors: vec![desc(email, Suffix::Term)],
+        // A person belongs to no package, so leave the package field empty and
+        // carry the kind in a leading `identity` namespace descriptor.
+        descriptors: vec![
+            desc("identity", Suffix::Namespace),
+            desc(email, Suffix::Term),
+        ],
         ..Default::default()
     })
 }
@@ -495,6 +493,23 @@ mod tests {
         assert_eq!(parsed.package.version, "2.10-3");
         assert_eq!(parsed.descriptors.len(), 1);
         assert_eq!(parsed.descriptors[0].name, "hello");
+    }
+
+    #[test]
+    fn package_less_symbols_have_no_package() {
+        // identity and build_profile belong to no package, so their package
+        // field is empty -- they must not look like they're "from" a package.
+        for s in [identity("jelmer@debian.org"), build_profile("nocheck")] {
+            let parsed = scip::symbol::parse_symbol(&s).unwrap();
+            assert!(
+                parsed.package.name.is_empty(),
+                "expected empty package name in {s}"
+            );
+        }
+        // The descriptor path still distinguishes them and stays stable.
+        let id = scip::symbol::parse_symbol(&identity("jelmer@debian.org")).unwrap();
+        let names: Vec<_> = id.descriptors.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["identity", "jelmer@debian.org"]);
     }
 
     #[test]

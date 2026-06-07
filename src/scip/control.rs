@@ -198,6 +198,12 @@ fn emit_relations(
             let Some(local) = relation.name_range() else {
                 continue;
             };
+            // The relaxed parser turns a substvar inside a version constraint
+            // (e.g. `(= ${binary:Version})`) into a phantom relation named after
+            // the substvar's inner ident; skip those, they aren't packages.
+            if is_substvar_artifact(value_text, &local) {
+                continue;
+            }
             let abs_start = value_start + u32::from(local.start());
             let abs_end = value_start + u32::from(local.end());
             // Clamp defensively to the field's actual value range.
@@ -268,6 +274,9 @@ fn emit_provides(
             let Some(local) = relation.name_range() else {
                 continue;
             };
+            if is_substvar_artifact(value_text, &local) {
+                continue;
+            }
             let abs_start = value_start + u32::from(local.start());
             let abs_end = value_start + u32::from(local.end());
             if abs_start < value_start || abs_end > value_end {
@@ -290,6 +299,16 @@ fn emit_provides(
             });
         }
     }
+}
+
+/// Whether a parsed relation's name range falls inside a `${...}` substvar in
+/// `value_text`. The relaxed relation parser can emit a phantom relation for the
+/// ident inside a substvar (notably `${binary:Version}` in a version
+/// constraint); such a name is preceded, ignoring `{`, by a `$`.
+fn is_substvar_artifact(value_text: &str, name_range: &rowan::TextRange) -> bool {
+    let start = usize::from(name_range.start());
+    let before = value_text[..start.min(value_text.len())].trim_end_matches(['{', ' ']);
+    before.ends_with('$')
 }
 
 fn occurrence(lines: &LineTable, range: (u32, u32), symbol: &str, role: SymbolRole) -> Occurrence {
@@ -433,5 +452,13 @@ Depends: librust-bar-1+default-dev
             .contains("librust-foo-0.5+default-dev"));
         // Ordinary Depends relations are still plain references.
         assert!(idx.external_binaries.contains("librust-bar-1+default-dev"));
+
+        // The `${binary:Version}` substvar inside the Provides version
+        // constraint must not produce a phantom `binary` package symbol.
+        let junk = symbols::external_binary("binary");
+        assert!(
+            !idx.document.occurrences.iter().any(|o| o.symbol == junk),
+            "substvar produced a phantom `binary` symbol"
+        );
     }
 }
