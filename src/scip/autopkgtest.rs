@@ -89,6 +89,7 @@ pub fn index(
                     occurrences.push(Occurrence {
                         range: lines.range(s, e),
                         symbol: symbols::autopkgtest_restriction(&name),
+                        syntax_kind: scip::types::SyntaxKind::IdentifierAttribute.into(),
                         ..Default::default()
                     });
                     restrictions.insert(name);
@@ -104,6 +105,7 @@ pub fn index(
                     occurrences.push(Occurrence {
                         range: lines.range(s, e),
                         symbol: symbols::autopkgtest_feature(&name),
+                        syntax_kind: scip::types::SyntaxKind::IdentifierAttribute.into(),
                         ..Default::default()
                     });
                     features.insert(name);

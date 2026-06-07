@@ -35,6 +35,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
                 range: lines.range(s, e),
                 symbol: entry_sym.clone(),
                 symbol_roles: SymbolRole::Definition as i32,
+                syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
                 ..Default::default()
             });
             symbols_info.push(SymbolInformation {

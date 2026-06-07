@@ -56,6 +56,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
                     occurrences.push(Occurrence {
                         range: lines.range(s, e),
                         symbol: symbols::rules_target(source, version, &target),
+                        syntax_kind: scip::types::SyntaxKind::IdentifierFunction.into(),
                         ..Default::default()
                     });
                 }
@@ -71,6 +72,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
                 range: lines.range(s, e),
                 symbol: sym.clone(),
                 symbol_roles: SymbolRole::Definition as i32,
+                syntax_kind: scip::types::SyntaxKind::IdentifierFunctionDefinition.into(),
                 enclosing_range,
                 ..Default::default()
             });
@@ -105,6 +107,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
                     range: lines.range(cmd.start, cmd.end),
                     symbol: symbols::debhelper_command(&cmd.name),
                     symbol_roles: SymbolRole::Import as i32,
+                    syntax_kind: scip::types::SyntaxKind::IdentifierFunction.into(),
                     ..Default::default()
                 });
             }
@@ -115,6 +118,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
                     range: lines.range(r.start().into(), r.end().into()),
                     symbol: symbols::rules_variable(source, version, vref.name()),
                     symbol_roles: SymbolRole::ReadAccess as i32,
+                    syntax_kind: scip::types::SyntaxKind::IdentifierMutableGlobal.into(),
                     ..Default::default()
                 });
             }
@@ -135,6 +139,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
             range: lines.range(s, e),
             symbol: sym.clone(),
             symbol_roles: SymbolRole::Definition as i32 | SymbolRole::WriteAccess as i32,
+            syntax_kind: scip::types::SyntaxKind::IdentifierMutableGlobal.into(),
             ..Default::default()
         });
         symbols_info.push(SymbolInformation {
@@ -164,6 +169,7 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
             range: lines.range(s, e),
             symbol: symbols::rules_variable(source, version, &name),
             symbol_roles: SymbolRole::ReadAccess as i32,
+            syntax_kind: scip::types::SyntaxKind::IdentifierMutableGlobal.into(),
             ..Default::default()
         });
     }

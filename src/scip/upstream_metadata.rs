@@ -45,6 +45,7 @@ pub fn index(
                 range: lines.range(range.start, range.end),
                 symbol: sym.clone(),
                 symbol_roles: SymbolRole::Definition as i32,
+                syntax_kind: scip::types::SyntaxKind::IdentifierAttribute.into(),
                 ..Default::default()
             });
             symbols_info.push(SymbolInformation {
