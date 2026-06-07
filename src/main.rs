@@ -1256,7 +1256,6 @@ impl LanguageServer for Backend {
         let file_info = files
             .get(&uri)
             .map(|info| (info.file_type, info.source_file));
-        let files_snapshot = files.clone();
         drop(files); // Release the lock
 
         let completions = match file_info {
@@ -1392,24 +1391,25 @@ impl LanguageServer for Backend {
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
+                let packages = {
+                    let files = self.files.lock().await;
+                    let mut workspace = self.workspace.lock().await;
+                    Self::get_local_package_names(&uri, &files, &mut workspace)
+                };
                 let workspace = self.workspace_clone().await;
-                let packages =
-                    Self::get_local_package_names(&uri, &files_snapshot, &mut workspace.clone());
-                let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 drop(workspace);
-                let tags: Vec<(String, String)> = {
-                    let mut tag_cache = self.lintian_tag_cache.write().await;
-                    tag_cache.get_tags().await.to_vec()
-                };
+                let mut tag_cache = self.lintian_tag_cache.write().await;
+                let tags = tag_cache.get_tags().await;
                 let architectures = self.architecture_list.read().await;
                 lintian_overrides::get_completions(
                     &parsed,
                     src,
                     position,
-                    &tags,
+                    tags,
                     &packages,
                     &architectures,
                 )
