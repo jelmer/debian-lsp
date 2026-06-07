@@ -7,6 +7,7 @@ use debian_changelog::{ChangeLog, SyntaxKind};
 use rowan::ast::AstNode;
 use scip::types::{Document, Occurrence, SymbolInformation, SymbolRole, SyntaxKind as ScipSyntax};
 use std::collections::BTreeSet;
+use std::path::Path;
 
 /// Indexed result for `debian/changelog`.
 pub struct ChangelogIndex {
@@ -25,7 +26,11 @@ pub struct ChangelogIndex {
 }
 
 /// Parse and index a `debian/changelog` file.
-pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
+///
+/// `root`, when given, is the source-tree root used to confirm that a prose
+/// `patch <name>` mention names an existing patch in `debian/patches/` before
+/// it is linked.
+pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogIndex {
     let cl = ChangeLog::parse_relaxed(text);
     let lines = LineTable::new(text);
     let mut occurrences: Vec<Occurrence> = Vec::new();
@@ -38,6 +43,9 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
     let mut bug_numbers: BTreeSet<u32> = BTreeSet::new();
     let mut launchpad_bug_numbers: BTreeSet<u32> = BTreeSet::new();
     let mut cves: BTreeSet<String> = BTreeSet::new();
+    // (start, end, path) for each `debian/` file mentioned in a detail line.
+    // Emitted as references after the source name and version are known.
+    let mut file_mentions: Vec<(u32, u32, String)> = Vec::new();
 
     for (i, entry) in cl.iter().enumerate() {
         let pkg = entry.package();
@@ -129,6 +137,40 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
                 });
                 cves.insert(c.id);
             }
+
+            // Mentions of other packaging files (`d/control`, `d/patches/...`).
+            for file_ref in crate::changelog::file_refs::iter_file_refs(detail_text) {
+                let abs_start = detail_start + file_ref.start as u32;
+                let abs_end = detail_start + file_ref.end as u32;
+                file_mentions.push((abs_start, abs_end, file_ref.path));
+            }
+
+            // Prose `patch <name>` mentions, only when the named patch exists.
+            if let Some(root) = root {
+                for file_ref in crate::changelog::file_refs::iter_patch_word_refs(detail_text) {
+                    if !root.join(&file_ref.path).is_file() {
+                        continue;
+                    }
+                    let abs_start = detail_start + file_ref.start as u32;
+                    let abs_end = detail_start + file_ref.end as u32;
+                    file_mentions.push((abs_start, abs_end, file_ref.path));
+                }
+            }
+        }
+    }
+
+    // Reference each mentioned file's `debian_file` symbol, scoped to the
+    // topmost source/version (matching the definitions the top-level indexer
+    // attaches to each document). Without a source name there is nothing to
+    // scope to, so the mentions are left unlinked.
+    if let Some(src) = source_name.as_deref() {
+        for (start, end, path) in file_mentions {
+            occurrences.push(Occurrence {
+                range: lines.range(start, end),
+                symbol: symbols::debian_file(src, topmost_version.as_deref(), &path),
+                syntax_kind: ScipSyntax::StringLiteral.into(),
+                ..Default::default()
+            });
         }
     }
 
@@ -173,7 +215,7 @@ hello (2.10-2) unstable; urgency=medium
 
     #[test]
     fn indexes_versions_and_bugs() {
-        let idx = index(SAMPLE, "debian/changelog");
+        let idx = index(SAMPLE, "debian/changelog", None);
         assert_eq!(idx.source_name.as_deref(), Some("hello"));
         assert_eq!(idx.topmost_version.as_deref(), Some("2.10-3"));
 
@@ -216,7 +258,7 @@ hello (2.10-2) unstable; urgency=medium
 
     #[test]
     fn indexes_cves() {
-        let idx = index(SAMPLE, "debian/changelog");
+        let idx = index(SAMPLE, "debian/changelog", None);
 
         let cve_refs: Vec<_> = idx
             .document
@@ -232,5 +274,73 @@ hello (2.10-2) unstable; urgency=medium
         );
 
         assert_eq!(idx.cves, BTreeSet::from(["CVE-2024-12345".to_string()]));
+    }
+
+    #[test]
+    fn indexes_file_mentions() {
+        const TEXT: &str = "\
+hello (2.10-3) unstable; urgency=medium
+
+  * d/control: Add python3-merge3 as Build Dependency.
+  * d/patches/03_fix.patch: Remove patch.
+
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
+";
+        let idx = index(TEXT, "debian/changelog", None);
+        let file_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol.contains("file/"))
+            .map(|o| o.symbol.as_str())
+            .collect();
+
+        // Both mentions reference the `debian_file` symbol for their path,
+        // scoped to the topmost source/version.
+        assert_eq!(
+            file_refs,
+            vec![
+                symbols::debian_file("hello", Some("2.10-3"), "debian/control"),
+                symbols::debian_file("hello", Some("2.10-3"), "debian/patches/03_fix.patch"),
+            ]
+        );
+    }
+
+    #[test]
+    fn indexes_patch_word_mentions_only_when_existing() {
+        const TEXT: &str = "\
+hello (2.10-3) unstable; urgency=medium
+
+  * Drop obsolete patch relax-pyo3.patch.
+  * Add patch nonexistent.patch.
+
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
+";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("debian/patches")).unwrap();
+        std::fs::write(
+            dir.path().join("debian/patches/relax-pyo3.patch"),
+            "--- a/x\n+++ b/x\n",
+        )
+        .unwrap();
+
+        let idx = index(TEXT, "debian/changelog", Some(dir.path()));
+        let file_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol.contains("file/"))
+            .map(|o| o.symbol.as_str())
+            .collect();
+
+        // The existing patch is referenced; `nonexistent.patch` is not.
+        assert_eq!(
+            file_refs,
+            vec![symbols::debian_file(
+                "hello",
+                Some("2.10-3"),
+                "debian/patches/relax-pyo3.patch"
+            )]
+        );
     }
 }

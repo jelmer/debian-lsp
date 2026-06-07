@@ -10,7 +10,10 @@ fn write_tree(dir: &std::path::Path) {
         "hello (2.10-3) unstable; urgency=medium\n\n  \
         * Fix bug. (Closes: #777111)\n  \
         * Fix another. (LP: #2002003)\n  \
-        * Fix security issue (CVE-2024-12345).\n\n \
+        * Fix security issue (CVE-2024-12345).\n  \
+        * d/control: Add a dependency.\n  \
+        * d/patches/fix-segfault.patch: Refresh.\n  \
+        * Drop obsolete patch fix-segfault.patch.\n\n \
         -- Test User <test@example.org>  Tue, 27 May 2026 12:00:00 +0000\n",
     )
     .unwrap();
@@ -246,6 +249,44 @@ fn full_tree_round_trip() {
     scip::write_message_to_file(&out, index).expect("write");
     let bytes = fs::read(&out).unwrap();
     assert!(!bytes.is_empty());
+}
+
+#[test]
+fn changelog_file_mentions_resolve_cross_file() {
+    let dir = tempdir().unwrap();
+    write_tree(dir.path());
+
+    let index = Indexer::new(dir.path()).build();
+
+    let changelog = index
+        .documents
+        .iter()
+        .find(|d| d.relative_path == "debian/changelog")
+        .expect("changelog document");
+
+    // The changelog references the `debian_file` symbol for each mentioned
+    // file, scoped to the topmost source/version.
+    for path in ["debian/control", "debian/patches/fix-segfault.patch"] {
+        let sym = super::symbols::debian_file("hello", Some("2.10-3"), path);
+        assert!(
+            changelog.occurrences.iter().any(|o| o.symbol == sym
+                && (o.symbol_roles & scip::types::SymbolRole::Definition as i32) == 0),
+            "expected changelog reference to {path}"
+        );
+
+        // ...and the referenced document defines that same symbol, so the
+        // reference resolves to it.
+        let target = index
+            .documents
+            .iter()
+            .find(|d| d.relative_path == path)
+            .unwrap_or_else(|| panic!("missing document {path}"));
+        assert!(
+            target.occurrences.iter().any(|o| o.symbol == sym
+                && (o.symbol_roles & scip::types::SymbolRole::Definition as i32) != 0),
+            "expected {path} to define its debian_file symbol"
+        );
+    }
 }
 
 #[test]
