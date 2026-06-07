@@ -126,14 +126,32 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
         });
 
         for field in BINARY_RELATION_FIELDS {
-            emit_relations(
-                binary.as_deb822().get_entry(field),
-                text,
-                &lines,
-                &mut occurrences,
-                &mut external_binaries,
-                &mut build_profiles,
-            );
+            // `Provides` declares the (often versioned, virtual) binary packages
+            // this package provides, so index each as a *definition* of the
+            // external-binary symbol. A dependent's relation field references the
+            // same symbol, so the dependency edge resolves -- e.g. a build-dep on
+            // `librust-foo-0.5+default-dev` resolves to the source that provides
+            // it. The other relation fields stay plain references.
+            if *field == "Provides" {
+                emit_provides(
+                    binary.as_deb822().get_entry(field),
+                    text,
+                    &lines,
+                    source_name.as_deref(),
+                    version,
+                    &mut occurrences,
+                    &mut symbols_info,
+                );
+            } else {
+                emit_relations(
+                    binary.as_deb822().get_entry(field),
+                    text,
+                    &lines,
+                    &mut occurrences,
+                    &mut external_binaries,
+                    &mut build_profiles,
+                );
+            }
         }
     }
 
@@ -204,6 +222,72 @@ fn emit_relations(
                     ..Default::default()
                 });
             }
+        }
+    }
+}
+
+/// Index a binary stanza's `Provides:` field. Each provided package name is a
+/// *definition* of its external-binary symbol, related to the source package, so
+/// a dependent's relation field (which references the same symbol) resolves to
+/// the package that provides it.
+#[allow(clippy::too_many_arguments)]
+fn emit_provides(
+    entry: Option<deb822_lossless::Entry>,
+    text: &str,
+    lines: &LineTable,
+    source_name: Option<&str>,
+    version: Option<&str>,
+    occurrences: &mut Vec<Occurrence>,
+    symbols_info: &mut Vec<SymbolInformation>,
+) {
+    let Some(entry) = entry else { return };
+    let Some(vr) = entry.value_range() else {
+        return;
+    };
+    let value_start: u32 = u32::from(vr.start());
+    let value_end: u32 = u32::from(vr.end());
+    let value_text = &text[value_start as usize..value_end as usize];
+    let (relations, _errors) =
+        debian_control::lossless::relations::Relations::parse_relaxed(value_text, true);
+
+    let (relationships, enclosing_symbol) = match source_name {
+        Some(src) => (
+            vec![symbols::rel_reference(symbols::source_package(
+                src, version,
+            ))],
+            symbols::source_package(src, version),
+        ),
+        None => (Vec::new(), String::new()),
+    };
+
+    for rel_entry in relations.entries() {
+        for relation in rel_entry.relations() {
+            let Some(name) = relation.try_name() else {
+                continue;
+            };
+            let Some(local) = relation.name_range() else {
+                continue;
+            };
+            let abs_start = value_start + u32::from(local.start());
+            let abs_end = value_start + u32::from(local.end());
+            if abs_start < value_start || abs_end > value_end {
+                continue;
+            }
+            let sym = symbols::external_binary(&name);
+            occurrences.push(occurrence(
+                lines,
+                (abs_start, abs_end),
+                &sym,
+                SymbolRole::Definition,
+            ));
+            symbols_info.push(SymbolInformation {
+                symbol: sym,
+                kind: scip::types::symbol_information::Kind::Package.into(),
+                relationships: relationships.clone(),
+                enclosing_symbol: enclosing_symbol.clone(),
+                display_name: name,
+                ..Default::default()
+            });
         }
     }
 }
@@ -301,5 +385,53 @@ Description: example
             !bin_def.enclosing_range.is_empty(),
             "expected an enclosing range on the binary definition"
         );
+    }
+
+    const PROVIDES_SAMPLE: &str = "\
+Source: rust-foo
+Build-Depends: debhelper-compat (= 13)
+
+Package: librust-foo-dev
+Architecture: any
+Provides:
+ librust-foo+default-dev (= ${binary:Version}),
+ librust-foo-0.5+default-dev (= ${binary:Version})
+Depends: librust-bar-1+default-dev
+";
+
+    #[test]
+    fn provides_are_indexed_as_definitions() {
+        let idx = index(PROVIDES_SAMPLE, "debian/control", Some("0.5.16-1"));
+
+        // Each provided (virtual) binary is a definition of its external-binary
+        // symbol, so a dependent referencing it resolves to this package.
+        for provided in ["librust-foo+default-dev", "librust-foo-0.5+default-dev"] {
+            let sym = symbols::external_binary(provided);
+            let def =
+                idx.document.occurrences.iter().find(|o| {
+                    o.symbol == sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0
+                });
+            assert!(def.is_some(), "no definition occurrence for {provided}");
+
+            let info = idx
+                .document
+                .symbols
+                .iter()
+                .find(|s| s.symbol == sym)
+                .unwrap_or_else(|| panic!("no symbol info for {provided}"));
+            // Related to the source package, so find-references on the source
+            // surfaces what it provides.
+            assert_eq!(
+                info.relationships[0].symbol,
+                symbols::source_package("rust-foo", Some("0.5.16-1"))
+            );
+        }
+
+        // A Provides entry must not also be recorded as an external reference.
+        assert!(!idx
+            .external_binaries
+            .contains("librust-foo-0.5+default-dev"));
+        // Ordinary Depends relations are still plain references.
+        assert!(idx.external_binaries.contains("librust-bar-1+default-dev"));
     }
 }
