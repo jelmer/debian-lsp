@@ -1043,7 +1043,7 @@ dependencies = [
  "futures",
  "launchpadlib",
  "lintian-brush",
- "lintian-overrides",
+ "lintian-overrides 0.1.5 (git+https://github.com/lucasly-ba/deb822-rs?branch=lintian-overrides-spec-parsing)",
  "lru",
  "makefile-lossless",
  "multiarch-hints",
@@ -1109,7 +1109,7 @@ dependencies = [
  "dep3",
  "desktop-edit",
  "inventory",
- "lintian-overrides",
+ "lintian-overrides 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "makefile-lossless",
  "patchkit 0.2.7",
  "serde",
@@ -2992,7 +2992,7 @@ dependencies = [
  "inventory",
  "lazy-regex",
  "lazy_static",
- "lintian-overrides",
+ "lintian-overrides 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "makefile-lossless",
  "nu-ansi-term",
  "patchkit 0.2.7",
@@ -3029,6 +3029,16 @@ name = "lintian-overrides"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "429b41e1e18fd2c121c7773d89c2fafcf40f03c89ccb88fb110b6e1299d5336c"
+dependencies = [
+ "lazy_static",
+ "regex",
+ "rowan",
+]
+
+[[package]]
+name = "lintian-overrides"
+version = "0.1.5"
+source = "git+https://github.com/lucasly-ba/deb822-rs?branch=lintian-overrides-spec-parsing#e8b50b2f1c6be968f1ddcdc9c000628a53d97fb2"
 dependencies = [
  "lazy_static",
  "regex",
