@@ -9,9 +9,11 @@
 #![allow(dead_code)]
 
 pub mod autopkgtest;
+pub mod bug_info;
 pub mod changelog;
 pub mod control;
 pub mod copyright;
+pub mod debcargo;
 pub mod diagnostics;
 pub mod highlight;
 pub mod indexer;

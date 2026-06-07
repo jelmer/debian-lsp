@@ -8,7 +8,8 @@ fn write_tree(dir: &std::path::Path) {
     fs::write(
         debian.join("changelog"),
         "hello (2.10-3) unstable; urgency=medium\n\n  \
-        * Fix bug. (Closes: #777111)\n\n \
+        * Fix bug. (Closes: #777111)\n  \
+        * Fix another. (LP: #2002003)\n\n \
         -- Test User <test@example.org>  Tue, 27 May 2026 12:00:00 +0000\n",
     )
     .unwrap();
@@ -64,6 +65,11 @@ fn write_tree(dir: &std::path::Path) {
         "Tests: smoke\nDepends: @, python3-foo\nRestrictions: needs-root\n",
     )
     .unwrap();
+    fs::write(
+        debian.join("debcargo.toml"),
+        "overlay = \".\"\n\n[source]\nhomepage = \"https://example.org\"\n\n[packages.lib]\nsummary = \"Example\"\n",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -88,6 +94,7 @@ fn full_tree_round_trip() {
     assert!(paths.contains(&"debian/patches/series"));
     assert!(paths.contains(&"debian/patches/fix-segfault.patch"));
     assert!(paths.contains(&"debian/tests/control"));
+    assert!(paths.contains(&"debian/debcargo.toml"));
 
     let meta = index.metadata.as_ref().expect("metadata set");
     assert_eq!(meta.tool_info.name, "debian-lsp");
@@ -138,6 +145,29 @@ fn full_tree_round_trip() {
         .find(|s| s.symbol.contains("autopkgtest-restriction") && s.symbol.contains("needs-root"))
         .expect("restriction external symbol");
     assert_eq!(needs_root.documentation, vec!["Test must be run as root"]);
+
+    // The changelog's Closes bug is an external symbol with static link
+    // documentation (live BTS enrichment happens later, only when online).
+    let bug = index
+        .external_symbols
+        .iter()
+        .find(|s| s.symbol == super::symbols::bts_bug("777111"))
+        .expect("bug external symbol");
+    assert_eq!(
+        bug.documentation,
+        vec!["**[Debian Bug #777111](https://bugs.debian.org/777111)**"]
+    );
+
+    // Launchpad bugs are indexed the same way, with their own static link.
+    let lp_bug = index
+        .external_symbols
+        .iter()
+        .find(|s| s.symbol == super::symbols::lp_bug("2002003"))
+        .expect("launchpad bug external symbol");
+    assert_eq!(
+        lp_bug.documentation,
+        vec!["**[Launchpad Bug #2002003](https://bugs.launchpad.net/bugs/2002003)**"]
+    );
 
     // Relationship edges are assembled into the per-document symbols. The
     // `hello` binary package references the `hello` source package.

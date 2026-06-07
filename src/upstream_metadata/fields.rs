@@ -294,6 +294,17 @@ pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
         .map(|f| f.name)
 }
 
+/// Look up the canonical name and description of an upstream/metadata field.
+///
+/// Matching is case-insensitive. Shared by the LSP hover and the SCIP indexer.
+pub fn field_description(field_name: &str) -> Option<(&'static str, &'static str)> {
+    let lowercase = field_name.to_lowercase();
+    UPSTREAM_FIELDS
+        .iter()
+        .find(|f| f.name.to_lowercase() == lowercase)
+        .map(|f| (f.name, f.description))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

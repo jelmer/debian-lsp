@@ -34,53 +34,20 @@ pub async fn get_hover(
 
     match &bug {
         Bug::Debian(id) => {
-            let summary = debian_bug_summary(bug_cache, *id).await;
+            let summary = crate::bugs::debian_bug_summary(bug_cache, *id).await;
             Some(match summary {
                 Some(s) => make_debian_hover(&s),
                 None => make_fallback_hover(&bug),
             })
         }
         Bug::Launchpad(id) => {
-            let summary = launchpad_bug_summary(bug_cache, *id).await;
+            let summary = crate::bugs::launchpad_bug_summary(bug_cache, *id).await;
             Some(match summary {
                 Some(s) => make_launchpad_hover(&s),
                 None => make_fallback_hover(&bug),
             })
         }
     }
-}
-
-/// Look up a Debian bug summary without holding the cache lock across the
-/// network call. Checks the in-memory cache first; if absent, clones the
-/// pool, drops the lock, queries UDD, then re-acquires to insert.
-async fn debian_bug_summary(
-    bug_cache: &SharedBugCache,
-    id: u32,
-) -> Option<crate::bugs::DebbugsBugSummary> {
-    // Fast path: already cached.
-    if let Some(s) = bug_cache.write().await.get_cached_debian_bug_summary(id) {
-        return Some(s);
-    }
-    // Slow path: fetch from UDD. The write guard is dropped here before the
-    // network await so other callers aren't blocked.
-    let pool = bug_cache.read().await.pool.clone();
-    let row = crate::bugs::BugCache::query_bug_by_id(&pool, id).await?;
-    let mut cache = bug_cache.write().await;
-    cache.insert_bug_row(id, row);
-    cache.get_cached_debian_bug_summary(id)
-}
-
-#[cfg(feature = "launchpad")]
-async fn launchpad_bug_summary(bug_cache: &SharedBugCache, id: u32) -> Option<LaunchpadBugSummary> {
-    bug_cache.write().await.get_launchpad_bug_summary(id).await
-}
-
-#[cfg(not(feature = "launchpad"))]
-async fn launchpad_bug_summary(
-    _bug_cache: &SharedBugCache,
-    _id: u32,
-) -> Option<LaunchpadBugSummary> {
-    None
 }
 
 /// Minimal hover shown when bug details are not available.
@@ -99,7 +66,10 @@ fn make_fallback_hover(bug: &Bug) -> Hover {
     }
 }
 
-fn make_debian_hover(summary: &DebbugsBugSummary) -> Hover {
+/// Render a Debian bug summary as markdown: a linked title line followed by
+/// severity, status and other available metadata. Shared by the LSP hover and
+/// the SCIP indexer's symbol documentation.
+pub fn debian_bug_markdown(summary: &DebbugsBugSummary) -> String {
     let title = summary.title.as_deref().unwrap_or("(no title)");
     let mut lines = vec![format!(
         "**[Debian Bug #{}](https://bugs.debian.org/{})** — {}",
@@ -130,16 +100,23 @@ fn make_debian_hover(summary: &DebbugsBugSummary) -> Hover {
         }
     }
 
+    lines.join("\n\n")
+}
+
+fn make_debian_hover(summary: &DebbugsBugSummary) -> Hover {
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: lines.join("\n\n"),
+            value: debian_bug_markdown(summary),
         }),
         range: None,
     }
 }
 
-fn make_launchpad_hover(summary: &LaunchpadBugSummary) -> Hover {
+/// Render a Launchpad bug summary as markdown: a linked title line followed by
+/// status and completion. Shared by the LSP hover and the SCIP indexer's symbol
+/// documentation.
+pub fn launchpad_bug_markdown(summary: &LaunchpadBugSummary) -> String {
     let title = summary.title.as_deref().unwrap_or("(no title)");
     let mut lines = vec![format!(
         "**[Launchpad Bug #{}](https://bugs.launchpad.net/bugs/{})** — {}",
@@ -155,10 +132,14 @@ fn make_launchpad_hover(summary: &LaunchpadBugSummary) -> Hover {
         "**Completion:** open".to_string()
     });
 
+    lines.join("\n\n")
+}
+
+fn make_launchpad_hover(summary: &LaunchpadBugSummary) -> Hover {
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: lines.join("\n\n"),
+            value: launchpad_bug_markdown(summary),
         }),
         range: None,
     }

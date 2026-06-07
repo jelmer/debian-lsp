@@ -26,11 +26,17 @@ pub const SCHEME: &str = "scip-debian";
 /// Scheme used for Debian BTS bug references.
 pub const BTS_SCHEME: &str = "scip-debian-bts";
 
+/// Scheme used for Launchpad bug references.
+pub const LP_SCHEME: &str = "scip-launchpad-bug";
+
 /// Manager string identifying Debian source packages.
 pub const MANAGER: &str = "debian";
 
 /// Manager string identifying the Debian BTS.
 pub const BTS_MANAGER: &str = "debian-bts";
+
+/// Manager string identifying Launchpad.
+pub const LP_MANAGER: &str = "launchpad";
 
 /// Build a `Descriptor` with the given name and suffix.
 fn desc(name: &str, suffix: Suffix) -> Descriptor {
@@ -153,6 +159,43 @@ pub fn upstream_metadata_field(source: &str, version: Option<&str>, key: &str) -
             desc(source, Suffix::Namespace),
             desc("upstream", Suffix::Namespace),
             desc(key, Suffix::Term),
+        ],
+        ..Default::default()
+    })
+}
+
+/// Symbol for a key in `debian/debcargo.toml`.
+///
+/// `scope` names the table the key belongs to (`""` for the top level,
+/// `"source"` for `[source]`, or a package name for `[packages.NAME]`), so
+/// keys with the same name in different tables get distinct symbols.
+pub fn debcargo_key(source: &str, version: Option<&str>, scope: &str, key: &str) -> String {
+    let mut descriptors = vec![
+        desc(source, Suffix::Namespace),
+        desc("debcargo", Suffix::Namespace),
+    ];
+    if !scope.is_empty() {
+        descriptors.push(desc(scope, Suffix::Namespace));
+    }
+    descriptors.push(desc(key, Suffix::Term));
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors,
+        ..Default::default()
+    })
+}
+
+/// Symbol for a `[packages.NAME]` package name in `debian/debcargo.toml`.
+pub fn debcargo_package(source: &str, version: Option<&str>, name: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("debcargo", Suffix::Namespace),
+            desc("packages", Suffix::Namespace),
+            desc(name, Suffix::Type),
         ],
         ..Default::default()
     })
@@ -364,6 +407,55 @@ pub fn bts_bug(number: &str) -> String {
     })
 }
 
+/// Recover the bug number from a symbol produced by [`bts_bug`].
+///
+/// Returns `None` for any symbol that is not a Debian BTS bug reference.
+pub fn parse_bts_bug(symbol: &str) -> Option<u32> {
+    let parsed = scip::symbol::parse_symbol(symbol).ok()?;
+    if parsed.scheme != BTS_SCHEME {
+        return None;
+    }
+    parsed.descriptors.first()?.name.parse().ok()
+}
+
+/// Static documentation for a Debian BTS bug, used when no live BTS data is
+/// available (offline mode, or a lookup that returned nothing).
+pub fn bts_bug_static_doc(number: u32) -> String {
+    format!("**[Debian Bug #{number}](https://bugs.debian.org/{number})**")
+}
+
+/// Symbol for a Launchpad bug number.
+pub fn lp_bug(number: &str) -> String {
+    fmt(Symbol {
+        scheme: LP_SCHEME.to_owned(),
+        package: Some(Package {
+            manager: LP_MANAGER.to_owned(),
+            ..Default::default()
+        })
+        .into(),
+        descriptors: vec![desc(number, Suffix::Meta)],
+        ..Default::default()
+    })
+}
+
+/// Recover the bug number from a symbol produced by [`lp_bug`].
+///
+/// Returns `None` for any symbol that is not a Launchpad bug reference.
+pub fn parse_lp_bug(symbol: &str) -> Option<u32> {
+    let parsed = scip::symbol::parse_symbol(symbol).ok()?;
+    if parsed.scheme != LP_SCHEME {
+        return None;
+    }
+    parsed.descriptors.first()?.name.parse().ok()
+}
+
+/// Static documentation for a Launchpad bug, used when no live data is
+/// available (offline mode, the `launchpad` feature disabled, or a lookup that
+/// returned nothing).
+pub fn lp_bug_static_doc(number: u32) -> String {
+    format!("**[Launchpad Bug #{number}](https://bugs.launchpad.net/bugs/{number})**")
+}
+
 /// A [`Relationship`] declaring that the owning symbol is a reference of
 /// `target`.
 ///
@@ -419,5 +511,40 @@ mod tests {
         let parsed = scip::symbol::parse_symbol(&s).unwrap();
         assert_eq!(parsed.scheme, BTS_SCHEME);
         assert_eq!(parsed.descriptors[0].name, "123456");
+    }
+
+    #[test]
+    fn bts_bug_round_trips_through_parse() {
+        assert_eq!(parse_bts_bug(&bts_bug("123456")), Some(123456));
+    }
+
+    #[test]
+    fn parse_bts_bug_rejects_other_symbols() {
+        assert_eq!(parse_bts_bug(&source_package("hello", None)), None);
+        assert_eq!(parse_bts_bug("not a symbol"), None);
+        // Debian and Launchpad bugs use distinct schemes and don't cross-parse.
+        assert_eq!(parse_bts_bug(&lp_bug("123456")), None);
+    }
+
+    #[test]
+    fn bts_bug_static_doc_links_to_tracker() {
+        assert_eq!(
+            bts_bug_static_doc(123456),
+            "**[Debian Bug #123456](https://bugs.debian.org/123456)**"
+        );
+    }
+
+    #[test]
+    fn lp_bug_round_trips_through_parse() {
+        assert_eq!(parse_lp_bug(&lp_bug("2002003")), Some(2002003));
+        assert_eq!(parse_lp_bug(&bts_bug("2002003")), None);
+    }
+
+    #[test]
+    fn lp_bug_static_doc_links_to_tracker() {
+        assert_eq!(
+            lp_bug_static_doc(2002003),
+            "**[Launchpad Bug #2002003](https://bugs.launchpad.net/bugs/2002003)**"
+        );
     }
 }

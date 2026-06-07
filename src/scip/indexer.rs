@@ -1,7 +1,7 @@
 //! Top-level indexer: discover `debian/` files and assemble a SCIP [`Index`].
 
 use super::{
-    autopkgtest, changelog, control, copyright, patches, rules, source_format, symbols,
+    autopkgtest, changelog, control, copyright, debcargo, patches, rules, source_format, symbols,
     upstream_metadata, watch,
 };
 use scip::types::{Index, Metadata, SymbolInformation, ToolInfo};
@@ -51,6 +51,9 @@ impl Indexer {
         let mut build_profiles: HashSet<String> = HashSet::new();
         let mut restrictions: HashSet<String> = HashSet::new();
         let mut features: HashSet<String> = HashSet::new();
+        let mut bug_numbers: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        let mut launchpad_bug_numbers: std::collections::BTreeSet<u32> =
+            std::collections::BTreeSet::new();
 
         // Step 1: changelog first, to learn the source name and current version.
         let changelog_text = std::fs::read_to_string(debian.join("changelog")).ok();
@@ -58,6 +61,8 @@ impl Indexer {
             let idx = changelog::index(text, "debian/changelog");
             let src = idx.source_name.clone();
             let ver = idx.topmost_version.clone();
+            bug_numbers.extend(idx.bug_numbers);
+            launchpad_bug_numbers.extend(idx.launchpad_bug_numbers);
             documents.push(idx.document);
             (src, ver)
         } else {
@@ -126,6 +131,12 @@ impl Indexer {
             documents.push(idx.document);
         }
 
+        // Step 10: debcargo.toml.
+        if let Ok(text) = std::fs::read_to_string(debian.join("debcargo.toml")) {
+            let idx = debcargo::index(&text, "debian/debcargo.toml", src, version.as_deref());
+            documents.push(idx.document);
+        }
+
         // External symbols carry hover information for things referenced from
         // this index but defined elsewhere (other source packages) or drawn
         // from an archive-wide vocabulary (build profiles, autopkgtest
@@ -170,6 +181,26 @@ impl Indexer {
                     .collect(),
                 ..Default::default()
             }
+        }));
+        // BTS bugs referenced from the changelog. Static documentation (a link
+        // to the bug page); `run_scip` upgrades these to live BTS summaries
+        // when not running offline.
+        external_symbols.extend(bug_numbers.iter().map(|&n| SymbolInformation {
+            symbol: symbols::bts_bug(&n.to_string()),
+            kind: scip::types::symbol_information::Kind::Constant.into(),
+            display_name: format!("#{n}"),
+            documentation: vec![symbols::bts_bug_static_doc(n)],
+            ..Default::default()
+        }));
+        // Launchpad bugs referenced from the changelog, mirroring the BTS bugs
+        // above. `run_scip` upgrades these to live summaries when not offline
+        // and the `launchpad` feature is enabled.
+        external_symbols.extend(launchpad_bug_numbers.iter().map(|&n| SymbolInformation {
+            symbol: symbols::lp_bug(&n.to_string()),
+            kind: scip::types::symbol_information::Kind::Constant.into(),
+            display_name: format!("LP #{n}"),
+            documentation: vec![symbols::lp_bug_static_doc(n)],
+            ..Default::default()
         }));
 
         let project_root = self.project_root.unwrap_or_else(|| {

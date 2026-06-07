@@ -3103,6 +3103,13 @@ async fn run_scip(
 
     attach_scip_diagnostics(root, &mut index, offline).await;
 
+    // Online runs upgrade BTS bug symbols from the static-link documentation
+    // the indexer emits to live summaries (title, severity, status) pulled
+    // from UDD. Offline runs keep the static links.
+    if !offline {
+        scip::bug_info::attach(&mut index).await;
+    }
+
     let n_docs = index.documents.len();
     let n_occ: usize = index.documents.iter().map(|d| d.occurrences.len()).sum();
     let n_diag: usize = index
