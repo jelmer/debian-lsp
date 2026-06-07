@@ -164,6 +164,37 @@ pub const RULES_VARIABLES: &[RulesVariable] = &[
     RulesVariable::new("DEB_BUILD_HARDENING", "Enable hardening build flags"),
 ];
 
+/// Look up a human-readable description for a `debian/rules` target.
+///
+/// Falls back to synthesised descriptions for the `override_dh_*` and
+/// `execute_{before,after}_dh_*` families, which are open-ended and so cannot
+/// all be enumerated in [`RULES_TARGETS`].
+#[cfg(feature = "scip")]
+pub fn target_description(name: &str) -> Option<String> {
+    if let Some(t) = RULES_TARGETS.iter().find(|t| t.name == name) {
+        return Some(t.description.to_owned());
+    }
+    if let Some(dh) = name.strip_prefix("override_") {
+        return Some(format!("Override {dh} step"));
+    }
+    if let Some(dh) = name.strip_prefix("execute_before_") {
+        return Some(format!("Execute before {dh} step"));
+    }
+    if let Some(dh) = name.strip_prefix("execute_after_") {
+        return Some(format!("Execute after {dh} step"));
+    }
+    None
+}
+
+/// Look up a human-readable description for a known `debian/rules` variable.
+#[cfg(feature = "scip")]
+pub fn variable_description(name: &str) -> Option<&'static str> {
+    RULES_VARIABLES
+        .iter()
+        .find(|v| v.name == name)
+        .map(|v| v.description)
+}
+
 /// Check if a target name is a known standard target.
 pub fn is_known_target(name: &str) -> bool {
     if RULES_TARGETS.iter().any(|t| t.name == name) {

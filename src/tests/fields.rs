@@ -79,3 +79,39 @@ pub const TESTS_DEPENDS_SUBSTITUTION_VALUES: &[(&str, &str)] = &[
         "Replaced by Recommends of all binary packages in debian/control",
     ),
 ];
+
+/// Look up a description for an autopkgtest restriction name.
+pub fn restriction_description(name: &str) -> Option<&'static str> {
+    TESTS_RESTRICTIONS_VALUES
+        .iter()
+        .find(|(r, _)| *r == name)
+        .map(|(_, d)| *d)
+}
+
+/// Look up a description for an autopkgtest feature name.
+pub fn feature_description(name: &str) -> Option<&'static str> {
+    TESTS_FEATURES_VALUES
+        .iter()
+        .find(|(f, _)| *f == name)
+        .map(|(_, d)| *d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_restriction_has_description() {
+        assert_eq!(
+            restriction_description("needs-root"),
+            Some("Test must be run as root")
+        );
+        assert_eq!(restriction_description("not-a-restriction"), None);
+    }
+
+    #[test]
+    fn known_feature_has_description() {
+        assert!(feature_description("test-name").is_some());
+        assert_eq!(feature_description("not-a-feature"), None);
+    }
+}

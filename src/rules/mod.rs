@@ -3,6 +3,8 @@
 //! These files are Makefiles that define how to build a Debian package.
 
 pub mod completion;
+#[cfg(feature = "scip")]
+pub mod debhelper;
 pub mod detection;
 pub mod fields;
 pub mod semantic;
