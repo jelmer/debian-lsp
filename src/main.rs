@@ -2590,6 +2590,7 @@ impl LanguageServer for Backend {
             Some(f) => *f,
             None => return Ok(None),
         };
+        let files_snapshot = files.clone();
         drop(files);
 
         let workspace = self.workspace_clone().await;
@@ -2620,6 +2621,25 @@ impl LanguageServer for Backend {
                     }
                     _ => Ok(None),
                 }
+            }
+            FileType::LintianOverrides => {
+                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                let token = src
+                    .try_position_to_offset(position)
+                    .and_then(|offset| parsed.tree().token_at_offset(offset));
+                let packages =
+                    Self::get_local_package_names(uri, &files_snapshot, &mut workspace.clone());
+                drop(workspace);
+
+                let Some((kind, text)) = token else {
+                    return Ok(None);
+                };
+
+                let tags: Vec<(String, String)> = {
+                    let mut tag_cache = self.lintian_tag_cache.write().await;
+                    tag_cache.get_tags().await.to_vec()
+                };
+                Ok(lintian_overrides::get_hover(kind, &text, &tags, &packages))
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);

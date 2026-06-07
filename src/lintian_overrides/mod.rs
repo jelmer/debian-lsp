@@ -1,4 +1,6 @@
 pub mod completion;
+pub mod hover;
+pub use hover::get_hover;
 pub mod detection;
 pub mod semantic;
 pub mod tags;
