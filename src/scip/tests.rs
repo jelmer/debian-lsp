@@ -65,6 +65,11 @@ fn write_tree(dir: &std::path::Path) {
         "Tests: smoke\nDepends: @, python3-foo\nRestrictions: needs-root\n",
     )
     .unwrap();
+    fs::write(
+        debian.join("debcargo.toml"),
+        "overlay = \".\"\n\n[source]\nhomepage = \"https://example.org\"\n\n[packages.lib]\nsummary = \"Example\"\n",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -89,6 +94,7 @@ fn full_tree_round_trip() {
     assert!(paths.contains(&"debian/patches/series"));
     assert!(paths.contains(&"debian/patches/fix-segfault.patch"));
     assert!(paths.contains(&"debian/tests/control"));
+    assert!(paths.contains(&"debian/debcargo.toml"));
 
     let meta = index.metadata.as_ref().expect("metadata set");
     assert_eq!(meta.tool_info.name, "debian-lsp");

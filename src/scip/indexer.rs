@@ -1,7 +1,7 @@
 //! Top-level indexer: discover `debian/` files and assemble a SCIP [`Index`].
 
 use super::{
-    autopkgtest, changelog, control, copyright, patches, rules, source_format, symbols,
+    autopkgtest, changelog, control, copyright, debcargo, patches, rules, source_format, symbols,
     upstream_metadata, watch,
 };
 use scip::types::{Index, Metadata, SymbolInformation, ToolInfo};
@@ -128,6 +128,12 @@ impl Indexer {
             external_binaries.extend(idx.external_binaries);
             restrictions.extend(idx.restrictions);
             features.extend(idx.features);
+            documents.push(idx.document);
+        }
+
+        // Step 10: debcargo.toml.
+        if let Ok(text) = std::fs::read_to_string(debian.join("debcargo.toml")) {
+            let idx = debcargo::index(&text, "debian/debcargo.toml", src, version.as_deref());
             documents.push(idx.document);
         }
 

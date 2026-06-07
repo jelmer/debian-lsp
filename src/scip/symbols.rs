@@ -164,6 +164,43 @@ pub fn upstream_metadata_field(source: &str, version: Option<&str>, key: &str) -
     })
 }
 
+/// Symbol for a key in `debian/debcargo.toml`.
+///
+/// `scope` names the table the key belongs to (`""` for the top level,
+/// `"source"` for `[source]`, or a package name for `[packages.NAME]`), so
+/// keys with the same name in different tables get distinct symbols.
+pub fn debcargo_key(source: &str, version: Option<&str>, scope: &str, key: &str) -> String {
+    let mut descriptors = vec![
+        desc(source, Suffix::Namespace),
+        desc("debcargo", Suffix::Namespace),
+    ];
+    if !scope.is_empty() {
+        descriptors.push(desc(scope, Suffix::Namespace));
+    }
+    descriptors.push(desc(key, Suffix::Term));
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors,
+        ..Default::default()
+    })
+}
+
+/// Symbol for a `[packages.NAME]` package name in `debian/debcargo.toml`.
+pub fn debcargo_package(source: &str, version: Option<&str>, name: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("debcargo", Suffix::Namespace),
+            desc("packages", Suffix::Namespace),
+            desc(name, Suffix::Type),
+        ],
+        ..Default::default()
+    })
+}
+
 /// Symbol for a `debian/source/format` value.
 ///
 /// Cross-package: the same format string maps to the same symbol across the

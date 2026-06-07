@@ -271,3 +271,27 @@ pub static MULTI_ARCH_VALUES: &[(&str, &str)] = &[
     ),
     ("allowed", "Co-installation allowed but not required"),
 ];
+
+/// Description of a top-level debcargo.toml key, if known.
+pub fn top_level_key_description(name: &str) -> Option<&'static str> {
+    TOP_LEVEL_KEYS
+        .iter()
+        .find(|k| k.name == name)
+        .map(|k| k.description)
+}
+
+/// Description of a `[source]` table key, if known.
+pub fn source_key_description(name: &str) -> Option<&'static str> {
+    SOURCE_KEYS
+        .iter()
+        .find(|k| k.name == name)
+        .map(|k| k.description)
+}
+
+/// Description of a `[packages.*]` table key, if known.
+pub fn package_key_description(name: &str) -> Option<&'static str> {
+    PACKAGE_KEYS
+        .iter()
+        .find(|k| k.name == name)
+        .map(|k| k.description)
+}
