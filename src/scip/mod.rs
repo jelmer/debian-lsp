@@ -18,6 +18,7 @@ pub mod diagnostics;
 pub mod highlight;
 pub mod indexer;
 pub mod linetable;
+pub mod links;
 pub mod patches;
 pub mod rules;
 pub mod source_format;

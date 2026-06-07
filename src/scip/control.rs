@@ -40,6 +40,19 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
     // Syntax-highlighting occurrences for the whole document.
     occurrences.extend(crate::scip::highlight::deb822(control.as_deb822(), &lines));
 
+    // Clickable links for URL-bearing fields (Homepage, Vcs-Browser, ...) and
+    // URLs embedded in prose fields (Description).
+    let mut url_symbols_seen: HashSet<String> = HashSet::new();
+    crate::scip::links::emit_deb822(
+        control.as_deb822(),
+        crate::control::fields::CONTROL_FIELDS,
+        text,
+        &lines,
+        &mut occurrences,
+        &mut symbols_info,
+        &mut url_symbols_seen,
+    );
+
     if let Some(source) = control.source() {
         if let Some(name) = source.name() {
             source_name = Some(name.clone());
@@ -446,6 +459,42 @@ Description: example
             .find(|o| o.symbol == symbols::identity("jelmer@debian.org"))
             .expect("maintainer identity occurrence");
         assert_eq!(identity.syntax_kind, SyntaxKind::IdentifierConstant.into());
+    }
+
+    #[test]
+    fn links_homepage_and_vcs_urls() {
+        let text = "\
+Source: hello
+Homepage: https://example.org/hello
+Vcs-Browser: https://salsa.debian.org/debian/hello
+Vcs-Git: https://salsa.debian.org/debian/hello.git
+
+Package: hello
+Architecture: any
+Description: example
+";
+        let idx = index(text, "debian/control", Some("2.10-3"));
+        for url in [
+            "https://example.org/hello",
+            "https://salsa.debian.org/debian/hello",
+            "https://salsa.debian.org/debian/hello.git",
+        ] {
+            let sym = symbols::web_url(url);
+            let occ = idx
+                .document
+                .occurrences
+                .iter()
+                .find(|o| o.symbol == sym)
+                .unwrap_or_else(|| panic!("no link occurrence for {url}"));
+            assert_eq!(occ.symbol_roles & SymbolRole::Definition as i32, 0);
+            let info = idx
+                .document
+                .symbols
+                .iter()
+                .find(|s| s.symbol == sym)
+                .unwrap_or_else(|| panic!("no symbol info for {url}"));
+            assert_eq!(info.documentation, vec![symbols::web_url_doc(url)]);
+        }
     }
 
     const PROVIDES_SAMPLE: &str = "\

@@ -2,16 +2,56 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Documentati
 
 use crate::position::Source;
 
+/// How a field's value relates to web URLs, used to surface clickable links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldContent {
+    /// No URL handling: the value is not expected to contain links.
+    Plain,
+    /// The entire value is a single URL (e.g. `Homepage`, `Vcs-Git`).
+    Url,
+    /// Free-form prose that may contain URLs embedded in the text (e.g.
+    /// `Comment`, `Disclaimer`). Links are found by scanning the value.
+    Prose,
+}
+
 /// A field definition for a deb822-based file format.
 pub struct FieldInfo {
     pub name: &'static str,
     pub description: &'static str,
+    pub content: FieldContent,
 }
 
 impl FieldInfo {
     pub const fn new(name: &'static str, description: &'static str) -> Self {
-        Self { name, description }
+        Self {
+            name,
+            description,
+            content: FieldContent::Plain,
+        }
     }
+
+    /// Mark the whole value as a single URL.
+    pub const fn url(mut self) -> Self {
+        self.content = FieldContent::Url;
+        self
+    }
+
+    /// Mark the value as free-form prose that may contain embedded URLs.
+    pub const fn prose(mut self) -> Self {
+        self.content = FieldContent::Prose;
+        self
+    }
+}
+
+/// Look up the [`FieldContent`] classification for a field by name
+/// (case-insensitive). Returns [`FieldContent::Plain`] for unknown fields.
+pub fn field_content(fields: &[FieldInfo], field_name: &str) -> FieldContent {
+    let lowercase = field_name.to_lowercase();
+    fields
+        .iter()
+        .find(|f| f.name.to_lowercase() == lowercase)
+        .map(|f| f.content)
+        .unwrap_or(FieldContent::Plain)
 }
 
 /// What kind of position the cursor is at in a deb822 document.
