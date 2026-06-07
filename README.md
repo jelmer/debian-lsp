@@ -18,6 +18,8 @@ Language Server Protocol implementation for Debian packaging files.
 - `debian/upstream/metadata` - DEP-12 upstream metadata files
 - `debian/rules` - Package build rules (Makefile)
 - `debian/patches/series` - List of patches applied by dpkg-source
+- `debian/source/lintian-overrides` - Lintian tag overrides for the source package
+- `debian/<package>.lintian-overrides` - Lintian tag overrides for binary packages
 
 ## Features
 
@@ -69,6 +71,12 @@ Language Server Protocol implementation for Debian packaging files.
 - Package name completions for patch entries, excluding already listed patches
 - Option value completions for patch application flags (`-p0`, `-p1`, `-p2`, etc.)
 
+**debian/source/lintian-overrides and debian/.lintian-overrides:**
+- Package name completions from `debian/control` (source and binary package names)
+- Architecture completions from the known architecture list, including negations (e.g. `!amd64`)
+- Package type completions (`source`, `binary`, `udeb`)
+- Lintian tag name completions from `lintian-explain-tags`
+
 ### Diagnostics
 
 - Field casing validation (e.g. `source` instead of `Source`)
@@ -86,12 +94,21 @@ Language Server Protocol implementation for Debian packaging files.
 **debian/tests/control:**
 - Field descriptions for autopkgtest control fields
 
+**debian/source/lintian-overrides and debian/.lintian-overrides:**
+- Lintian tag descriptions fetched from `lintian-explain-tags`
+- Package names show whether the package is defined in `debian/control` or not found
+- Architecture restrictions show the architecture name, with a note for negations (e.g. `!amd64` excludes `amd64`)
+- Package type keywords (`source`, `binary`, `udeb`) show a short description
+
 ### Go to Definition
 
 **debian/tests/control:**
 - Test names in the `Tests` field jump to the corresponding test script in the tests directory (respecting `Tests-Directory`)
 - Package names in relationship fields (`Depends`) jump to the matching binary package paragraph in `debian/control`
 - Paths in the `Tests-Directory` field jump to the directory on disk
+
+**debian/source/lintian-overrides and debian/.lintian-overrides:**
+- Package names jump to the matching `Package:` or `Source:` paragraph in `debian/control`
 
 ### On-Type Formatting
 
@@ -144,6 +161,7 @@ Wrap-and-sort formatting for debian/control, debian/copyright, and debian/watch
 Custom token types for syntax highlighting of Debian-specific constructs:
 - Control/copyright/watch/tests-control/upstream-metadata/source-options/rules files: field names, unknown fields, values, comments
 - Changelog files: package name, version, distribution, urgency, maintainer, timestamp
+- Lintian-overrides files: lintian tag names, package names, package types, architecture restrictions, info text, comments
 
 ## Installation
 
