@@ -281,6 +281,21 @@ pub fn patch(source: &str, version: Option<&str>, patch_name: &str) -> String {
     })
 }
 
+/// Symbol for a DEP-3 header field of a quilt patch, scoped to its patch.
+pub fn patch_field(source: &str, version: Option<&str>, patch_name: &str, field: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("patches", Suffix::Namespace),
+            desc(patch_name, Suffix::Type),
+            desc(field, Suffix::Term),
+        ],
+        ..Default::default()
+    })
+}
+
 /// Symbol for a packaging file under `debian/`, keyed by its path relative to
 /// the source-tree root (e.g. `debian/control`, `debian/patches/foo.patch`).
 ///

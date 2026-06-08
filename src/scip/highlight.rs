@@ -78,6 +78,34 @@ pub fn makefile(makefile: &makefile_lossless::Makefile, lines: &LineTable) -> Ve
     out
 }
 
+/// Emit highlight occurrences for a `debian/patches/series` file.
+///
+/// Patch names are classified as constants, quilt options as parameters, and
+/// `#` comment lines as comments, mirroring the editor's semantic tokens for
+/// these files.
+pub fn series(
+    series: &patchkit::edit::series::lossless::SeriesFile,
+    lines: &LineTable,
+) -> Vec<Occurrence> {
+    use patchkit::edit::series::lex::SyntaxKind as Sk;
+    use rowan::ast::AstNode;
+
+    let mut out = Vec::new();
+    for element in series.syntax().descendants_with_tokens() {
+        let rowan::NodeOrToken::Token(token) = element else {
+            continue;
+        };
+        let kind = match token.kind() {
+            Sk::PATCH_NAME => SyntaxKind::IdentifierConstant,
+            Sk::OPTION => SyntaxKind::IdentifierParameter,
+            Sk::HASH | Sk::TEXT => SyntaxKind::Comment,
+            _ => continue,
+        };
+        push_token(&mut out, lines, &token, kind);
+    }
+    out
+}
+
 /// Emit highlight occurrences for a `debian/changelog` file.
 pub fn changelog(cl: &debian_changelog::ChangeLog, lines: &LineTable) -> Vec<Occurrence> {
     use debian_changelog::SyntaxKind as Ck;
@@ -205,6 +233,19 @@ mod tests {
         assert!(has_kind(&occs, SyntaxKind::Comment));
         assert!(has_kind(&occs, SyntaxKind::IdentifierFunction)); // target
         assert!(has_kind(&occs, SyntaxKind::IdentifierMutableGlobal)); // variable
+        assert!(occs.iter().all(|o| o.symbol.is_empty()));
+    }
+
+    #[test]
+    fn series_highlights_name_option_and_comment() {
+        let text = "# security\nfix-arm.patch -p1\n";
+        let parsed = patchkit::edit::series::parse(text);
+        let lines = LineTable::new(text);
+        let occs = series(&parsed.tree(), &lines);
+
+        assert!(has_kind(&occs, SyntaxKind::IdentifierConstant)); // patch name
+        assert!(has_kind(&occs, SyntaxKind::IdentifierParameter)); // -p1
+        assert!(has_kind(&occs, SyntaxKind::Comment));
         assert!(occs.iter().all(|o| o.symbol.is_empty()));
     }
 

@@ -4,6 +4,11 @@
 //! patch symbol; each `debian/patches/<name>` file becomes a document whose
 //! DEP-3 header is mined for hover information (Subject, Forwarded, Origin)
 //! and for cross-links to BTS bug symbols emitted by the changelog indexer.
+//!
+//! The output aims for parity with the editor (LSP) features for these files:
+//! syntax-highlighting occurrences for the series file and the patch headers,
+//! a symbol per DEP-3 header field carrying the spec description as hover
+//! documentation, and a synopsis on the patch symbol itself.
 
 use crate::scip::linetable::LineTable;
 use crate::scip::symbols;
@@ -60,44 +65,38 @@ pub fn index(root: &Path, source: &str, version: Option<&str>) -> PatchesIndex {
 
 /// Iterate the non-comment, non-blank entries of a `series` file.
 fn iter_series_entries(text: &str) -> impl Iterator<Item = String> + '_ {
-    text.lines().filter_map(|line| {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            return None;
-        }
-        // A series line may carry quilt options after whitespace; take just
-        // the first whitespace-delimited token.
-        let name = trimmed.split_whitespace().next()?;
-        Some(name.to_owned())
-    })
+    let parsed = patchkit::edit::series::parse(text);
+    parsed
+        .tree()
+        .patch_entries()
+        .filter_map(|p| p.name())
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 fn index_series(text: &str, relative_path: &str, source: &str, version: Option<&str>) -> Document {
     let lines = LineTable::new(text);
+    let parsed = patchkit::edit::series::parse(text);
+    let series = parsed.tree();
     let mut occurrences = Vec::new();
-    let mut offset: u32 = 0;
-    for line in text.split_inclusive('\n') {
-        let line_start = offset;
-        offset += line.len() as u32;
-        let trimmed_line = line.trim_end_matches(['\n', '\r']);
-        let stripped = trimmed_line.trim_start();
-        if stripped.is_empty() || stripped.starts_with('#') {
+
+    // Reference occurrences: each patch entry points at its patch symbol, so
+    // "go to definition" on a series entry jumps to the patch document.
+    for entry in series.patch_entries() {
+        let (Some(name), Some(token)) = (entry.name(), entry.name_token()) else {
             continue;
-        }
-        // Locate the first token (the patch filename).
-        let leading_ws = trimmed_line.len() - stripped.len();
-        let token_len = stripped.find(char::is_whitespace).unwrap_or(stripped.len());
-        let name = &stripped[..token_len];
-        let start = line_start + leading_ws as u32;
-        let end = start + name.len() as u32;
-        let sym = symbols::patch(source, version, name);
+        };
+        let r = token.text_range();
         occurrences.push(Occurrence {
-            range: lines.range(start, end),
-            symbol: sym,
-            syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
+            range: lines.range(r.start().into(), r.end().into()),
+            symbol: symbols::patch(source, version, &name),
             ..Default::default()
         });
     }
+
+    // Syntax highlighting (patch names, options, comments).
+    occurrences.extend(crate::scip::highlight::series(&series, &lines));
+
     Document {
         language: "plain".to_owned(),
         relative_path: relative_path.to_owned(),
@@ -126,7 +125,6 @@ fn index_patch(
         range: lines.range(0, 0),
         symbol: patch_sym.clone(),
         symbol_roles: SymbolRole::Definition as i32,
-        syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
         ..Default::default()
     });
 
@@ -141,9 +139,24 @@ fn index_patch(
         symbol: patch_sym,
         kind: scip::types::symbol_information::Kind::File.into(),
         display_name: patch_name.to_owned(),
+        documentation: patch_documentation(&header),
         relationships,
         ..Default::default()
     });
+
+    // DEP-3 header fields: one symbol+occurrence each, with the spec
+    // description as hover documentation and deb822 highlighting. This is the
+    // header portion only; the diff body is left to diff-lsp.
+    index_header_fields(
+        text,
+        diff_offset,
+        source,
+        version,
+        patch_name,
+        &lines,
+        &mut occurrences,
+        &mut symbols_info,
+    );
 
     // Touched upstream file paths from the diff body. Parse with patchkit;
     // skip silently if the body is malformed (truncated, binary diff, etc.) —
@@ -163,7 +176,6 @@ fn index_patch(
         occurrences.push(Occurrence {
             range: lines.range(start, end),
             symbol: symbols::bts_bug(id_text),
-            syntax_kind: scip::types::SyntaxKind::NumericLiteral.into(),
             ..Default::default()
         });
     }
@@ -177,6 +189,113 @@ fn index_patch(
         position_encoding: scip::types::PositionEncoding::UTF8CodeUnitOffsetFromLineStart.into(),
         ..Default::default()
     })
+}
+
+/// Build the hover documentation for a patch symbol from its DEP-3 header.
+///
+/// Mirrors what the editor shows: a synopsis line plus the forwarded status
+/// and origin when present. Returns an empty vector if nothing is available.
+fn patch_documentation(header: &PatchHeader) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(synopsis) = header.description() {
+        let synopsis = synopsis.trim();
+        if !synopsis.is_empty() {
+            lines.push(synopsis.to_owned());
+        }
+    }
+    let mut meta = Vec::new();
+    if let Some(forwarded) = header.forwarded() {
+        meta.push(format!("Forwarded: {forwarded}"));
+    }
+    if let Some((category, origin)) = header.origin() {
+        match category {
+            Some(cat) => meta.push(format!("Origin: {cat}, {origin}")),
+            None => meta.push(format!("Origin: {origin}")),
+        }
+    }
+    if !meta.is_empty() {
+        lines.push(meta.join("  \n"));
+    }
+    if lines.is_empty() {
+        Vec::new()
+    } else {
+        vec![lines.join("\n\n")]
+    }
+}
+
+/// Emit a symbol, definition occurrence, and highlighting for each field in a
+/// DEP-3 patch header.
+///
+/// Known fields carry their DEP-3 spec description as hover documentation;
+/// unknown (vendor or `X-`) fields are still highlighted and given a symbol so
+/// the outline stays complete.
+#[allow(clippy::too_many_arguments)]
+fn index_header_fields(
+    text: &str,
+    diff_offset: usize,
+    source: &str,
+    version: Option<&str>,
+    patch_name: &str,
+    lines: &LineTable,
+    occurrences: &mut Vec<Occurrence>,
+    symbols_info: &mut Vec<SymbolInformation>,
+) {
+    use deb822_lossless::SyntaxKind as Dk;
+    use rowan::ast::AstNode;
+
+    let header_text = &text[..diff_offset.min(text.len())];
+    let parsed = deb822_lossless::Deb822::parse(header_text);
+    let header = parsed.tree();
+    let Some(paragraph) = header.paragraphs().next() else {
+        return;
+    };
+
+    for entry in paragraph.entries() {
+        let Some(name) = entry.key() else {
+            continue;
+        };
+        // Anchor the field symbol on the KEY token so "go to definition" and
+        // highlighting land on the field name itself.
+        let key_range = entry
+            .syntax()
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == Dk::KEY)
+            .map(|t| t.text_range());
+        let Some(key_range) = key_range else {
+            continue;
+        };
+        let (start, end): (u32, u32) = (key_range.start().into(), key_range.end().into());
+
+        let sym = symbols::patch_field(source, version, patch_name, &name);
+        occurrences.push(Occurrence {
+            range: lines.range(start, end),
+            symbol: sym.clone(),
+            symbol_roles: SymbolRole::Definition as i32,
+            ..Default::default()
+        });
+        symbols_info.push(SymbolInformation {
+            symbol: sym,
+            kind: scip::types::symbol_information::Kind::Field.into(),
+            display_name: name.clone(),
+            documentation: dep3_field_doc(&name).into_iter().collect(),
+            ..Default::default()
+        });
+    }
+
+    // Syntax highlighting for the header (field names, values, comments). The
+    // header is a prefix of the document, so deb822 offsets map straight onto
+    // it; the diff body is left to diff-lsp.
+    occurrences.extend(crate::scip::highlight::deb822(&header, lines));
+}
+
+/// DEP-3 spec description for a header field, if it is a known field.
+fn dep3_field_doc(name: &str) -> Option<String> {
+    let canonical = crate::dep3::fields::get_standard_field_name(name)?;
+    crate::dep3::fields::DEP3_FIELDS
+        .iter()
+        .find(|f| f.name == canonical)
+        .map(|f| f.description.to_owned())
 }
 
 /// Emit one occurrence per file path referenced by the diff body of a patch.
@@ -222,7 +341,6 @@ fn emit_touched_paths(
             occurrences.push(Occurrence {
                 range: lines.range(abs, abs + name.len() as u32),
                 symbol: symbols::upstream_path(source, version, stripped),
-                syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
                 ..Default::default()
             });
         }
@@ -238,7 +356,13 @@ fn strip_quilt_prefix(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scip::types::SyntaxKind;
     use tempfile::tempdir;
+
+    fn has_kind(occs: &[Occurrence], kind: SyntaxKind) -> bool {
+        let want = kind.into();
+        occs.iter().any(|o| o.syntax_kind == want)
+    }
 
     #[test]
     fn series_entries_skip_comments_and_blanks() {
@@ -250,6 +374,25 @@ mod tests {
     }
 
     #[test]
+    fn series_highlights_names_options_and_comments() {
+        let doc = index_series(
+            "# a comment\nfix-one.patch -p1\n",
+            "debian/patches/series",
+            "hello",
+            Some("1-1"),
+        );
+        // The patch name resolves to its patch symbol (go-to-definition).
+        assert!(doc
+            .occurrences
+            .iter()
+            .any(|o| o.symbol.contains("fix-one.patch")));
+        // Names, options, and comments are highlighted.
+        assert!(has_kind(&doc.occurrences, SyntaxKind::IdentifierConstant));
+        assert!(has_kind(&doc.occurrences, SyntaxKind::IdentifierParameter));
+        assert!(has_kind(&doc.occurrences, SyntaxKind::Comment));
+    }
+
+    #[test]
     fn indexes_a_real_patches_tree() {
         let dir = tempdir().unwrap();
         let patches = dir.path().join("debian").join("patches");
@@ -257,7 +400,7 @@ mod tests {
         std::fs::write(patches.join("series"), "fix-segfault.patch\n").unwrap();
         std::fs::write(
             patches.join("fix-segfault.patch"),
-            "From: Jane <jane@example.org>\nSubject: Fix segfault\nBug-Debian: https://bugs.debian.org/123456\n\n--- a/src/foo.c\n+++ b/src/foo.c\n@@ -1,3 +1,3 @@\n line1\n-old\n+new\n line3\n",
+            "From: Jane <jane@example.org>\nSubject: Fix segfault\nBug-Debian: https://bugs.debian.org/123456\nForwarded: not-needed\n\n--- a/src/foo.c\n+++ b/src/foo.c\n@@ -1,3 +1,3 @@\n line1\n-old\n+new\n line3\n",
         )
         .unwrap();
 
@@ -267,8 +410,10 @@ mod tests {
 
         // Series doc references the patch.
         let series = idx.series_document.unwrap();
-        assert_eq!(series.occurrences.len(), 1);
-        assert!(series.occurrences[0].symbol.contains("fix-segfault.patch"));
+        assert!(series
+            .occurrences
+            .iter()
+            .any(|o| o.symbol.contains("fix-segfault.patch")));
 
         // Patch doc defines itself and cross-references the bug.
         let patch_doc = &idx.patch_documents[0];
@@ -286,17 +431,62 @@ mod tests {
             patch_doc.occurrences
         );
 
-        // The patch symbol references the bug it closes.
+        // The patch symbol references the bug it closes and carries a synopsis.
         let patch_sym = patch_doc
             .symbols
             .iter()
             .find(|s| s.symbol.contains("patches") && s.symbol.contains("fix-segfault.patch"))
             .expect("patch symbol info");
+        assert_eq!(patch_sym.display_name, "fix-segfault.patch");
+        assert_eq!(patch_sym.documentation.len(), 1);
+        assert!(patch_sym.documentation[0].contains("Fix segfault"));
+        assert!(patch_sym.documentation[0].contains("not-needed"));
         assert_eq!(patch_sym.relationships.len(), 1);
         assert_eq!(
             patch_sym.relationships[0].symbol,
             symbols::bts_bug("123456")
         );
         assert!(patch_sym.relationships[0].is_reference);
+    }
+
+    #[test]
+    fn patch_header_fields_get_symbols_and_docs() {
+        let text = "Author: Jane <jane@example.org>\nDescription: Fix the thing\nForwarded: no\n\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-a\n+b\n";
+        let doc = index_patch(
+            text,
+            "debian/patches/p.patch",
+            "hello",
+            Some("1-1"),
+            "p.patch",
+        )
+        .expect("patch document");
+
+        // One field symbol per header field.
+        let author = doc
+            .symbols
+            .iter()
+            .find(|s| s.symbol.contains("Author"))
+            .expect("Author field symbol");
+        assert_eq!(author.display_name, "Author");
+        assert!(!author.documentation.is_empty());
+        assert!(doc.symbols.iter().any(|s| s.symbol.contains("Description")));
+        assert!(doc.symbols.iter().any(|s| s.symbol.contains("Forwarded")));
+
+        // Field names are highlighted as attributes; values as strings.
+        assert!(has_kind(&doc.occurrences, SyntaxKind::IdentifierAttribute));
+        assert!(has_kind(&doc.occurrences, SyntaxKind::StringLiteral));
+    }
+
+    #[test]
+    fn header_fields_do_not_leak_into_diff_body() {
+        // A `+` line in the diff that looks like a field must not be indexed.
+        let text = "Author: Jane\n\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n+Forwarded: nope\n";
+        let doc = index_patch(text, "debian/patches/p.patch", "hello", None, "p.patch")
+            .expect("patch document");
+        assert!(doc.symbols.iter().any(|s| s.symbol.contains("Author")));
+        assert!(
+            !doc.symbols.iter().any(|s| s.symbol.contains("Forwarded")),
+            "diff-body text must not be parsed as a header field"
+        );
     }
 }
