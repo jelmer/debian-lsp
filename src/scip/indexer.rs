@@ -59,7 +59,7 @@ impl Indexer {
         // Step 1: changelog first, to learn the source name and current version.
         let changelog_text = std::fs::read_to_string(debian.join("changelog")).ok();
         let (source_name, version) = if let Some(text) = changelog_text.as_deref() {
-            let idx = changelog::index(text, "debian/changelog");
+            let idx = changelog::index(text, "debian/changelog", Some(&self.root));
             let src = idx.source_name.clone();
             let ver = idx.topmost_version.clone();
             bug_numbers.extend(idx.bug_numbers);
@@ -137,6 +137,25 @@ impl Indexer {
         if let Ok(text) = std::fs::read_to_string(debian.join("debcargo.toml")) {
             let idx = debcargo::index(&text, "debian/debcargo.toml", src, version.as_deref());
             documents.push(idx.document);
+        }
+
+        // Each document defines a `debian_file` symbol keyed by its path, so
+        // changelog mentions of a packaging file resolve to the file via "go
+        // to definition". Anchored at the start of the file.
+        for doc in &mut documents {
+            let sym = symbols::debian_file(src, version.as_deref(), &doc.relative_path);
+            doc.occurrences.push(scip::types::Occurrence {
+                range: vec![0, 0, 0, 0],
+                symbol: sym.clone(),
+                symbol_roles: scip::types::SymbolRole::Definition as i32,
+                ..Default::default()
+            });
+            doc.symbols.push(SymbolInformation {
+                symbol: sym,
+                kind: scip::types::symbol_information::Kind::File.into(),
+                display_name: doc.relative_path.clone(),
+                ..Default::default()
+            });
         }
 
         // External symbols carry hover information for things referenced from

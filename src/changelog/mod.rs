@@ -1,7 +1,9 @@
 pub mod actions;
 pub mod completion;
 pub mod detection;
+pub mod document_link;
 pub mod fields;
+pub mod file_refs;
 pub mod folding;
 pub mod hover;
 pub mod inlay_hints;
@@ -15,6 +17,7 @@ pub mod symbols;
 pub use actions::*;
 pub use completion::*;
 pub use detection::is_changelog_file;
+pub use document_link::get_document_links;
 pub use folding::generate_folding_ranges;
 pub use hover::get_hover;
 pub use inlay_hints::generate_inlay_hints;

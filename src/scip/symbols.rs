@@ -274,6 +274,24 @@ pub fn patch(source: &str, version: Option<&str>, patch_name: &str) -> String {
     })
 }
 
+/// Symbol for a packaging file under `debian/`, keyed by its path relative to
+/// the source-tree root (e.g. `debian/control`, `debian/patches/foo.patch`).
+///
+/// Each indexed document defines this symbol, so changelog mentions of a file
+/// can reference it and "go to definition" jumps to the file.
+pub fn debian_file(source: &str, version: Option<&str>, relative_path: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("file", Suffix::Namespace),
+            desc(relative_path, Suffix::Meta),
+        ],
+        ..Default::default()
+    })
+}
+
 /// Symbol for a `Files:` paragraph glob in `debian/copyright`.
 pub fn copyright_files_glob(source: &str, version: Option<&str>, glob: &str) -> String {
     fmt(Symbol {
