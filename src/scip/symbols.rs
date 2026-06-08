@@ -210,17 +210,16 @@ pub fn debcargo_package(source: &str, version: Option<&str>, name: &str) -> Stri
 /// Symbol for a `debian/source/format` value.
 ///
 /// Cross-package: the same format string maps to the same symbol across the
-/// archive, enabling searches like "all packages using `3.0 (quilt)`".
+/// archive, enabling searches like "all packages using `3.0 (quilt)`". A format
+/// value belongs to no package, so the package field is left empty and the kind
+/// is carried by a leading `source-format` namespace descriptor.
 pub fn source_format(format: &str) -> String {
     fmt(Symbol {
         scheme: SCHEME.to_owned(),
-        package: Some(Package {
-            manager: MANAGER.to_owned(),
-            name: "source-format".to_owned(),
-            ..Default::default()
-        })
-        .into(),
-        descriptors: vec![desc(format, Suffix::Type)],
+        descriptors: vec![
+            desc("source-format", Suffix::Namespace),
+            desc(format, Suffix::Type),
+        ],
         ..Default::default()
     })
 }
@@ -384,34 +383,32 @@ pub fn autopkgtest_test(source: &str, version: Option<&str>, name: &str) -> Stri
 
 /// Symbol for an autopkgtest restriction (e.g. `needs-root`, `allow-stderr`).
 ///
-/// Cross-package: every use of a given restriction collects under one symbol.
+/// Cross-package: every use of a given restriction collects under one symbol. A
+/// restriction belongs to no package, so the package field is left empty and the
+/// kind is carried by a leading `autopkgtest-restriction` namespace descriptor.
 pub fn autopkgtest_restriction(name: &str) -> String {
     fmt(Symbol {
         scheme: SCHEME.to_owned(),
-        package: Some(Package {
-            manager: MANAGER.to_owned(),
-            name: "autopkgtest-restriction".to_owned(),
-            ..Default::default()
-        })
-        .into(),
-        descriptors: vec![desc(name, Suffix::Type)],
+        descriptors: vec![
+            desc("autopkgtest-restriction", Suffix::Namespace),
+            desc(name, Suffix::Type),
+        ],
         ..Default::default()
     })
 }
 
 /// Symbol for an autopkgtest feature (e.g. `test-name`).
 ///
-/// Cross-package, like [`autopkgtest_restriction`].
+/// Cross-package, like [`autopkgtest_restriction`]. A feature belongs to no
+/// package, so the package field is left empty and the kind is carried by a
+/// leading `autopkgtest-feature` namespace descriptor.
 pub fn autopkgtest_feature(name: &str) -> String {
     fmt(Symbol {
         scheme: SCHEME.to_owned(),
-        package: Some(Package {
-            manager: MANAGER.to_owned(),
-            name: "autopkgtest-feature".to_owned(),
-            ..Default::default()
-        })
-        .into(),
-        descriptors: vec![desc(name, Suffix::Type)],
+        descriptors: vec![
+            desc("autopkgtest-feature", Suffix::Namespace),
+            desc(name, Suffix::Type),
+        ],
         ..Default::default()
     })
 }
@@ -557,9 +554,15 @@ mod tests {
 
     #[test]
     fn package_less_symbols_have_no_package() {
-        // identity and build_profile belong to no package, so their package
-        // field is empty -- they must not look like they're "from" a package.
-        for s in [identity("jelmer@debian.org"), build_profile("nocheck")] {
+        // These all belong to no package, so their package field is empty --
+        // they must not look like they're "from" a package.
+        for s in [
+            identity("jelmer@debian.org"),
+            build_profile("nocheck"),
+            autopkgtest_restriction("needs-root"),
+            autopkgtest_feature("test-name"),
+            source_format("3.0 (quilt)"),
+        ] {
             let parsed = scip::symbol::parse_symbol(&s).unwrap();
             assert!(
                 parsed.package.name.is_empty(),
