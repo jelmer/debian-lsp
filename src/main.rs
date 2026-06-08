@@ -2554,7 +2554,9 @@ impl LanguageServer for Backend {
                     debian_watch::parse::ParsedWatchFile::Deb822(wf) => {
                         Ok(watch::get_hover(wf.as_deb822(), src, position))
                     }
-                    _ => Ok(None),
+                    debian_watch::parse::ParsedWatchFile::LineBased(wf) => {
+                        Ok(watch::get_linebased_hover(wf, src, position))
+                    }
                 }
             }
             FileType::Changelog => {

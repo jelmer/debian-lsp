@@ -2,7 +2,7 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 
 use crate::deb822::completion::{get_cursor_context, CursorContext};
 
-use super::fields::field_description as get_field_description;
+use super::fields::{field_description as get_field_description, linebased_option_description};
 use crate::position::Source;
 
 fn make_hover(field_name: &str, description: &str) -> Hover {
@@ -45,6 +45,37 @@ pub fn get_hover(
     }
 }
 
+/// Get hover information for a debian/watch v1-4 (line-based) file at the given
+/// cursor position.
+///
+/// Shows the description of the option (e.g. `uversionmangle`) under the cursor,
+/// or of the `version=` directive, reusing the shared field/option table.
+pub fn get_linebased_hover(
+    wf: &debian_watch::linebased::WatchFile,
+    src: Source<'_>,
+    position: Position,
+) -> Option<Hover> {
+    use debian_watch::SyntaxKind;
+
+    let offset = src.try_position_to_offset(position)?;
+    let token = wf.syntax().token_at_offset(offset).right_biased()?;
+
+    // Only the option/version key name carries documentation.
+    if token.kind() != SyntaxKind::KEY {
+        return None;
+    }
+    let parent = token.parent()?;
+    match parent.kind() {
+        SyntaxKind::OPTION => linebased_option_description(token.text())
+            .map(|(canonical, description)| make_hover(canonical, description)),
+        SyntaxKind::VERSION => Some(make_hover(
+            token.text(),
+            super::fields::version_directive_description(),
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +98,55 @@ mod tests {
         let idx = crate::position::LineIndex::new(text);
         let hover = get_hover(&deb822, Source::new(text, &idx), Position::new(2, 3));
         assert!(hover.is_none());
+    }
+
+    fn linebased_hover_value(text: &str, position: Position) -> Option<String> {
+        let wf = debian_watch::linebased::parse_watch_file(text).tree();
+        let idx = crate::position::LineIndex::new(text);
+        let hover = get_linebased_hover(&wf, Source::new(text, &idx), position)?;
+        match hover.contents {
+            HoverContents::Markup(m) => Some(m.value),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_linebased_hover_on_option_key() {
+        let text = "version=4\nopts=\"uversionmangle=s/-/./\" https://example.org/hello/ hello-(.+)\\.tar\\.gz\n";
+        // Cursor on the `uversionmangle` option name.
+        let value = linebased_hover_value(text, Position::new(1, 8)).expect("hover");
+        let (canonical, description) =
+            super::super::fields::linebased_option_description("uversionmangle").unwrap();
+        assert_eq!(value, format!("**{}**\n\n{}", canonical, description));
+    }
+
+    #[test]
+    fn test_linebased_hover_on_version_key() {
+        let text = "version=4\nhttps://example.org/hello/ hello-(.+)\\.tar\\.gz\n";
+        // Cursor on the `version` keyword.
+        let value = linebased_hover_value(text, Position::new(0, 3)).expect("hover");
+        assert_eq!(
+            value,
+            format!(
+                "**version**\n\n{}",
+                super::super::fields::version_directive_description()
+            )
+        );
+    }
+
+    #[test]
+    fn test_linebased_hover_on_unknown_option() {
+        let text = "version=4\nopts=\"bogus=1\" https://example.org/hello/ hello-(.+)\\.tar\\.gz\n";
+        // Cursor on an unknown option name yields no hover.
+        let hover = linebased_hover_value(text, Position::new(1, 8));
+        assert_eq!(hover, None);
+    }
+
+    #[test]
+    fn test_linebased_hover_off_key() {
+        let text = "version=4\nhttps://example.org/hello/ hello-(.+)\\.tar\\.gz\n";
+        // Cursor on the URL (a VALUE, not a KEY) yields no hover.
+        let hover = linebased_hover_value(text, Position::new(1, 5));
+        assert_eq!(hover, None);
     }
 }
