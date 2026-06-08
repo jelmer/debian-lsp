@@ -28,7 +28,9 @@ pub fn generate_semantic_tokens(
         let token_type = match token.kind() {
             SyntaxKind::COMMENT => TOKEN_TYPE_COMMENT,
             SyntaxKind::TAG => TOKEN_TYPE_FIELD,
-            SyntaxKind::PACKAGE_NAME | SyntaxKind::PACKAGE_TYPE => TOKEN_TYPE_VALUE,
+            SyntaxKind::PACKAGE_NAME | SyntaxKind::PACKAGE_TYPE | SyntaxKind::ARCH => {
+                TOKEN_TYPE_VALUE
+            }
             SyntaxKind::INFO => TOKEN_TYPE_VALUE,
             _ => continue,
         };
@@ -97,5 +99,19 @@ mod tests {
 
         // Should have tokens for: package name, tag, info
         assert!(tokens.len() >= 3);
+    }
+
+    #[test]
+    fn test_semantic_tokens_arch() {
+        let text = "libcurl4 [amd64 !arm64] binary: some-tag\n";
+        let parsed = LintianOverrides::parse(text);
+        let overrides = parsed.ok().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&overrides, Source::new(text, &idx));
+        let arch_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == TOKEN_TYPE_VALUE)
+            .collect();
+        assert!(arch_tokens.len() >= 2);
     }
 }
