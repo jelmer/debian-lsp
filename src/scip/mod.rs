@@ -15,6 +15,7 @@ pub mod control;
 pub mod copyright;
 pub mod debcargo;
 pub mod diagnostics;
+pub mod fields;
 pub mod highlight;
 pub mod indexer;
 pub mod linetable;

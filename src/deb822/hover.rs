@@ -1,19 +1,9 @@
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
-use super::completion::{get_cursor_context, CursorContext, FieldInfo};
+use super::completion::{
+    field_description as get_field_description, get_cursor_context, CursorContext, FieldInfo,
+};
 use crate::position::Source;
-
-/// Look up the description for a field name (case-insensitive).
-fn get_field_description(
-    fields: &[FieldInfo],
-    field_name: &str,
-) -> Option<(&'static str, &'static str)> {
-    let lowercase = field_name.to_lowercase();
-    fields
-        .iter()
-        .find(|f| f.name.to_lowercase() == lowercase)
-        .map(|f| (f.name, f.description))
-}
 
 /// Get hover information for a deb822 document at the given cursor position.
 ///

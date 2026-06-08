@@ -291,6 +291,48 @@ pub fn debian_file(source: &str, version: Option<&str>, relative_path: &str) -> 
     })
 }
 
+/// Symbol for a field name in `debian/copyright` (DEP-5).
+pub fn copyright_field(source: &str, version: Option<&str>, field: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("copyright", Suffix::Namespace),
+            desc(field, Suffix::Term),
+        ],
+        ..Default::default()
+    })
+}
+
+/// Symbol for a field name in `debian/tests/control` (autopkgtest).
+pub fn autopkgtest_field(source: &str, version: Option<&str>, field: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("tests", Suffix::Namespace),
+            desc(field, Suffix::Term),
+        ],
+        ..Default::default()
+    })
+}
+
+/// Symbol for a field name in a `debian/watch` v5 (deb822) file.
+pub fn watch_field(source: &str, version: Option<&str>, field: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        package: Some(pkg(source, version)).into(),
+        descriptors: vec![
+            desc(source, Suffix::Namespace),
+            desc("watch", Suffix::Namespace),
+            desc(field, Suffix::Term),
+        ],
+        ..Default::default()
+    })
+}
+
 /// Symbol for a `Files:` paragraph glob in `debian/copyright`.
 pub fn copyright_files_glob(source: &str, version: Option<&str>, glob: &str) -> String {
     fmt(Symbol {

@@ -24,6 +24,20 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
     // Syntax-highlighting occurrences for the whole file.
     occurrences.extend(crate::scip::highlight::watch(text, &lines));
 
+    // For v5 (deb822) watch files, emit documented field-name symbols.
+    if let debian_watch::parse::ParsedWatchFile::Deb822(wf) =
+        debian_watch::parse::Parse::parse(text).to_watch_file()
+    {
+        crate::scip::fields::emit_field_symbols(
+            wf.as_deb822(),
+            &lines,
+            &mut occurrences,
+            &mut symbols_info,
+            |field| symbols::watch_field(source, version, field),
+            crate::watch::fields::field_description,
+        );
+    }
+
     for (i, entry) in watch.entries().enumerate() {
         let entry_sym =
             symbols::upstream_metadata_field(source, version, &format!("watch-entry-{}", i));
@@ -95,5 +109,37 @@ opts=\"uversionmangle=s/-/./\" https://example.org/hello/ hello-(.+)\\.tar\\.gz
                 .any(|o| o.symbol.is_empty() && o.syntax_kind != unspecified),
             "expected highlight occurrences for a v5 watch file"
         );
+    }
+
+    #[test]
+    fn v5_field_names_carry_documentation() {
+        let text = "Version: 5\n\nSource: https://example.org/hello/\nMatching-Pattern: hello-(.+)\\.tar\\.gz\n";
+        let idx = index(text, "debian/watch", "hello", Some("2.10-3"));
+
+        let mp_sym = symbols::watch_field("hello", Some("2.10-3"), "Matching-Pattern");
+        let mp = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == mp_sym)
+            .expect("Matching-Pattern field symbol");
+        assert_eq!(
+            mp.documentation,
+            vec![crate::watch::fields::field_description("Matching-Pattern")
+                .unwrap()
+                .1
+                .to_owned()]
+        );
+    }
+
+    #[test]
+    fn v4_linebased_has_no_field_symbols() {
+        // Line-based (v1-4) watch files have no deb822 field keys to document.
+        let idx = index(SAMPLE, "debian/watch", "hello", Some("2.10-3"));
+        assert!(idx
+            .document
+            .symbols
+            .iter()
+            .all(|s| !s.symbol.contains("/watch/")));
     }
 }

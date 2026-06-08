@@ -47,6 +47,18 @@ pub fn index(
     // Syntax-highlighting occurrences for the whole document.
     occurrences.extend(crate::scip::highlight::deb822(&deb822, &lines));
 
+    // Documented field-name symbols for every test stanza.
+    crate::scip::fields::emit_field_symbols(
+        &deb822,
+        &lines,
+        &mut occurrences,
+        &mut symbols_info,
+        |field| symbols::autopkgtest_field(source, version, field),
+        |field| {
+            crate::deb822::completion::field_description(crate::tests::fields::TESTS_FIELDS, field)
+        },
+    );
+
     for para in deb822.paragraphs() {
         if let Some(entry) = para.get_entry("Tests") {
             if let Some(vr) = entry.value_range() {
@@ -231,12 +243,13 @@ Features: test-name
     fn indexes_tests_depends_and_restrictions() {
         let idx = index(SAMPLE, "debian/tests/control", "hello", Some("2.10-3"));
 
-        // Two test definitions: smoke, integration.
+        // Two test definitions: smoke, integration. Filtered to test-role
+        // definitions to exclude the documented field-name definitions.
         let defs: Vec<_> = idx
             .document
             .occurrences
             .iter()
-            .filter(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .filter(|o| (o.symbol_roles & SymbolRole::Test as i32) != 0)
             .collect();
         assert_eq!(defs.len(), 2, "defs: {defs:?}");
         assert!(defs.iter().any(|o| o.symbol.contains("smoke")));
@@ -274,6 +287,40 @@ Features: test-name
         assert!(idx.restrictions.contains("needs-root"));
         assert!(idx.restrictions.contains("allow-stderr"));
         assert!(idx.features.contains("test-name"));
+    }
+
+    #[test]
+    fn field_names_carry_documentation() {
+        let idx = index(SAMPLE, "debian/tests/control", "hello", Some("2.10-3"));
+
+        let restr_sym = symbols::autopkgtest_field("hello", Some("2.10-3"), "Restrictions");
+        let restr = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == restr_sym)
+            .expect("Restrictions field symbol");
+        assert_eq!(
+            restr.documentation,
+            vec![crate::deb822::completion::field_description(
+                crate::tests::fields::TESTS_FIELDS,
+                "Restrictions"
+            )
+            .unwrap()
+            .1
+            .to_owned()]
+        );
+
+        // The field key emits a Definition occurrence distinct from the
+        // test-name definitions (which also carry the Test role).
+        let key_def = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == restr_sym)
+            .expect("Restrictions field occurrence");
+        assert_ne!(key_def.symbol_roles & SymbolRole::Definition as i32, 0);
+        assert_eq!(key_def.symbol_roles & SymbolRole::Test as i32, 0);
     }
 
     #[test]
