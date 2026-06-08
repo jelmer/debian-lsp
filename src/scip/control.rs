@@ -503,10 +503,10 @@ Architecture: any
 Description: example
 ";
         let idx = index(text, "debian/control", Some("2.10-3"));
-        for url in [
-            "https://example.org/hello",
-            "https://salsa.debian.org/debian/hello",
-            "https://salsa.debian.org/debian/hello.git",
+        for (field, url) in [
+            ("Homepage", "https://example.org/hello"),
+            ("Vcs-Browser", "https://salsa.debian.org/debian/hello"),
+            ("Vcs-Git", "https://salsa.debian.org/debian/hello.git"),
         ] {
             let sym = symbols::web_url(url);
             let occ = idx
@@ -522,7 +522,11 @@ Description: example
                 .iter()
                 .find(|s| s.symbol == sym)
                 .unwrap_or_else(|| panic!("no symbol info for {url}"));
-            assert_eq!(info.documentation, vec![symbols::web_url_doc(url)]);
+            // The link doc names the originating control field.
+            assert_eq!(
+                info.documentation,
+                vec![symbols::web_url_doc_labeled(field, url)]
+            );
         }
     }
 

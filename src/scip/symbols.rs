@@ -243,6 +243,14 @@ pub fn web_url_doc(url: &str) -> String {
     format!("[{url}]({url})")
 }
 
+/// Markdown documentation for a [`web_url`] symbol whose origin field is known,
+/// e.g. `Homepage` or `Vcs-Browser`. The label becomes the link text so a
+/// consumer (LSP hover, an index browser) can show what the link is rather than
+/// repeating the bare URL.
+pub fn web_url_doc_labeled(label: &str, url: &str) -> String {
+    format!("[{label}]({url})")
+}
+
 /// Symbol for a build profile name (e.g. `nocheck`, `noudeb`).
 ///
 /// Cross-package, so all uses of a given profile collect under one symbol. A
