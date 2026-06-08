@@ -20,7 +20,8 @@ const URL_FIELD_NAMES: &[&str] = &[
     "Webservice",
 ];
 
-fn is_url_field(name: &str) -> bool {
+/// Whether a field's value is a URL that should be a clickable link.
+pub fn is_url_field(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     URL_FIELD_NAMES
         .iter()

@@ -12,7 +12,8 @@ pub const COPYRIGHT_FIELDS: &[FieldInfo] = &[
     FieldInfo::new(
         "Format",
         "URI of the format specification, e.g. `https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/`. Required in the header paragraph.",
-    ),
+    )
+    .url(),
     FieldInfo::new(
         "Upstream-Name",
         "The name upstream uses for the software. Optional, only used in the header paragraph.",
@@ -20,23 +21,28 @@ pub const COPYRIGHT_FIELDS: &[FieldInfo] = &[
     FieldInfo::new(
         "Upstream-Contact",
         "The preferred address(es) to reach the upstream project. Typically an email address or URL. May be a line-based list. Optional, only used in the header paragraph.",
-    ),
+    )
+    .prose(),
     FieldInfo::new(
         "Source",
         "An explanation of where the upstream source came from. Typically a URL. This field may be used to point at the upstream source code repository. Optional, only used in the header paragraph.",
-    ),
+    )
+    .prose(),
     FieldInfo::new(
         "Disclaimer",
         "Free-form text field for non-free or contrib packages to state that they are not part of Debian and to explain why. Optional, only used in the header paragraph.",
-    ),
+    )
+    .prose(),
     FieldInfo::new(
         "Comment",
         "Free-form text field for additional information. For example, it might quote the software's copyright notice if that triggers a specific requirement in the license.",
-    ),
+    )
+    .prose(),
     FieldInfo::new(
         "License",
         "Short name of the license on the first line (the synopsis), followed by the full license text on subsequent lines. In a Files paragraph, the synopsis is required but the full text may be omitted if a stand-alone License paragraph with the same synopsis exists.",
-    ),
+    )
+    .prose(),
     FieldInfo::new(
         "Copyright",
         "One or more free-form copyright statements, one per line. Required in Files paragraphs. In the header paragraph, it applies to files not matched by any Files paragraph.",

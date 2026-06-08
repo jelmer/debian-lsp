@@ -219,6 +219,25 @@ pub fn source_format(format: &str) -> String {
     })
 }
 
+/// Symbol for a web URL referenced from packaging metadata (a `Homepage`,
+/// `Vcs-Browser`, copyright `Format`, upstream `Repository`, etc.).
+///
+/// Cross-package and keyed on the URL itself, so the same URL collects under one
+/// symbol across the archive and the SCIP consumer renders it as a navigable,
+/// clickable link via the markdown documentation attached to the symbol.
+pub fn web_url(url: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        descriptors: vec![desc("url", Suffix::Namespace), desc(url, Suffix::Term)],
+        ..Default::default()
+    })
+}
+
+/// Markdown documentation for a [`web_url`] symbol: a clickable link to the URL.
+pub fn web_url_doc(url: &str) -> String {
+    format!("[{url}]({url})")
+}
+
 /// Symbol for a build profile name (e.g. `nocheck`, `noudeb`).
 ///
 /// Cross-package, so all uses of a given profile collect under one symbol. A

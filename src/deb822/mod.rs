@@ -1,6 +1,7 @@
 //! Generic utilities for deb822-lossless based files.
 
 pub mod completion;
+pub mod document_link;
 pub mod folding;
 pub mod hover;
 pub mod on_type_formatting;

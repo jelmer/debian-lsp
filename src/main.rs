@@ -44,6 +44,7 @@ mod debcargo;
 mod debian_workspace;
 mod dep3;
 mod distros;
+mod links;
 #[cfg(feature = "lintian-brush")]
 mod lintian_brush;
 mod lintian_overrides;
@@ -2598,6 +2599,30 @@ impl LanguageServer for Backend {
                     ))),
                     None => Ok(None),
                 }
+            }
+            FileType::Control => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_control(file.source_file);
+                let idx = crate::position::LineIndex::new(&source_text);
+                let src = crate::position::Source::new(&source_text, &idx);
+                Ok(Some(crate::deb822::document_link::get_document_links(
+                    parsed.tree().as_deb822(),
+                    control::fields::CONTROL_FIELDS,
+                    src,
+                )))
+            }
+            FileType::Copyright => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let parsed = workspace.get_parsed_copyright(file.source_file);
+                let idx = crate::position::LineIndex::new(&source_text);
+                let src = crate::position::Source::new(&source_text, &idx);
+                Ok(Some(crate::deb822::document_link::get_document_links(
+                    parsed.tree().as_deb822(),
+                    copyright::fields::COPYRIGHT_FIELDS,
+                    src,
+                )))
             }
             _ => Ok(None),
         }

@@ -26,6 +26,8 @@ pub fn index(
     let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut symbols_info: Vec<SymbolInformation> = Vec::new();
 
+    let mut url_symbols_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     let yaml = Parse::<YamlFile>::parse_yaml(text).tree();
     if let Some(mapping) = yaml.document().and_then(|d| d.as_mapping()) {
         for entry in mapping.entries() {
@@ -58,6 +60,33 @@ pub fn index(
                     .collect(),
                 ..Default::default()
             });
+
+            // Clickable link for a URL-valued field (Repository, Bug-Database,
+            // Homepage, ...). The whole scalar value is the URL.
+            if !crate::upstream_metadata::document_link::is_url_field(&key) {
+                continue;
+            }
+            let Some(value_node) = entry.value_node() else {
+                continue;
+            };
+            let Some(value_scalar) = value_node.as_scalar() else {
+                continue;
+            };
+            let url = value_scalar.as_string();
+            let url = url.trim();
+            if url.is_empty() {
+                continue;
+            }
+            let vrange = value_scalar.byte_range();
+            crate::scip::links::emit_url(
+                url,
+                vrange.start,
+                vrange.end,
+                &lines,
+                &mut occurrences,
+                &mut symbols_info,
+                &mut url_symbols_seen,
+            );
         }
     }
 
@@ -122,5 +151,27 @@ Reference:
             .symbols
             .iter()
             .any(|s| s.symbol.contains("Author")));
+    }
+
+    #[test]
+    fn links_url_values() {
+        let idx = index(SAMPLE, "debian/upstream/metadata", "hello", Some("2.10-3"));
+        for url in [
+            "https://github.com/example/hello",
+            "https://github.com/example/hello/issues",
+        ] {
+            let sym = symbols::web_url(url);
+            assert!(
+                idx.document.occurrences.iter().any(|o| o.symbol == sym),
+                "no link occurrence for {url}"
+            );
+            let info = idx
+                .document
+                .symbols
+                .iter()
+                .find(|s| s.symbol == sym)
+                .unwrap_or_else(|| panic!("no symbol info for {url}"));
+            assert_eq!(info.documentation, vec![symbols::web_url_doc(url)]);
+        }
     }
 }

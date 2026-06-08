@@ -32,6 +32,19 @@ pub fn index(
     // Syntax-highlighting occurrences for the whole document.
     occurrences.extend(crate::scip::highlight::deb822(cp.as_deb822(), &lines));
 
+    // Clickable links for the Format header URI plus URLs embedded in the prose
+    // fields (Comment, Disclaimer, Source, License text, ...).
+    let mut url_symbols_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    crate::scip::links::emit_deb822(
+        cp.as_deb822(),
+        crate::copyright::fields::COPYRIGHT_FIELDS,
+        text,
+        &lines,
+        &mut occurrences,
+        &mut symbols_info,
+        &mut url_symbols_seen,
+    );
+
     // Definitions: standalone License paragraphs.
     for lic in cp.iter_licenses() {
         let Some(name) = lic.name() else { continue };
@@ -176,17 +189,40 @@ License: MIT
         // 2 license stanzas + 2 Files: globs = 4 definitions.
         assert_eq!(defs.len(), 4);
 
-        // Reference occurrences carry a symbol but no Definition role. Filter
-        // out the symbol-less syntax-highlighting occurrences.
+        // License reference occurrences carry a symbol but no Definition role.
+        // Filter out the symbol-less syntax-highlighting occurrences and the
+        // URL link occurrences.
         let refs: Vec<_> = idx
             .document
             .occurrences
             .iter()
             .filter(|o| {
-                !o.symbol.is_empty() && (o.symbol_roles & SymbolRole::Definition as i32) == 0
+                !o.symbol.is_empty()
+                    && (o.symbol_roles & SymbolRole::Definition as i32) == 0
+                    && o.symbol.contains("license")
             })
             .collect();
         assert_eq!(refs.len(), 2);
+
+        // The `Format:` header URI is surfaced as a clickable link.
+        let format_url = "https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/";
+        let link = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == symbols::web_url(format_url))
+            .expect("Format URL link occurrence");
+        assert_eq!(link.symbol_roles & SymbolRole::Definition as i32, 0);
+        let link_sym = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == symbols::web_url(format_url))
+            .expect("Format URL symbol info");
+        assert_eq!(
+            link_sym.documentation,
+            vec![symbols::web_url_doc(format_url)]
+        );
 
         // Symbols on def and ref for GPL-2+ should match.
         let gpl_def = defs
