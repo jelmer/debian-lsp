@@ -11,6 +11,7 @@ async fn setup_server() -> (LspService<Backend>, tower_lsp_server::ClientSocket)
     let architecture_list = architecture::new_shared_list();
     let udd_pool = udd::shared_pool();
     let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
+    let cve_cache = cve::new_shared_cve_cache(udd_pool.clone());
     let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
     let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
     let maintainer_cache = maintainers::new_shared_maintainer_cache(udd_pool.clone());
@@ -23,6 +24,7 @@ async fn setup_server() -> (LspService<Backend>, tower_lsp_server::ClientSocket)
         package_cache,
         architecture_list,
         bug_cache,
+        cve_cache,
         maintainer_cache,
         vcswatch_cache,
         popcon_cache,

@@ -20,6 +20,8 @@ pub struct ChangelogIndex {
     pub bug_numbers: BTreeSet<u32>,
     /// Launchpad bug numbers referenced anywhere in the changelog.
     pub launchpad_bug_numbers: BTreeSet<u32>,
+    /// CVE identifiers referenced anywhere in the changelog.
+    pub cves: BTreeSet<String>,
 }
 
 /// Parse and index a `debian/changelog` file.
@@ -35,6 +37,7 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
     let mut topmost_version: Option<String> = None;
     let mut bug_numbers: BTreeSet<u32> = BTreeSet::new();
     let mut launchpad_bug_numbers: BTreeSet<u32> = BTreeSet::new();
+    let mut cves: BTreeSet<String> = BTreeSet::new();
 
     for (i, entry) in cl.iter().enumerate() {
         let pkg = entry.package();
@@ -111,6 +114,21 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
                     ..Default::default()
                 });
             }
+
+            // CVE identifiers inside detail tokens. Each occurrence carries the
+            // CVE symbol (for hover/navigation) and is highlighted as a numeric
+            // literal so SCIP consumers tint it like the bug references.
+            for c in crate::cve::find_cves(detail_text) {
+                let abs_start = detail_start + c.start as u32;
+                let abs_end = detail_start + c.end as u32;
+                occurrences.push(Occurrence {
+                    range: lines.range(abs_start, abs_end),
+                    symbol: symbols::cve(&c.id),
+                    syntax_kind: ScipSyntax::NumericLiteral.into(),
+                    ..Default::default()
+                });
+                cves.insert(c.id);
+            }
         }
     }
 
@@ -129,6 +147,7 @@ pub fn index(text: &str, relative_path: &str) -> ChangelogIndex {
         topmost_version,
         bug_numbers,
         launchpad_bug_numbers,
+        cves,
     }
 }
 
@@ -141,6 +160,7 @@ hello (2.10-3) unstable; urgency=medium
 
   * Fix segfault on empty input. (Closes: #999888)
   * Another change. (LP: #1234567)
+  * Fix buffer overflow (CVE-2024-12345).
 
  -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
 
@@ -192,5 +212,25 @@ hello (2.10-2) unstable; urgency=medium
                 "bug number should be highlighted"
             );
         }
+    }
+
+    #[test]
+    fn indexes_cves() {
+        let idx = index(SAMPLE, "debian/changelog");
+
+        let cve_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol.starts_with("scip-cve"))
+            .collect();
+        assert_eq!(cve_refs.len(), 1, "expected one CVE ref");
+        assert_eq!(
+            cve_refs[0].syntax_kind,
+            ScipSyntax::NumericLiteral.into(),
+            "CVE should be highlighted"
+        );
+
+        assert_eq!(idx.cves, BTreeSet::from(["CVE-2024-12345".to_string()]));
     }
 }

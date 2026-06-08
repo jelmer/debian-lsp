@@ -4,49 +4,85 @@
 //! references in changelog detail lines.  When a UDD/Launchpad connection
 //! is available the hover includes title, severity/status and other metadata;
 //! otherwise a plain link to the bug tracker is shown.
+//!
+//! Hovering over a CVE identifier (e.g. `CVE-2024-1234`) shows the security
+//! tracker description and per-release status from UDD, falling back to a plain
+//! link to the Debian Security Tracker.
 
 use debian_changelog::bugs::Bug;
+use debian_changelog::SyntaxKind;
 use rowan::ast::AstNode;
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
+use crate::cve::{self, SharedCveCache};
 use crate::position::Source;
 
-/// Get hover information for a bug reference in a changelog file.
+/// A reference found under the cursor in a changelog file.
+enum Reference {
+    Bug(Bug),
+    /// A CVE identifier together with the source package of the entry it
+    /// appears in (used to scope the per-release status lookup).
+    Cve {
+        id: String,
+        source: String,
+    },
+}
+
+/// Get hover information for a bug or CVE reference in a changelog file.
 ///
-/// Fetches bug details from the cache (populating it from UDD/Launchpad on
-/// first access for the package).  Returns `None` when the cursor is not on a
-/// bug reference.
+/// For bug references, fetches bug details from the cache (populating it from
+/// UDD/Launchpad on first access for the package).  For CVE identifiers, fetches
+/// security tracker details from UDD, falling back to a plain link.  Returns
+/// `None` when the cursor is not on a reference.
 pub async fn get_hover(
     parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
     src: Source<'_>,
     position: Position,
     bug_cache: &SharedBugCache,
+    cve_cache: &SharedCveCache,
 ) -> Option<Hover> {
-    // Extract bug ref in a non-Send scope, then drop all CST values before
-    // the first await so the future remains Send.
-    let bug = {
+    // Extract the reference in a non-Send scope, then drop all CST values
+    // before the first await so the future remains Send.
+    let reference = {
         let changelog = debian_changelog::ChangeLog::cast(parse.syntax_node())?;
         let offset = src.try_position_to_offset(position)?;
         let entry = changelog.entry_at_offset(offset)?;
-        entry.bug_at_offset(offset)?
+        match entry.bug_at_offset(offset) {
+            Some(bug) => Reference::Bug(bug),
+            None => {
+                let c = cve_at_offset(parse, offset)?;
+                Reference::Cve {
+                    id: c.id,
+                    source: entry.package().unwrap_or_default(),
+                }
+            }
+        }
     };
 
-    match &bug {
-        Bug::Debian(id) => {
-            let summary = crate::bugs::debian_bug_summary(bug_cache, *id).await;
+    match reference {
+        Reference::Bug(bug) => Some(make_bug_hover(&bug, bug_cache).await),
+        Reference::Cve { id, source } => {
+            let summary = cve::cve_summary(cve_cache, &id, &source).await;
             Some(match summary {
-                Some(s) => make_debian_hover(&s),
-                None => make_fallback_hover(&bug),
+                Some(s) => make_cve_hover(&s),
+                None => make_cve_link_hover(&id),
             })
         }
-        Bug::Launchpad(id) => {
-            let summary = crate::bugs::launchpad_bug_summary(bug_cache, *id).await;
-            Some(match summary {
-                Some(s) => make_launchpad_hover(&s),
-                None => make_fallback_hover(&bug),
-            })
-        }
+    }
+}
+
+/// Build the hover for a bug reference, fetching details from the cache.
+async fn make_bug_hover(bug: &Bug, bug_cache: &SharedBugCache) -> Hover {
+    match bug {
+        Bug::Debian(id) => match crate::bugs::debian_bug_summary(bug_cache, *id).await {
+            Some(s) => make_debian_hover(&s),
+            None => make_fallback_hover(bug),
+        },
+        Bug::Launchpad(id) => match crate::bugs::launchpad_bug_summary(bug_cache, *id).await {
+            Some(s) => make_launchpad_hover(&s),
+            None => make_fallback_hover(bug),
+        },
     }
 }
 
@@ -61,6 +97,56 @@ fn make_fallback_hover(bug: &Bug) -> Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
             value: format!("**[{}]({})** ", label, bug.url()),
+        }),
+        range: None,
+    }
+}
+
+/// Find the CVE identifier covering `offset` by scanning the DETAIL token that
+/// contains it.
+fn cve_at_offset(
+    parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
+    offset: text_size::TextSize,
+) -> Option<cve::CveRef> {
+    for element in parse.syntax_node().descendants_with_tokens() {
+        let rowan::NodeOrToken::Token(token) = element else {
+            continue;
+        };
+        if token.kind() != SyntaxKind::DETAIL {
+            continue;
+        }
+        let range = token.text_range();
+        if !range.contains_inclusive(offset) {
+            continue;
+        }
+        let rel = usize::from(offset - range.start());
+        return cve::cve_at_offset(token.text(), rel).map(|mut c| {
+            let base = usize::from(range.start());
+            c.start += base;
+            c.end += base;
+            c
+        });
+    }
+    None
+}
+
+/// Hover showing UDD security tracker details for a CVE.
+fn make_cve_hover(summary: &cve::CveSummary) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: cve::summary_markdown(summary),
+        }),
+        range: None,
+    }
+}
+
+/// Fallback hover when no UDD data is available: a link to the Security Tracker.
+fn make_cve_link_hover(id: &str) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: cve::link_markdown(id),
         }),
         range: None,
     }
@@ -295,6 +381,46 @@ mod tests {
         assert_eq!(
             hover_markdown(&hover),
             "**[Launchpad Bug #42](https://bugs.launchpad.net/bugs/42)** "
+        );
+    }
+
+    #[test]
+    fn test_cve_at_offset_in_detail() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Fix CVE-2024-1234.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let byte_offset = text.find("2024").unwrap();
+        let offset = TextSize::try_from(byte_offset).unwrap();
+        assert_eq!(
+            cve_at_offset(&parsed, offset).map(|c| c.id),
+            Some("CVE-2024-1234".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cve_at_offset_offsets_are_absolute() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Fix CVE-2024-1234.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let byte_offset = text.find("CVE").unwrap();
+        let offset = TextSize::try_from(byte_offset).unwrap();
+        let found = cve_at_offset(&parsed, offset).unwrap();
+        assert_eq!(found.start, byte_offset);
+        assert_eq!(&text[found.start..found.end], "CVE-2024-1234");
+    }
+
+    #[test]
+    fn test_no_cve_on_regular_text() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Just a regular change.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let offset = TextSize::try_from(text.find("regular").unwrap()).unwrap();
+        assert_eq!(cve_at_offset(&parsed, offset), None);
+    }
+
+    #[test]
+    fn test_make_cve_link_hover() {
+        let hover = make_cve_link_hover("CVE-2024-1234");
+        assert_eq!(
+            hover_markdown(&hover),
+            "**[CVE-2024-1234](https://security-tracker.debian.org/tracker/CVE-2024-1234)**"
         );
     }
 }

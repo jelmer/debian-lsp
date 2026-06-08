@@ -38,6 +38,7 @@ mod bugs;
 mod changelog;
 mod control;
 mod copyright;
+mod cve;
 mod deb822;
 mod debcargo;
 #[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
@@ -253,6 +254,7 @@ struct Backend {
     package_cache: package_cache::SharedPackageCache,
     architecture_list: architecture::SharedArchitectureList,
     bug_cache: bugs::SharedBugCache,
+    cve_cache: cve::SharedCveCache,
     maintainer_cache: maintainers::SharedMaintainerCache,
     vcswatch_cache: vcswatch::SharedVcsWatchCache,
     popcon_cache: popcon::SharedPopconCache,
@@ -900,6 +902,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::new("changelogTimestamp"),
                                     SemanticTokenType::new("changelogMetadataValue"),
                                     SemanticTokenType::new("changelogBugReference"),
+                                    SemanticTokenType::new("changelogCve"),
                                 ],
                                 token_modifiers: vec![SemanticTokenModifier::DECLARATION],
                             },
@@ -2557,7 +2560,10 @@ impl LanguageServer for Backend {
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 drop(workspace);
-                Ok(changelog::get_hover(&parsed, src, position, &self.bug_cache).await)
+                Ok(
+                    changelog::get_hover(&parsed, src, position, &self.bug_cache, &self.cve_cache)
+                        .await,
+                )
             }
             FileType::UpstreamMetadata => {
                 let parsed = workspace.get_parsed_upstream_metadata(file.source_file);
@@ -3342,6 +3348,7 @@ async fn main() {
 
             let udd_pool = udd::shared_pool();
             let bug_cache = bugs::new_shared_bug_cache(udd_pool.clone());
+            let cve_cache = cve::new_shared_cve_cache(udd_pool.clone());
             let vcswatch_cache = vcswatch::new_shared_vcswatch_cache(udd_pool.clone());
             let popcon_cache = popcon::new_shared_popcon_cache(udd_pool.clone());
             let maintainer_cache = maintainers::new_shared_maintainer_cache(udd_pool.clone());
@@ -3354,6 +3361,7 @@ async fn main() {
                 package_cache: package_cache.clone(),
                 architecture_list: architecture_list.clone(),
                 bug_cache: bug_cache.clone(),
+                cve_cache: cve_cache.clone(),
                 maintainer_cache: maintainer_cache.clone(),
                 vcswatch_cache: vcswatch_cache.clone(),
                 popcon_cache: popcon_cache.clone(),

@@ -29,6 +29,9 @@ pub const BTS_SCHEME: &str = "scip-debian-bts";
 /// Scheme used for Launchpad bug references.
 pub const LP_SCHEME: &str = "scip-launchpad-bug";
 
+/// Scheme used for CVE references.
+pub const CVE_SCHEME: &str = "scip-cve";
+
 /// Manager string identifying Debian source packages.
 pub const MANAGER: &str = "debian";
 
@@ -37,6 +40,9 @@ pub const BTS_MANAGER: &str = "debian-bts";
 
 /// Manager string identifying Launchpad.
 pub const LP_MANAGER: &str = "launchpad";
+
+/// Manager string identifying CVE references.
+pub const CVE_MANAGER: &str = "cve";
 
 /// Build a `Descriptor` with the given name and suffix.
 fn desc(name: &str, suffix: Suffix) -> Descriptor {
@@ -473,6 +479,41 @@ pub fn lp_bug_static_doc(number: u32) -> String {
     format!("**[Launchpad Bug #{number}](https://bugs.launchpad.net/bugs/{number})**")
 }
 
+/// Symbol for a CVE identifier.
+///
+/// Cross-package: every reference to a given CVE across the archive resolves to
+/// the same symbol. CVEs belong to no source package, so the package field is
+/// left empty.
+pub fn cve(id: &str) -> String {
+    fmt(Symbol {
+        scheme: CVE_SCHEME.to_owned(),
+        package: Some(Package {
+            manager: CVE_MANAGER.to_owned(),
+            ..Default::default()
+        })
+        .into(),
+        descriptors: vec![desc(id, Suffix::Meta)],
+        ..Default::default()
+    })
+}
+
+/// Recover the CVE identifier from a symbol produced by [`cve`].
+///
+/// Returns `None` for any symbol that is not a CVE reference.
+pub fn parse_cve(symbol: &str) -> Option<String> {
+    let parsed = scip::symbol::parse_symbol(symbol).ok()?;
+    if parsed.scheme != CVE_SCHEME {
+        return None;
+    }
+    Some(parsed.descriptors.first()?.name.clone())
+}
+
+/// Static documentation for a CVE, used when no live security tracker data is
+/// available (offline mode, or a lookup that returned nothing).
+pub fn cve_static_doc(id: &str) -> String {
+    crate::cve::link_markdown(id)
+}
+
 /// A [`Relationship`] declaring that the owning symbol is a reference of
 /// `target`.
 ///
@@ -579,6 +620,35 @@ mod tests {
         assert_eq!(
             lp_bug_static_doc(2002003),
             "**[Launchpad Bug #2002003](https://bugs.launchpad.net/bugs/2002003)**"
+        );
+    }
+
+    #[test]
+    fn cve_round_trips_through_parse() {
+        assert_eq!(
+            parse_cve(&cve("CVE-2024-1234")),
+            Some("CVE-2024-1234".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_cve_rejects_other_symbols() {
+        assert_eq!(parse_cve(&bts_bug("123456")), None);
+        assert_eq!(parse_cve(&source_package("hello", None)), None);
+        assert_eq!(parse_cve("not a symbol"), None);
+    }
+
+    #[test]
+    fn cve_belongs_to_no_package() {
+        let parsed = scip::symbol::parse_symbol(&cve("CVE-2024-1234")).unwrap();
+        assert!(parsed.package.name.is_empty());
+    }
+
+    #[test]
+    fn cve_static_doc_links_to_tracker() {
+        assert_eq!(
+            cve_static_doc("CVE-2024-1234"),
+            "**[CVE-2024-1234](https://security-tracker.debian.org/tracker/CVE-2024-1234)**"
         );
     }
 }

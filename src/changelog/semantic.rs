@@ -60,7 +60,7 @@ pub fn generate_semantic_tokens(
                     );
                 }
                 SyntaxKind::DETAIL => {
-                    bug_ref_continues = push_bug_references(
+                    bug_ref_continues = push_detail_references(
                         &mut builder,
                         src,
                         range.start(),
@@ -102,13 +102,14 @@ fn push_token(
     }
 }
 
-/// Emit semantic tokens for bug references within a DETAIL token.
+/// Emit semantic tokens for bug and CVE references within a DETAIL token.
 ///
-/// Highlights `Closes: #NNN, #NNN` and `LP: #NNN, #NNN` spans, including
-/// references that wrap across DETAIL tokens (continuation lines).
+/// Highlights `Closes: #NNN, #NNN` and `LP: #NNN, #NNN` bug spans (including
+/// references that wrap across DETAIL tokens) and `CVE-YYYY-NNNN` identifiers.
+/// Spans are emitted in document order so the builder's deltas stay monotonic.
 ///
-/// Returns `true` if the reference continues past the end of this token.
-fn push_bug_references(
+/// Returns `true` if a bug reference continues past the end of this token.
+fn push_detail_references(
     builder: &mut SemanticTokensBuilder,
     src: Source<'_>,
     token_start: text_size::TextSize,
@@ -116,25 +117,32 @@ fn push_bug_references(
     continues_from_prev: bool,
 ) -> bool {
     let start: usize = token_start.into();
-    let spans = debian_changelog::bugs::bug_ref_spans(text, continues_from_prev);
-    let mut last_continues = false;
 
-    for span in &spans {
-        let matched_text = &text[span.start..span.end];
-        let abs_start = text_size::TextSize::from((start + span.start) as u32);
-        let start_pos = src.offset_to_position(abs_start);
-        let length = crate::position::utf16_len(matched_text);
-        if length > 0 {
-            builder.push(
-                start_pos.line,
-                start_pos.character,
-                length,
-                TokenType::ChangelogBugReference,
-                0,
-            );
-        }
+    // Collect (relative-start, relative-end, token-type) for both kinds, then
+    // sort by position before pushing.
+    let mut spans: Vec<(usize, usize, TokenType)> = Vec::new();
+
+    let bug_spans = debian_changelog::bugs::bug_ref_spans(text, continues_from_prev);
+    let mut last_continues = false;
+    for span in &bug_spans {
+        spans.push((span.start, span.end, TokenType::ChangelogBugReference));
         if span.continues {
             last_continues = true;
+        }
+    }
+
+    for c in crate::cve::find_cves(text) {
+        spans.push((c.start, c.end, TokenType::ChangelogCve));
+    }
+
+    spans.sort_by_key(|(s, _, _)| *s);
+
+    for (s, e, token_type) in spans {
+        let abs_start = text_size::TextSize::from((start + s) as u32);
+        let start_pos = src.offset_to_position(abs_start);
+        let length = crate::position::utf16_len(&text[s..e]);
+        if length > 0 {
+            builder.push(start_pos.line, start_pos.character, length, token_type, 0);
         }
     }
 
@@ -366,5 +374,42 @@ pkg (1.0-1) unstable; urgency=low
         assert_eq!(bug_tokens.len(), 2, "bug tokens: {bug_tokens:?}");
         assert_eq!(bug_tokens[0].length, 12); // "Closes: #111"
         assert_eq!(bug_tokens[1].length, 4); // "#222"
+    }
+
+    #[test]
+    fn test_cve_reference() {
+        let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix CVE-2024-1234.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = debian_changelog::ChangeLog::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
+
+        let cve_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == TokenType::ChangelogCve as u32)
+            .collect();
+        assert_eq!(cve_tokens.len(), 1);
+        assert_eq!(cve_tokens[0].length, 13); // "CVE-2024-1234"
+    }
+
+    #[test]
+    fn test_cve_and_bug_in_same_detail_emit_in_order() {
+        // A CVE before a Closes: in the same detail line. Tokens must be emitted
+        // in document order so the builder's deltas stay monotonic.
+        let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix CVE-2024-1234 (Closes: #111)\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = debian_changelog::ChangeLog::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
+
+        let refs: Vec<_> = tokens
+            .iter()
+            .filter(|t| {
+                t.token_type == TokenType::ChangelogCve as u32
+                    || t.token_type == TokenType::ChangelogBugReference as u32
+            })
+            .collect();
+        assert_eq!(refs.len(), 2);
+        // CVE comes first in the source, so it is emitted first.
+        assert_eq!(refs[0].token_type, TokenType::ChangelogCve as u32);
+        assert_eq!(refs[1].token_type, TokenType::ChangelogBugReference as u32);
     }
 }
