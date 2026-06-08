@@ -45,6 +45,21 @@ pub fn index(
         &mut url_symbols_seen,
     );
 
+    // Documented field-name symbols for every paragraph.
+    crate::scip::fields::emit_field_symbols(
+        cp.as_deb822(),
+        &lines,
+        &mut occurrences,
+        &mut symbols_info,
+        |field| symbols::copyright_field(source_name, version, field),
+        |field| {
+            crate::deb822::completion::field_description(
+                crate::copyright::fields::COPYRIGHT_FIELDS,
+                field,
+            )
+        },
+    );
+
     // Definitions: standalone License paragraphs.
     for lic in cp.iter_licenses() {
         let Some(name) = lic.name() else { continue };
@@ -180,11 +195,21 @@ License: MIT
     #[test]
     fn indexes_license_defs_and_refs() {
         let idx = index(SAMPLE, "debian/copyright", "hello", Some("2.10-3"));
+        // License-stanza and Files-glob definitions, excluding the
+        // field-name definitions emitted for documentation.
+        let field_syms: std::collections::HashSet<String> =
+            crate::copyright::fields::COPYRIGHT_FIELDS
+                .iter()
+                .map(|f| symbols::copyright_field("hello", Some("2.10-3"), f.name))
+                .collect();
         let defs: Vec<_> = idx
             .document
             .occurrences
             .iter()
-            .filter(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .filter(|o| {
+                (o.symbol_roles & SymbolRole::Definition as i32) != 0
+                    && !field_syms.contains(&o.symbol)
+            })
             .collect();
         // 2 license stanzas + 2 Files: globs = 4 definitions.
         assert_eq!(defs.len(), 4);
@@ -262,5 +287,49 @@ License: MIT
             vendor_sym.relationships[0].symbol,
             symbols::license("hello", Some("2.10-3"), "MIT")
         );
+    }
+
+    #[test]
+    fn field_names_carry_documentation() {
+        let idx = index(SAMPLE, "debian/copyright", "hello", Some("2.10-3"));
+
+        // The `Format` header field is a documented symbol matching the LSP
+        // hover description.
+        let format_sym = symbols::copyright_field("hello", Some("2.10-3"), "Format");
+        let format = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == format_sym)
+            .expect("Format field symbol");
+        assert_eq!(
+            format.documentation,
+            vec![crate::deb822::completion::field_description(
+                crate::copyright::fields::COPYRIGHT_FIELDS,
+                "Format"
+            )
+            .unwrap()
+            .1
+            .to_owned()]
+        );
+
+        // `License` recurs across paragraphs but is documented exactly once,
+        // while every key occurrence still points at the one symbol.
+        let license_sym = symbols::copyright_field("hello", Some("2.10-3"), "License");
+        let infos = idx
+            .document
+            .symbols
+            .iter()
+            .filter(|s| s.symbol == license_sym)
+            .count();
+        assert_eq!(infos, 1);
+        let occs = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol == license_sym)
+            .count();
+        // Two Files paragraphs + two standalone License paragraphs.
+        assert_eq!(occs, 4);
     }
 }

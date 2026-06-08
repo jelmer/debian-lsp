@@ -36,6 +36,7 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
     let mut build_profiles: HashSet<String> = HashSet::new();
     let mut source_name: Option<String> = None;
     let mut binary_names: Vec<String> = Vec::new();
+    let mut field_symbols_seen: HashSet<String> = HashSet::new();
 
     // Syntax-highlighting occurrences for the whole document.
     occurrences.extend(crate::scip::highlight::deb822(control.as_deb822(), &lines));
@@ -70,6 +71,17 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
                 display_name: name.clone(),
                 ..Default::default()
             });
+
+            // Documented field-name symbols for the source stanza.
+            crate::scip::fields::emit_paragraph_field_symbols(
+                source.as_deb822(),
+                &lines,
+                &mut occurrences,
+                &mut symbols_info,
+                &mut field_symbols_seen,
+                |field| symbols::source_field(&name, version, field),
+                control_field_description,
+            );
 
             // References inside source-stanza relation fields.
             for field in SOURCE_RELATION_FIELDS {
@@ -139,6 +151,18 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
             display_name: bname.clone(),
             ..Default::default()
         });
+
+        // Documented field-name symbols for this binary stanza.
+        let field_source = source_name.clone().unwrap_or_else(|| bname.clone());
+        crate::scip::fields::emit_paragraph_field_symbols(
+            binary.as_deb822(),
+            &lines,
+            &mut occurrences,
+            &mut symbols_info,
+            &mut field_symbols_seen,
+            |field| symbols::binary_field(&field_source, version, &bname, field),
+            control_field_description,
+        );
 
         for field in BINARY_RELATION_FIELDS {
             // `Provides` declares the (often versioned, virtual) binary packages
@@ -329,6 +353,11 @@ fn is_substvar_artifact(value_text: &str, name_range: &rowan::TextRange) -> bool
 
 /// A package-name occurrence (source/binary definition or provides). Package
 /// names are namespaces, so they get [`SyntaxKind::IdentifierNamespace`].
+/// Look up a `debian/control` field's canonical name and description.
+fn control_field_description(field: &str) -> Option<(&'static str, &'static str)> {
+    crate::deb822::completion::field_description(crate::control::fields::CONTROL_FIELDS, field)
+}
+
 fn occurrence(lines: &LineTable, range: (u32, u32), symbol: &str, role: SymbolRole) -> Occurrence {
     Occurrence {
         range: lines.range(range.0, range.1),
@@ -551,5 +580,39 @@ Depends: librust-bar-1+default-dev
             !idx.document.occurrences.iter().any(|o| o.symbol == junk),
             "substvar produced a phantom `binary` symbol"
         );
+    }
+
+    #[test]
+    fn field_names_carry_documentation() {
+        let idx = index(SAMPLE, "debian/control", Some("2.10-3"));
+
+        // The source-stanza `Build-Depends` field key is a documented symbol
+        // carrying the same description the LSP hover shows.
+        let bd_sym = symbols::source_field("hello", Some("2.10-3"), "Build-Depends");
+        let bd = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == bd_sym)
+            .expect("Build-Depends field symbol");
+        assert_eq!(
+            bd.documentation,
+            vec![control_field_description("Build-Depends")
+                .unwrap()
+                .1
+                .to_owned()]
+        );
+
+        // The binary-stanza `Architecture` field is scoped to its binary.
+        let arch_sym = symbols::binary_field("hello", Some("2.10-3"), "hello", "Architecture");
+        assert!(
+            idx.document.symbols.iter().any(|s| s.symbol == arch_sym),
+            "expected a documented Architecture field symbol on the binary stanza"
+        );
+
+        // A field key emits a Definition-role occurrence pointing at its symbol.
+        assert!(idx.document.occurrences.iter().any(|o| {
+            o.symbol == bd_sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0
+        }));
     }
 }

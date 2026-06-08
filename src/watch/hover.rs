@@ -2,17 +2,8 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 
 use crate::deb822::completion::{get_cursor_context, CursorContext};
 
-use super::fields::WATCH_FIELDS;
+use super::fields::field_description as get_field_description;
 use crate::position::Source;
-
-/// Look up a watch field description by name (case-insensitive).
-fn get_field_description(field_name: &str) -> Option<(&'static str, &'static str)> {
-    let lowercase = field_name.to_lowercase();
-    WATCH_FIELDS
-        .iter()
-        .find(|f| f.deb822_name.to_lowercase() == lowercase)
-        .map(|f| (f.deb822_name, f.description))
-}
 
 fn make_hover(field_name: &str, description: &str) -> Hover {
     Hover {

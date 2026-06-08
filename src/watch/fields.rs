@@ -354,6 +354,16 @@ pub fn get_standard_field_name(field_name: &str) -> Option<&'static str> {
         .map(|f| f.deb822_name)
 }
 
+/// Look up the canonical name and description of a watch field
+/// (case-insensitive). Shared by the LSP hover and the SCIP indexer.
+pub fn field_description(field_name: &str) -> Option<(&'static str, &'static str)> {
+    let lower = field_name.to_lowercase();
+    WATCH_FIELDS
+        .iter()
+        .find(|f| f.deb822_name.to_lowercase() == lower)
+        .map(|f| (f.deb822_name, f.description))
+}
+
 /// Watch file format versions
 pub const WATCH_VERSIONS: &[u32] = &[1, 2, 3, 4, 5];
 

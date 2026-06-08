@@ -77,6 +77,20 @@ pub fn get_standard_field_name(fields: &[FieldInfo], field_name: &str) -> Option
         .map(|f| f.name)
 }
 
+/// Look up the canonical name and description of a field (case-insensitive).
+///
+/// Shared by the LSP hover providers and the SCIP indexer.
+pub fn field_description(
+    fields: &[FieldInfo],
+    field_name: &str,
+) -> Option<(&'static str, &'static str)> {
+    let lowercase = field_name.to_lowercase();
+    fields
+        .iter()
+        .find(|f| f.name.to_lowercase() == lowercase)
+        .map(|f| (f.name, f.description))
+}
+
 /// Generate field name completions from a list of field definitions.
 pub fn get_field_completions(fields: &[FieldInfo]) -> Vec<CompletionItem> {
     fields
