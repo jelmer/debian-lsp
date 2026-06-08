@@ -81,6 +81,7 @@ pub const TESTS_DEPENDS_SUBSTITUTION_VALUES: &[(&str, &str)] = &[
 ];
 
 /// Look up a description for an autopkgtest restriction name.
+#[cfg(any(feature = "scip", test))]
 pub fn restriction_description(name: &str) -> Option<&'static str> {
     TESTS_RESTRICTIONS_VALUES
         .iter()
@@ -89,6 +90,7 @@ pub fn restriction_description(name: &str) -> Option<&'static str> {
 }
 
 /// Look up a description for an autopkgtest feature name.
+#[cfg(any(feature = "scip", test))]
 pub fn feature_description(name: &str) -> Option<&'static str> {
     TESTS_FEATURES_VALUES
         .iter()
