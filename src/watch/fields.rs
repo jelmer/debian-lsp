@@ -364,6 +364,24 @@ pub fn field_description(field_name: &str) -> Option<(&'static str, &'static str
         .map(|f| (f.deb822_name, f.description))
 }
 
+/// Look up the canonical name and description of a v1-4 line-based option by its
+/// option name (e.g. `uversionmangle`). Shared by the LSP hover and the SCIP
+/// indexer.
+pub fn linebased_option_description(option_name: &str) -> Option<(&'static str, &'static str)> {
+    WATCH_FIELDS
+        .iter()
+        .find(|f| f.linebased_name == Some(option_name))
+        .map(|f| (f.linebased_name.unwrap(), f.description))
+}
+
+/// Description of the `version=N` directive that opens a watch file. Shared by
+/// the LSP hover and the SCIP indexer.
+pub fn version_directive_description() -> &'static str {
+    field_description("Version")
+        .map(|(_, desc)| desc)
+        .unwrap_or("Watch file format version")
+}
+
 /// Watch file format versions
 pub const WATCH_VERSIONS: &[u32] = &[1, 2, 3, 4, 5];
 
