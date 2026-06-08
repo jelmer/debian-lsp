@@ -16,12 +16,16 @@ use scip::types::{Occurrence, SymbolInformation, SymbolRole};
 use std::collections::HashSet;
 
 /// Emit a single link occurrence (and, on first sight, its symbol info) for the
-/// URL spanning `[abs_start, abs_end)` in the document. `symbols_seen`
+/// URL spanning the byte range `span` in the document. `symbols_seen`
 /// deduplicates the symbol info so a URL repeated in the file is documented once.
+///
+/// `label` is the originating field name (e.g. `Homepage`, `Vcs-Browser`) when
+/// the URL is a whole field value; it becomes the link text so a consumer can
+/// tell what the link is. `None` for URLs scraped from prose.
 pub fn emit_url(
     url: &str,
-    abs_start: u32,
-    abs_end: u32,
+    label: Option<&str>,
+    span: std::ops::Range<u32>,
     lines: &LineTable,
     occurrences: &mut Vec<Occurrence>,
     symbols_info: &mut Vec<SymbolInformation>,
@@ -29,18 +33,22 @@ pub fn emit_url(
 ) {
     let sym = symbols::web_url(url);
     occurrences.push(Occurrence {
-        range: lines.range(abs_start, abs_end),
+        range: lines.range(span.start, span.end),
         symbol: sym.clone(),
         symbol_roles: SymbolRole::ReadAccess as i32,
         syntax_kind: scip::types::SyntaxKind::IdentifierConstant.into(),
         ..Default::default()
     });
     if symbols_seen.insert(sym.clone()) {
+        let documentation = match label {
+            Some(label) => symbols::web_url_doc_labeled(label, url),
+            None => symbols::web_url_doc(url),
+        };
         symbols_info.push(SymbolInformation {
             symbol: sym,
             kind: scip::types::symbol_information::Kind::Constant.into(),
             display_name: url.to_owned(),
-            documentation: vec![symbols::web_url_doc(url)],
+            documentation: vec![documentation],
             ..Default::default()
         });
     }
@@ -52,6 +60,7 @@ pub fn emit_url(
 /// whose entire value is a URL.
 fn emit_whole(
     text: &str,
+    label: &str,
     base: u32,
     lines: &LineTable,
     occurrences: &mut Vec<Occurrence>,
@@ -67,8 +76,8 @@ fn emit_whole(
     let abs_end = abs_start + trimmed.len() as u32;
     emit_url(
         trimmed,
-        abs_start,
-        abs_end,
+        Some(label),
+        abs_start..abs_end,
         lines,
         occurrences,
         symbols_info,
@@ -91,8 +100,8 @@ fn emit_prose(
         let url = &text[rel_start..rel_end];
         emit_url(
             url,
-            base + rel_start as u32,
-            base + rel_end as u32,
+            None,
+            (base + rel_start as u32)..(base + rel_end as u32),
             lines,
             occurrences,
             symbols_info,
@@ -128,9 +137,15 @@ pub fn emit_deb822(
             let end = u32::from(vr.end());
             let value = &text[start as usize..end as usize];
             match content {
-                FieldContent::Url => {
-                    emit_whole(value, start, lines, occurrences, symbols_info, symbols_seen)
-                }
+                FieldContent::Url => emit_whole(
+                    value,
+                    &key,
+                    start,
+                    lines,
+                    occurrences,
+                    symbols_info,
+                    symbols_seen,
+                ),
                 FieldContent::Prose => {
                     emit_prose(value, start, lines, occurrences, symbols_info, symbols_seen)
                 }
@@ -169,6 +184,31 @@ mod tests {
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
         let syms = run(&deb822, CONTROL_FIELDS, text);
         assert_eq!(syms, vec![symbols::web_url("https://example.org/x")]);
+    }
+
+    #[test]
+    fn prose_url_doc_is_unlabeled() {
+        // A URL scraped from prose has no originating field, so its doc is the
+        // bare self-link rather than a labeled one.
+        let text = "Description: a tool\n See https://example.org/x for more.\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let lines = LineTable::new(text);
+        let mut occ = Vec::new();
+        let mut sym = Vec::new();
+        let mut seen = HashSet::new();
+        emit_deb822(
+            &deb822,
+            CONTROL_FIELDS,
+            text,
+            &lines,
+            &mut occ,
+            &mut sym,
+            &mut seen,
+        );
+        assert_eq!(
+            sym[0].documentation,
+            vec![symbols::web_url_doc("https://example.org/x")]
+        );
     }
 
     #[test]
@@ -228,9 +268,10 @@ Comment: derived from https://upstream.example/notice
         );
         assert_eq!(occ.len(), 1);
         assert_eq!(sym.len(), 1);
+        // The link text is the originating field name, not the bare URL.
         assert_eq!(
             sym[0].documentation,
-            vec!["[https://example.org/hello](https://example.org/hello)".to_owned()]
+            vec!["[Homepage](https://example.org/hello)".to_owned()]
         );
     }
 

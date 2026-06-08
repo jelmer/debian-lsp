@@ -246,7 +246,7 @@ License: MIT
             .expect("Format URL symbol info");
         assert_eq!(
             link_sym.documentation,
-            vec![symbols::web_url_doc(format_url)]
+            vec![symbols::web_url_doc_labeled("Format", format_url)]
         );
 
         // Symbols on def and ref for GPL-2+ should match.

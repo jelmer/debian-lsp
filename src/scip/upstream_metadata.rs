@@ -80,8 +80,8 @@ pub fn index(
             let vrange = value_scalar.byte_range();
             crate::scip::links::emit_url(
                 url,
-                vrange.start,
-                vrange.end,
+                Some(&key),
+                vrange.start..vrange.end,
                 &lines,
                 &mut occurrences,
                 &mut symbols_info,
@@ -156,9 +156,10 @@ Reference:
     #[test]
     fn links_url_values() {
         let idx = index(SAMPLE, "debian/upstream/metadata", "hello", Some("2.10-3"));
-        for url in [
-            "https://github.com/example/hello",
-            "https://github.com/example/hello/issues",
+        // The link doc names the originating field.
+        for (field, url) in [
+            ("Repository", "https://github.com/example/hello"),
+            ("Bug-Database", "https://github.com/example/hello/issues"),
         ] {
             let sym = symbols::web_url(url);
             assert!(
@@ -171,7 +172,10 @@ Reference:
                 .iter()
                 .find(|s| s.symbol == sym)
                 .unwrap_or_else(|| panic!("no symbol info for {url}"));
-            assert_eq!(info.documentation, vec![symbols::web_url_doc(url)]);
+            assert_eq!(
+                info.documentation,
+                vec![symbols::web_url_doc_labeled(field, url)]
+            );
         }
     }
 }
