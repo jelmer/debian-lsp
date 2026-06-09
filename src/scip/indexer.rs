@@ -139,25 +139,6 @@ impl Indexer {
             documents.push(idx.document);
         }
 
-        // Each document defines a `debian_file` symbol keyed by its path, so
-        // changelog mentions of a packaging file resolve to the file via "go
-        // to definition". Anchored at the start of the file.
-        for doc in &mut documents {
-            let sym = symbols::debian_file(src, version.as_deref(), &doc.relative_path);
-            doc.occurrences.push(scip::types::Occurrence {
-                range: vec![0, 0, 0, 0],
-                symbol: sym.clone(),
-                symbol_roles: scip::types::SymbolRole::Definition as i32,
-                ..Default::default()
-            });
-            doc.symbols.push(SymbolInformation {
-                symbol: sym,
-                kind: scip::types::symbol_information::Kind::File.into(),
-                display_name: doc.relative_path.clone(),
-                ..Default::default()
-            });
-        }
-
         // External symbols carry hover information for things referenced from
         // this index but defined elsewhere (other source packages) or drawn
         // from an archive-wide vocabulary (build profiles, autopkgtest

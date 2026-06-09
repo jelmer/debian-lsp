@@ -264,27 +264,31 @@ fn changelog_file_mentions_resolve_cross_file() {
         .find(|d| d.relative_path == "debian/changelog")
         .expect("changelog document");
 
-    // The changelog references the `debian_file` symbol for each mentioned
-    // file, scoped to the topmost source/version.
+    // The changelog references a `file_ref` symbol for each mentioned file, and
+    // documents it with a markdown link to the file's repo-relative path, so a
+    // consumer can jump to the file. No definition is emitted -- the jump comes
+    // from the link.
     for path in ["debian/control", "debian/patches/fix-segfault.patch"] {
-        let sym = super::symbols::debian_file("hello", Some("2.10-3"), path);
+        let sym = super::symbols::file_ref(path);
         assert!(
             changelog.occurrences.iter().any(|o| o.symbol == sym
                 && (o.symbol_roles & scip::types::SymbolRole::Definition as i32) == 0),
             "expected changelog reference to {path}"
         );
-
-        // ...and the referenced document defines that same symbol, so the
-        // reference resolves to it.
-        let target = index
-            .documents
+        let info = changelog
+            .symbols
             .iter()
-            .find(|d| d.relative_path == path)
-            .unwrap_or_else(|| panic!("missing document {path}"));
+            .find(|s| s.symbol == sym)
+            .unwrap_or_else(|| panic!("expected changelog to document {path}"));
+        assert_eq!(info.documentation, vec![super::symbols::file_ref_doc(path)]);
+
         assert!(
-            target.occurrences.iter().any(|o| o.symbol == sym
-                && (o.symbol_roles & scip::types::SymbolRole::Definition as i32) != 0),
-            "expected {path} to define its debian_file symbol"
+            !index
+                .documents
+                .iter()
+                .any(|d| d.occurrences.iter().any(|o| o.symbol == sym
+                    && (o.symbol_roles & scip::types::SymbolRole::Definition as i32) != 0)),
+            "no file definition should be emitted for {path}"
         );
     }
 }
