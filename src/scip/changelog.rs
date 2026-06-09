@@ -138,16 +138,18 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
                 cves.insert(c.id);
             }
 
-            // Mentions of other packaging files (`d/control`, `d/patches/...`).
-            for file_ref in crate::changelog::file_refs::iter_file_refs(detail_text) {
-                let abs_start = detail_start + file_ref.start as u32;
-                let abs_end = detail_start + file_ref.end as u32;
-                file_mentions.push((abs_start, abs_end, file_ref.path));
-            }
-
-            // Prose `patch <name>` mentions, only when the named patch exists.
+            // Mentions of other packaging files (`d/control`, `d/patches/...`)
+            // and prose `patch <name>` candidates. Both are gated on the
+            // target existing under `root`, so archive-section prose like
+            // `debian/main` and loose patch-word hits don't link to a missing
+            // file. Without a `root` we can't validate, so emit nothing.
             if let Some(root) = root {
-                for file_ref in crate::changelog::file_refs::iter_patch_word_refs(detail_text) {
+                let mentions = crate::changelog::file_refs::iter_file_refs(detail_text)
+                    .into_iter()
+                    .chain(crate::changelog::file_refs::iter_patch_word_refs(
+                        detail_text,
+                    ));
+                for file_ref in mentions {
                     if !root.join(&file_ref.path).is_file() {
                         continue;
                     }
@@ -283,10 +285,20 @@ hello (2.10-3) unstable; urgency=medium
 
   * d/control: Add python3-merge3 as Build Dependency.
   * d/patches/03_fix.patch: Remove patch.
+  * Uploaded to debian/main.
 
  -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
 ";
-        let idx = index(TEXT, "debian/changelog", None);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("debian/patches")).unwrap();
+        std::fs::write(dir.path().join("debian/control"), "Source: hello\n").unwrap();
+        std::fs::write(
+            dir.path().join("debian/patches/03_fix.patch"),
+            "--- a/x\n+++ b/x\n",
+        )
+        .unwrap();
+
+        let idx = index(TEXT, "debian/changelog", Some(dir.path()));
         let file_refs: Vec<_> = idx
             .document
             .occurrences
@@ -295,8 +307,8 @@ hello (2.10-3) unstable; urgency=medium
             .map(|o| o.symbol.as_str())
             .collect();
 
-        // Both mentions reference the `debian_file` symbol for their path,
-        // scoped to the topmost source/version.
+        // The existing files are referenced; the archive-section prose
+        // `debian/main` is filtered out because no such file exists.
         assert_eq!(
             file_refs,
             vec![
@@ -304,6 +316,25 @@ hello (2.10-3) unstable; urgency=medium
                 symbols::debian_file("hello", Some("2.10-3"), "debian/patches/03_fix.patch"),
             ]
         );
+    }
+
+    #[test]
+    fn skips_file_mentions_without_root() {
+        const TEXT: &str = "\
+hello (2.10-3) unstable; urgency=medium
+
+  * d/control: Add python3-merge3 as Build Dependency.
+
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
+";
+        let idx = index(TEXT, "debian/changelog", None);
+        let file_refs = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol.contains("file/"))
+            .count();
+        assert_eq!(file_refs, 0);
     }
 
     #[test]
