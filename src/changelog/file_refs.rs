@@ -8,9 +8,10 @@
 //! Two forms are recognised:
 //!
 //! - explicit paths (`iter_file_refs`): `d/...` or `debian/...`;
-//! - the prose form `patch <name>` (`iter_patch_word_refs`), which names a
-//!   patch in `debian/patches/` without the directory prefix. This form is
-//!   only meaningful when the named patch actually exists, so callers should
+//! - the prose forms `patch <name>` and `patches <a>, <b> and <c>`
+//!   (`iter_patch_word_refs`), which name one or more patches in
+//!   `debian/patches/` without the directory prefix. This form is only
+//!   meaningful when the named patches actually exist, so callers should
 //!   validate the resulting path before linking.
 
 /// A file mention found in a changelog detail line.
@@ -83,29 +84,35 @@ pub fn iter_file_refs(text: &str) -> Vec<FileRef> {
     refs
 }
 
-/// Iterate `patch <name>` candidates within `text`.
+/// Iterate `patch <name>` and `patches <a>, <b> and <c>` candidates within
+/// `text`.
 ///
-/// Matches the word `patch` (case-insensitive, not part of a larger word and
-/// not the plural `patches`) followed by a single whitespace-delimited token,
-/// yielding a [`FileRef`] whose `path` is `debian/patches/<token>` and whose
-/// span covers just the token. Trailing sentence punctuation on the token is
-/// trimmed.
+/// Matches the word `patch` or `patches` (case-insensitive, not part of a
+/// larger word) followed by one or more whitespace-delimited tokens. The
+/// plural form accepts comma-separated lists, `and`-joined pairs, and the
+/// usual `a, b and c` / `a, b, and c` mixtures. Each token yields a
+/// [`FileRef`] whose `path` is `debian/patches/<token>` and whose span covers
+/// just that token; trailing sentence punctuation on each token is trimmed.
 ///
 /// This is a loose heuristic (`patch to fix the build` would match `to`), so
 /// callers must check that the path exists before turning it into a link.
 pub fn iter_patch_word_refs(text: &str) -> Vec<FileRef> {
-    let bytes = text.as_bytes();
     let mut refs = Vec::new();
     let mut search_from = 0;
 
-    while let Some(rel) = find_patch_word(&text[search_from..]) {
+    while let Some((rel, plural)) = find_patch_word(&text[search_from..]) {
         let word_start = search_from + rel;
-        let after = word_start + "patch".len();
+        let word_len = if plural {
+            "patches".len()
+        } else {
+            "patch".len()
+        };
+        let after = word_start + word_len;
         search_from = after;
 
-        // Require whitespace separating the word from the name.
-        let mut cursor = after;
-        let ws = text[cursor..]
+        // Require whitespace separating the keyword from the first name; the
+        // separator parser handles spacing between subsequent names.
+        let ws = text[after..]
             .chars()
             .take_while(|c| c.is_whitespace())
             .map(char::len_utf8)
@@ -113,38 +120,133 @@ pub fn iter_patch_word_refs(text: &str) -> Vec<FileRef> {
         if ws == 0 {
             continue;
         }
-        cursor += ws;
+        let mut cursor = after + ws;
+        while let Some((name_start, name_end)) = consume_name_token(text, cursor) {
+            cursor = name_end;
+            let name = &text[name_start..name_end];
+            // A name containing a slash is already a path, not a bare patch
+            // name; emit nothing for it but continue scanning the list so a
+            // trailing `, foo` still resolves.
+            if !name.contains('/') {
+                refs.push(FileRef {
+                    start: name_start,
+                    end: name_end,
+                    path: format!("debian/patches/{name}"),
+                });
+            }
+            // The singular form stops at the first token. The plural form
+            // continues across `, ` / ` and ` / `, and ` separators.
+            if !plural {
+                break;
+            }
+            let Some(sep_end) = consume_list_separator(text, cursor) else {
+                break;
+            };
+            cursor = sep_end;
+        }
 
-        // Consume the name token.
-        let name_start = cursor;
-        while cursor < bytes.len() && is_path_char(text[cursor..].chars().next().unwrap()) {
-            cursor += text[cursor..].chars().next().unwrap().len_utf8();
-        }
-        let mut name_end = cursor;
-        while name_end > name_start && matches!(bytes[name_end - 1], b'.' | b'/') {
-            name_end -= 1;
-        }
-        if name_end == name_start {
-            continue;
-        }
-        let name = &text[name_start..name_end];
-        // A name containing a slash is already a path, not a bare patch name.
-        if name.contains('/') {
-            continue;
-        }
-        refs.push(FileRef {
-            start: name_start,
-            end: name_end,
-            path: format!("debian/patches/{name}"),
-        });
+        search_from = cursor.max(search_from);
     }
 
     refs
 }
 
-/// Find the next standalone, lowercase-or-mixed-case `patch` word (not the
-/// plural `patches`) in `text`, returning its byte offset.
-fn find_patch_word(text: &str) -> Option<usize> {
+/// Consume a single patch-name token starting at `start`, returning the
+/// `(start, end)` byte range of the token (with trailing dots/slashes
+/// trimmed), or `None` if no token is present.
+fn consume_name_token(text: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut cursor = start;
+    while cursor < bytes.len() {
+        let c = text[cursor..].chars().next().unwrap();
+        if !is_path_char(c) {
+            break;
+        }
+        cursor += c.len_utf8();
+    }
+    let mut end = cursor;
+    while end > start && matches!(bytes[end - 1], b'.' | b'/') {
+        end -= 1;
+    }
+    if end == start {
+        None
+    } else {
+        Some((start, end))
+    }
+}
+
+/// Consume a list separator (`, `, ` and `, `, and `) starting at `cursor`,
+/// returning the byte offset just past the separator, or `None` if there is
+/// no separator at this position.
+fn consume_list_separator(text: &str, cursor: usize) -> Option<usize> {
+    let rest = &text[cursor..];
+    // `, and ` / `, ` / `,` (allow either order: comma optionally followed by
+    // whitespace, optionally followed by `and` plus whitespace).
+    if let Some(after_comma) = rest.strip_prefix(',') {
+        let ws: usize = after_comma
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(char::len_utf8)
+            .sum();
+        let after_ws = &after_comma[ws..];
+        if let Some(after_and) = strip_word(after_ws, "and") {
+            let ws2: usize = after_and
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .map(char::len_utf8)
+                .sum();
+            if ws2 == 0 {
+                return None;
+            }
+            return Some(cursor + 1 + ws + "and".len() + ws2);
+        }
+        if ws == 0 {
+            return None;
+        }
+        return Some(cursor + 1 + ws);
+    }
+    // ` and `
+    let ws: usize = rest
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .map(char::len_utf8)
+        .sum();
+    if ws == 0 {
+        return None;
+    }
+    let after_ws = &rest[ws..];
+    let after_and = strip_word(after_ws, "and")?;
+    let ws2: usize = after_and
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .map(char::len_utf8)
+        .sum();
+    if ws2 == 0 {
+        return None;
+    }
+    Some(cursor + ws + "and".len() + ws2)
+}
+
+/// Strip a case-insensitive whole word `word` from the start of `text`,
+/// returning the remainder. Returns `None` if `text` doesn't start with the
+/// word or if the word is glued to a following alphanumeric character.
+fn strip_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+    if text.len() < word.len() {
+        return None;
+    }
+    if !text[..word.len()].eq_ignore_ascii_case(word) {
+        return None;
+    }
+    let rest = &text[word.len()..];
+    if matches!(rest.as_bytes().first(), Some(b) if b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(rest)
+}
+
+/// Find the next standalone `patch` or `patches` word in `text`, returning
+/// its byte offset and whether it was the plural form.
+fn find_patch_word(text: &str) -> Option<(usize, bool)> {
     let lower = text.to_ascii_lowercase();
     let mut from = 0;
     while let Some(rel) = lower[from..].find("patch") {
@@ -154,10 +256,18 @@ fn find_patch_word(text: &str) -> Option<usize> {
         // `patch` in `prepatch` or the filename `foo.patch` isn't taken for
         // the prose word.
         let prev_ok = idx == 0 || !is_path_char(text[..idx].chars().next_back().unwrap());
-        // Reject the plural `patches` and any other trailing letter/digit.
-        let next_ok = !matches!(text.as_bytes().get(idx + "patch".len()), Some(b) if b.is_ascii_alphanumeric());
-        if prev_ok && next_ok {
-            return Some(idx);
+        if !prev_ok {
+            continue;
+        }
+        let after = idx + "patch".len();
+        let plural = matches!(text.as_bytes().get(after), Some(b'e' | b'E'))
+            && matches!(text.as_bytes().get(after + 1), Some(b's' | b'S'));
+        let trailing = if plural { after + 2 } else { after };
+        // Reject any further trailing letter/digit (e.g. `patched`, `patchesy`).
+        let next_ok =
+            !matches!(text.as_bytes().get(trailing), Some(b) if b.is_ascii_alphanumeric());
+        if next_ok {
+            return Some((idx, plural));
         }
     }
     None
@@ -314,8 +424,14 @@ mod tests {
     }
 
     #[test]
-    fn patch_word_ignores_plural() {
-        assert!(patch_words("Refresh patches for the new release").is_empty());
+    fn patch_word_plural_matches_first_token() {
+        // The plural form behaves like the singular: it yields a token whose
+        // existence the caller validates. `for` won't resolve to a real file
+        // in `debian/patches/`, so callers discard it.
+        assert_eq!(
+            patch_words("Refresh patches for the new release"),
+            vec!["debian/patches/for"]
+        );
     }
 
     #[test]
@@ -328,5 +444,59 @@ mod tests {
         // A token that's already a path is handled by `iter_file_refs`, so the
         // bare-name heuristic ignores it to avoid a duplicate.
         assert!(patch_words("see patch d/patches/foo.patch").is_empty());
+    }
+
+    #[test]
+    fn patch_word_plural_comma_list() {
+        assert_eq!(
+            patch_words("Drop patches foo.patch, bar.patch, baz.patch."),
+            vec![
+                "debian/patches/foo.patch",
+                "debian/patches/bar.patch",
+                "debian/patches/baz.patch",
+            ]
+        );
+    }
+
+    #[test]
+    fn patch_word_plural_and_pair() {
+        assert_eq!(
+            patch_words("Refresh patches foo.patch and bar.patch."),
+            vec!["debian/patches/foo.patch", "debian/patches/bar.patch"]
+        );
+    }
+
+    #[test]
+    fn patch_word_plural_comma_and() {
+        assert_eq!(
+            patch_words("Refresh patches foo.patch, bar.patch and baz.patch."),
+            vec![
+                "debian/patches/foo.patch",
+                "debian/patches/bar.patch",
+                "debian/patches/baz.patch",
+            ]
+        );
+    }
+
+    #[test]
+    fn patch_word_plural_oxford_comma() {
+        assert_eq!(
+            patch_words("Refresh patches foo.patch, bar.patch, and baz.patch."),
+            vec![
+                "debian/patches/foo.patch",
+                "debian/patches/bar.patch",
+                "debian/patches/baz.patch",
+            ]
+        );
+    }
+
+    #[test]
+    fn patch_word_plural_spans_cover_each_name() {
+        let text = "Drop patches a.patch, b.patch and c.patch.";
+        let refs = iter_patch_word_refs(text);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(&text[refs[0].start..refs[0].end], "a.patch");
+        assert_eq!(&text[refs[1].start..refs[1].end], "b.patch");
+        assert_eq!(&text[refs[2].start..refs[2].end], "c.patch");
     }
 }
