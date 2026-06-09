@@ -34,15 +34,17 @@ Every symbol uses one of four schemes:
 
 The `version` field encodes the navigation model, so it is worth being precise:
 
-- Entities that *belong to one upload* -- a package, a control/copyright field, a
-  license short-name, a quilt patch, a changelog entry -- are pinned to the
-  source's changelog version (`name=dulwich, version=1.2.5-1`). The index hosts
-  many versions of a package at once, and pinning keeps each version's symbols
-  distinct, so navigating within `1.2.5-1` never lands in `1.2.5-2`.
-- A *cross-package reference* (a build-dependency on another source, a use of
-  another binary) leaves `version` empty, so it resolves to whichever version of
-  that package the consuming index happens to host. `external_binary` and the
-  external references in relation fields work this way.
+- Entities that *belong to one upload* -- the source package, a control/copyright
+  field, a license short-name, a quilt patch, a changelog entry -- are pinned to
+  the source's changelog version (`name=dulwich, version=1.2.5-1`). The index
+  hosts many versions of a package at once, and pinning keeps each version's
+  symbols distinct, so navigating within `1.2.5-1` never lands in `1.2.5-2`.
+- A *binary package* is named version-lessly, by the binary name alone. The same
+  symbol is the definition at its `Package:` stanza and the reference from every
+  other package's relation fields, so a `Depends: foo` resolves to the
+  `Package: foo` line that defines it, in whichever version the consuming index
+  hosts. `binary_package` works this way; so do `Provides:` entries, which define
+  the same symbol for the (often virtual) packages they declare.
 - Archive-wide vocabularies carry no package at all (see below).
 
 Putting the version in the `Package` is the spec's intent -- the grammar is
@@ -88,7 +90,7 @@ See `symbols.rs` for the exact construction of each; the main ones:
 
 Some symbols are package-less so the same value collects across the whole
 archive, enabling queries like "all packages using `3.0 (quilt)`":
-`build_profile`, `debhelper_command`, `external_binary`, `source_format`,
+`build_profile`, `debhelper_command`, `source_format`,
 `autopkgtest_restriction`, `autopkgtest_feature`, `identity`, `file_ref`,
 `web_url`.
 

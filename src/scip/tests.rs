@@ -194,7 +194,7 @@ fn full_tree_round_trip() {
     let bin_sym = control_doc
         .symbols
         .iter()
-        .find(|s| s.symbol == super::symbols::binary_package("hello", Some("2.10-3"), "hello"))
+        .find(|s| s.symbol == super::symbols::binary_package("hello"))
         .expect("binary symbol info");
     assert!(
         bin_sym.relationships.iter().any(|r| r.is_reference

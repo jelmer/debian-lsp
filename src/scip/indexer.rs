@@ -146,7 +146,7 @@ impl Indexer {
         let mut external_symbols: Vec<SymbolInformation> = external_binaries
             .iter()
             .map(|name| SymbolInformation {
-                symbol: symbols::external_binary(name),
+                symbol: symbols::binary_package(name),
                 kind: scip::types::symbol_information::Kind::Package.into(),
                 ..Default::default()
             })

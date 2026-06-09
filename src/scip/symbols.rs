@@ -81,12 +81,19 @@ pub fn source_package(name: &str, version: Option<&str>) -> String {
     })
 }
 
-/// Symbol for a binary package, scoped to its source.
-pub fn binary_package(source: &str, version: Option<&str>, binary: &str) -> String {
+/// Symbol for a binary package.
+///
+/// A binary package is named by this one symbol everywhere: at its own
+/// `Package:` stanza (where it is defined), at a `Provides:` entry, and in every
+/// other package's relation fields that reference it. The symbol carries neither
+/// source name nor version -- a `Depends:` reference cannot know either -- so it
+/// resolves to whichever index in the corpus defines that binary, the same way a
+/// cross-crate reference resolves for a language indexer.
+pub fn binary_package(name: &str) -> String {
     fmt(Symbol {
         scheme: SCHEME.to_owned(),
-        package: Some(pkg(source, version)).into(),
-        descriptors: vec![desc(source, Suffix::Namespace), desc(binary, Suffix::Type)],
+        package: Some(pkg(name, None)).into(),
+        descriptors: vec![desc(name, Suffix::Namespace), desc(name, Suffix::Type)],
         ..Default::default()
     })
 }
@@ -139,19 +146,6 @@ pub fn license(source: &str, version: Option<&str>, short_name: &str) -> String 
             desc("license", Suffix::Namespace),
             desc(short_name, Suffix::Type),
         ],
-        ..Default::default()
-    })
-}
-
-/// Symbol for an external reference to another Debian binary package.
-///
-/// The package version is left empty so the reference resolves to the
-/// current version of that package in whichever index aggregates it.
-pub fn external_binary(name: &str) -> String {
-    fmt(Symbol {
-        scheme: SCHEME.to_owned(),
-        package: Some(pkg(name, None)).into(),
-        descriptors: vec![desc(name, Suffix::Namespace), desc(name, Suffix::Type)],
         ..Default::default()
     })
 }

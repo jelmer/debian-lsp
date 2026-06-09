@@ -114,8 +114,12 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
     for binary in control.binaries() {
         let Some(bname) = binary.name() else { continue };
         binary_names.push(bname.clone());
-        let bin_sym =
-            symbols::binary_package(source_name.as_deref().unwrap_or(&bname), version, &bname);
+        // A binary package is named by the same symbol everywhere -- here at its
+        // `Package:` stanza (its definition) and in every other package's relation
+        // fields that reference it. So a `Depends: foo` elsewhere resolves to this
+        // `Package: foo` line, the same way a `Provides:` entry does (see
+        // `emit_provides`).
+        let bin_sym = symbols::binary_package(&bname);
         // The whole `Package:` stanza is the enclosing scope of this binary.
         let stanza = binary.as_deb822().text_range();
         let enclosing_range = lines.range(stanza.start().into(), stanza.end().into());
@@ -249,7 +253,7 @@ fn emit_relations(
             if abs_start < value_start || abs_end > value_end {
                 continue;
             }
-            let sym = symbols::external_binary(&name);
+            let sym = symbols::binary_package(&name);
             external_binaries.insert(name);
             occurrences.push(plain_occurrence(lines, (abs_start, abs_end), &sym));
 
@@ -322,7 +326,7 @@ fn emit_provides(
             if abs_start < value_start || abs_end > value_end {
                 continue;
             }
-            let sym = symbols::external_binary(&name);
+            let sym = symbols::binary_package(&name);
             occurrences.push(occurrence(
                 lines,
                 (abs_start, abs_end),
@@ -424,7 +428,7 @@ Description: example
             .document
             .symbols
             .iter()
-            .find(|s| s.symbol == symbols::binary_package("hello", Some("2.10-3"), "hello"))
+            .find(|s| s.symbol == symbols::binary_package("hello"))
             .expect("binary symbol info");
         assert_eq!(bin_sym.relationships.len(), 1);
         assert_eq!(
@@ -444,7 +448,7 @@ Description: example
         let bin_def = occs
             .iter()
             .find(|o| {
-                o.symbol == symbols::binary_package("hello", Some("2.10-3"), "hello")
+                o.symbol == symbols::binary_package("hello")
                     && (o.symbol_roles & SymbolRole::Definition as i32) != 0
             })
             .expect("binary definition occurrence");
@@ -452,6 +456,40 @@ Description: example
             !bin_def.enclosing_range.is_empty(),
             "expected an enclosing range on the binary definition"
         );
+    }
+
+    /// A `Package:` stanza defines a binary by the same symbol another package's
+    /// relation field uses to reference it, so a `Depends:` cross-package jump
+    /// resolves to the defining `Package:` line. Both sides go through
+    /// `symbols::binary_package`, version-independently.
+    #[test]
+    fn package_stanza_and_depends_share_one_symbol() {
+        // A package that build-depends on `libfoo1` and also ships a `libfoo1`
+        // binary: the definition and the reference must be the same symbol.
+        let control = "Source: foo\n\
+            Build-Depends: libfoo1\n\n\
+            Package: libfoo1\n\
+            Architecture: any\n\
+            Description: lib\n";
+        let idx = index(control, "debian/control", Some("1.0-1"));
+        let want = symbols::binary_package("libfoo1");
+
+        let def = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == want && (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .expect("Package: libfoo1 defines the binary symbol");
+        // The definition is the `Package:` value, not the Build-Depends mention.
+        assert_eq!(def.range, vec![3, 9, 3, 16]);
+
+        let reference = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == want && (o.symbol_roles & SymbolRole::Definition as i32) == 0)
+            .expect("Build-Depends references the same binary symbol");
+        assert_eq!(reference.range, vec![1, 15, 1, 22]);
     }
 
     #[test]
@@ -549,7 +587,7 @@ Depends: librust-bar-1+default-dev
         // Each provided (virtual) binary is a definition of its external-binary
         // symbol, so a dependent referencing it resolves to this package.
         for provided in ["librust-foo+default-dev", "librust-foo-0.5+default-dev"] {
-            let sym = symbols::external_binary(provided);
+            let sym = symbols::binary_package(provided);
             let def =
                 idx.document.occurrences.iter().find(|o| {
                     o.symbol == sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0
@@ -579,7 +617,7 @@ Depends: librust-bar-1+default-dev
 
         // The `${binary:Version}` substvar inside the Provides version
         // constraint must not produce a phantom `binary` package symbol.
-        let junk = symbols::external_binary("binary");
+        let junk = symbols::binary_package("binary");
         assert!(
             !idx.document.occurrences.iter().any(|o| o.symbol == junk),
             "substvar produced a phantom `binary` symbol"
