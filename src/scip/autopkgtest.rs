@@ -181,7 +181,7 @@ fn emit_depends(
             if abs_start < value_start || abs_end > value_end {
                 continue;
             }
-            let sym = symbols::external_binary(&name);
+            let sym = symbols::binary_package(&name);
             external_binaries.insert(name);
             occurrences.push(Occurrence {
                 range: lines.range(abs_start, abs_end),

@@ -161,16 +161,26 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
         }
     }
 
-    // Reference each mentioned file's `debian_file` symbol, scoped to the
-    // topmost source/version (matching the definitions the top-level indexer
-    // attaches to each document). Without a source name there is nothing to
-    // scope to, so the mentions are left unlinked.
-    if let Some(src) = source_name.as_deref() {
-        for (start, end, path) in file_mentions {
-            occurrences.push(Occurrence {
-                range: lines.range(start, end),
-                symbol: symbols::debian_file(src, topmost_version.as_deref(), &path),
-                syntax_kind: ScipSyntax::StringLiteral.into(),
+    // Each mentioned packaging file becomes a navigable token: a `file_ref`
+    // symbol whose documentation is a markdown link to the file's repo-relative
+    // path, so a SCIP consumer can jump to the file. The path is both the link
+    // text and target; no per-document definition is involved.
+    let mut linked: BTreeSet<String> = BTreeSet::new();
+    for (start, end, path) in file_mentions {
+        let sym = symbols::file_ref(&path);
+        occurrences.push(Occurrence {
+            range: lines.range(start, end),
+            symbol: sym.clone(),
+            syntax_kind: ScipSyntax::StringLiteral.into(),
+            ..Default::default()
+        });
+        // One SymbolInformation per distinct file, carrying the link.
+        if linked.insert(path.clone()) {
+            symbols_info.push(SymbolInformation {
+                symbol: sym,
+                kind: scip::types::symbol_information::Kind::File.into(),
+                display_name: path.clone(),
+                documentation: vec![symbols::file_ref_doc(&path)],
                 ..Default::default()
             });
         }
@@ -312,8 +322,8 @@ hello (2.10-3) unstable; urgency=medium
         assert_eq!(
             file_refs,
             vec![
-                symbols::debian_file("hello", Some("2.10-3"), "debian/control"),
-                symbols::debian_file("hello", Some("2.10-3"), "debian/patches/03_fix.patch"),
+                symbols::file_ref("debian/control"),
+                symbols::file_ref("debian/patches/03_fix.patch"),
             ]
         );
     }
@@ -367,11 +377,7 @@ hello (2.10-3) unstable; urgency=medium
         // The existing patch is referenced; `nonexistent.patch` is not.
         assert_eq!(
             file_refs,
-            vec![symbols::debian_file(
-                "hello",
-                Some("2.10-3"),
-                "debian/patches/relax-pyo3.patch"
-            )]
+            vec![symbols::file_ref("debian/patches/relax-pyo3.patch")]
         );
     }
 }
