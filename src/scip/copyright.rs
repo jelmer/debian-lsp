@@ -87,17 +87,38 @@ pub fn index(
         });
     }
 
-    // References: per-Files paragraphs that cite a license short-name, plus
+    // References: per-Files paragraphs that cite a license expression, plus
     // a definition for the Files: glob pattern itself.
     for fp in cp.iter_files() {
-        // The license short-name cited by this paragraph, if any.
-        let license_name = fp
-            .license()
-            .and_then(|lic| lic.name().map(|n| n.to_owned()));
-
         // The whole Files paragraph is the enclosing scope of its glob.
         let stanza = fp.as_deb822().text_range();
         let enclosing_range = lines.range(stanza.start().into(), stanza.end().into());
+
+        // The license entry text and value range tell us where to look for
+        // individual license names inside compound expressions like
+        // `MIT or Apache-2.0`.
+        let license_entry = fp.as_deb822().get_entry("License");
+        let license_names: Vec<(String, u32, u32)> = license_entry
+            .as_ref()
+            .and_then(|entry| {
+                let vr = entry.value_range()?;
+                let start: u32 = vr.start().into();
+                let end: u32 = vr.end().into();
+                let value_text = &text[start as usize..end as usize];
+                Some(
+                    debian_copyright::LicenseExpr::name_ranges(value_text)
+                        .into_iter()
+                        .map(|(name, r)| {
+                            (
+                                name.to_owned(),
+                                start + r.start as u32,
+                                start + r.end as u32,
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
 
         // Files: glob definition.
         let files = fp.files();
@@ -114,19 +135,15 @@ pub fn index(
                         enclosing_range: enclosing_range.clone(),
                         ..Default::default()
                     });
-                    // The glob references the license that applies to it, so
+                    // The glob references every license that applies to it, so
                     // "find references" on a license surfaces the file globs
                     // it covers.
-                    let relationships = match &license_name {
-                        Some(name) => {
-                            vec![symbols::rel_reference(symbols::license(
-                                source_name,
-                                version,
-                                name,
-                            ))]
-                        }
-                        None => Vec::new(),
-                    };
+                    let relationships = license_names
+                        .iter()
+                        .map(|(name, _, _)| {
+                            symbols::rel_reference(symbols::license(source_name, version, name))
+                        })
+                        .collect();
                     symbols_info.push(SymbolInformation {
                         symbol: glob_sym,
                         kind: scip::types::symbol_information::Kind::File.into(),
@@ -138,18 +155,14 @@ pub fn index(
             }
         }
 
-        // License reference occurrence.
-        let Some(name) = license_name else { continue };
-        let sym = symbols::license(source_name, version, &name);
-        if let Some(entry) = fp.as_deb822().get_entry("License") {
-            if let Some(tr) = entry.value_token_range() {
-                occurrences.push(Occurrence {
-                    range: lines.range(tr.start().into(), tr.end().into()),
-                    symbol: sym,
-                    syntax_kind: scip::types::SyntaxKind::IdentifierType.into(),
-                    ..Default::default()
-                });
-            }
+        // One reference occurrence per license name in the expression.
+        for (name, start, end) in &license_names {
+            occurrences.push(Occurrence {
+                range: lines.range(*start, *end),
+                symbol: symbols::license(source_name, version, name),
+                syntax_kind: scip::types::SyntaxKind::IdentifierType.into(),
+                ..Default::default()
+            });
         }
     }
 
@@ -287,6 +300,108 @@ License: MIT
             vendor_sym.relationships[0].symbol,
             symbols::license("hello", Some("2.10-3"), "MIT")
         );
+    }
+
+    #[test]
+    fn indexes_each_name_in_compound_expression() {
+        // The Files paragraph cites two licenses via `or`. Both should be
+        // highlighted and resolve to the standalone License paragraph defs.
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: *
+Copyright: 2024 Alice
+License: MIT or Apache-2.0
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0.
+
+License: MIT
+ Permission is hereby granted...
+";
+        let idx = index(text, "debian/copyright", "git2", Some("0.1-1"));
+
+        let license_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| {
+                !o.symbol.is_empty()
+                    && (o.symbol_roles & SymbolRole::Definition as i32) == 0
+                    && o.symbol.contains("license")
+            })
+            .collect();
+        let ref_syms: Vec<&str> = license_refs.iter().map(|o| o.symbol.as_str()).collect();
+        let mit_sym = symbols::license("git2", Some("0.1-1"), "MIT");
+        let apache_sym = symbols::license("git2", Some("0.1-1"), "Apache-2.0");
+        assert!(
+            ref_syms.contains(&mit_sym.as_str()),
+            "missing MIT ref, got {ref_syms:?}"
+        );
+        assert!(
+            ref_syms.contains(&apache_sym.as_str()),
+            "missing Apache-2.0 ref, got {ref_syms:?}"
+        );
+
+        // Each ref points at the actual name text in the source.
+        let mit_ref = license_refs
+            .iter()
+            .find(|o| o.symbol == mit_sym)
+            .expect("MIT ref");
+        let apache_ref = license_refs
+            .iter()
+            .find(|o| o.symbol == apache_sym)
+            .expect("Apache-2.0 ref");
+        // The License field is on line 4 (zero-indexed). `License: ` is 9 cols,
+        // so "MIT" spans cols 9..12 and "Apache-2.0" spans cols 16..26.
+        assert_eq!(mit_ref.range, vec![4, 9, 4, 12]);
+        assert_eq!(apache_ref.range, vec![4, 16, 4, 26]);
+
+        // The glob lists both licenses among its relationships.
+        let glob_sym = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == symbols::copyright_files_glob("git2", Some("0.1-1"), "*"))
+            .expect("Files glob symbol info");
+        let rel_syms: Vec<&str> = glob_sym
+            .relationships
+            .iter()
+            .map(|r| r.symbol.as_str())
+            .collect();
+        assert!(rel_syms.contains(&mit_sym.as_str()));
+        assert!(rel_syms.contains(&apache_sym.as_str()));
+    }
+
+    #[test]
+    fn indexes_name_in_with_exception() {
+        // `with` introduces an exception that should be skipped — the only
+        // license name is the head.
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: *
+Copyright: 2024 Alice
+License: GPL-2+ with OpenSSL-exception
+
+License: GPL-2+
+ Licensed under the GNU GPL...
+";
+        let idx = index(text, "debian/copyright", "pkg", Some("1-1"));
+
+        let gpl_sym = symbols::license("pkg", Some("1-1"), "GPL-2+");
+        let license_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| {
+                !o.symbol.is_empty()
+                    && (o.symbol_roles & SymbolRole::Definition as i32) == 0
+                    && o.symbol.contains("license")
+            })
+            .collect();
+        let ref_syms: Vec<&str> = license_refs.iter().map(|o| o.symbol.as_str()).collect();
+        assert_eq!(ref_syms, vec![gpl_sym.as_str()]);
     }
 
     #[test]
