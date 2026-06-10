@@ -60,6 +60,28 @@ pub fn index(
         },
     );
 
+    // Link the people named in `Copyright` and `Upstream-Contact` to the same
+    // cross-archive identity symbol as control Maintainer/Uploaders, so "find
+    // references" on a person surfaces the files they hold copyright on.
+    for para in cp.as_deb822().paragraphs() {
+        for field in ["Copyright", "Upstream-Contact"] {
+            let Some(entry) = para.get_entry(field) else {
+                continue;
+            };
+            let Some(vr) = entry.value_range() else {
+                continue;
+            };
+            let (start, end): (usize, usize) = (vr.start().into(), vr.end().into());
+            for (email, rel_start, rel_end) in symbols::identity_emails(&text[start..end]) {
+                occurrences.push(lines.identity_occurrence(
+                    email,
+                    (start + rel_start) as u32,
+                    (start + rel_end) as u32,
+                ));
+            }
+        }
+    }
+
     // Definitions: standalone License paragraphs.
     for lic in cp.iter_licenses() {
         let Some(name) = lic.name() else { continue };
@@ -402,6 +424,39 @@ License: GPL-2+
             .collect();
         let ref_syms: Vec<&str> = license_refs.iter().map(|o| o.symbol.as_str()).collect();
         assert_eq!(ref_syms, vec![gpl_sym.as_str()]);
+    }
+
+    #[test]
+    fn links_copyright_and_upstream_contact_emails() {
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Contact: Jane Doe <jane@example.org>
+
+Files: *
+Copyright: 2026 Jelmer Vernoo\u{133} <jelmer@debian.org>
+License: GPL-2+
+
+License: GPL-2+
+ text
+";
+        let idx = index(text, "debian/copyright", "hello", Some("1-1"));
+
+        let upstream = symbols::identity("jane@example.org");
+        let up = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == upstream)
+            .expect("Upstream-Contact email identity occurrence");
+        // Line 1 (zero-indexed): `Upstream-Contact: Jane Doe <` is 28 cols, so
+        // the email spans cols 28..44.
+        assert_eq!(up.range, vec![1, 28, 1, 44]);
+
+        let holder = symbols::identity("jelmer@debian.org");
+        assert!(
+            idx.document.occurrences.iter().any(|o| o.symbol == holder),
+            "Copyright email should be linked to an identity symbol"
+        );
     }
 
     #[test]

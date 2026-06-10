@@ -8,6 +8,8 @@
 //! line-start table and offset/position conversions shared with the LSP server.
 
 use crate::position::LineIndex;
+use crate::scip::symbols;
+use scip::types::Occurrence;
 use text_size::{TextRange, TextSize};
 
 /// Precomputed table of line-start byte offsets for a single document.
@@ -36,6 +38,22 @@ impl LineTable {
     pub fn range(&self, start: u32, end: u32) -> Vec<i32> {
         self.index
             .scip_range(TextRange::new(TextSize::from(start), TextSize::from(end)))
+    }
+
+    /// Build a reference occurrence linking the `start..end` email span to its
+    /// cross-archive [`symbols::identity`] symbol.
+    ///
+    /// Every place a person's email appears -- control Maintainer/Uploaders,
+    /// DEP-3 patch headers, the changelog footer, DEP-5 Copyright, debcargo
+    /// uploaders -- emits this identical occurrence, so "find references" on a
+    /// person gathers them all.
+    pub fn identity_occurrence(&self, email: &str, start: u32, end: u32) -> Occurrence {
+        Occurrence {
+            range: self.range(start, end),
+            symbol: symbols::identity(email),
+            syntax_kind: scip::types::SyntaxKind::IdentifierConstant.into(),
+            ..Default::default()
+        }
     }
 }
 

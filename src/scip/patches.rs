@@ -296,12 +296,7 @@ fn index_header_fields(
                         let rel = email.as_ptr() as usize - value.as_ptr() as usize;
                         let estart = (vstart + rel) as u32;
                         let eend = estart + email.len() as u32;
-                        occurrences.push(Occurrence {
-                            range: lines.range(estart, eend),
-                            symbol: symbols::identity(email),
-                            syntax_kind: scip::types::SyntaxKind::IdentifierConstant.into(),
-                            ..Default::default()
-                        });
+                        occurrences.push(lines.identity_occurrence(email, estart, eend));
                     }
                 }
             }

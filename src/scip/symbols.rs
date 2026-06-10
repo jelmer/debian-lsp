@@ -385,6 +385,34 @@ pub fn identity(email: &str) -> String {
     })
 }
 
+/// Find angle-bracketed email addresses (`<user@host>`) in `text`.
+///
+/// Returns each email's content (without the brackets) and its byte range
+/// within `text`. Used to link the people named in free-form identity fields
+/// -- `Copyright`/`Upstream-Contact` in DEP-5, `uploaders` in debcargo.toml --
+/// to the same cross-archive [`identity`] symbol as control Maintainer/Uploaders.
+/// A field may name several people across lines, so all matches are returned.
+pub fn identity_emails(text: &str) -> Vec<(&str, usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(open_rel) = text[i..].find('<') {
+        let open = i + open_rel;
+        let Some(close_rel) = text[open + 1..].find('>') else {
+            break;
+        };
+        let start = open + 1;
+        let end = start + close_rel;
+        let email = &text[start..end];
+        // Only treat it as an address if it looks like one; skip stray `<`
+        // such as in `<unknown>` placeholders.
+        if email.contains('@') && !email.contains(char::is_whitespace) {
+            out.push((email, start, end));
+        }
+        i = end + 1;
+    }
+    out
+}
+
 /// Symbol for a target in `debian/rules`, scoped to its source package.
 pub fn rules_target(source: &str, version: Option<&str>, target: &str) -> String {
     fmt(Symbol {
@@ -621,6 +649,26 @@ pub fn rel_implementation(target: String) -> Relationship {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_emails_finds_each_address_with_offsets() {
+        let text = "Jane Doe <jane@example.org>, John Roe <john@example.org>";
+        let found = identity_emails(text);
+        assert_eq!(
+            found,
+            vec![("jane@example.org", 10, 26), ("john@example.org", 39, 55),]
+        );
+        // Offsets index back to the source.
+        assert_eq!(&text[10..26], "jane@example.org");
+    }
+
+    #[test]
+    fn identity_emails_skips_non_addresses() {
+        // No `@`, and bracketed tokens with whitespace, are not addresses.
+        assert!(identity_emails("Anonymous <unknown>").is_empty());
+        assert!(identity_emails("see <not an email>").is_empty());
+        assert!(identity_emails("plain text, no brackets").is_empty());
+    }
 
     #[test]
     fn source_package_symbol_round_trips() {

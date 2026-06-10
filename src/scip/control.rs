@@ -101,12 +101,11 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
                 .into_iter()
                 .chain(source.uploaders_identities())
             {
-                occurrences.push(Occurrence {
-                    range: lines.range(id.email_range.start().into(), id.email_range.end().into()),
-                    symbol: symbols::identity(&id.email),
-                    syntax_kind: scip::types::SyntaxKind::IdentifierConstant.into(),
-                    ..Default::default()
-                });
+                occurrences.push(lines.identity_occurrence(
+                    &id.email,
+                    id.email_range.start().into(),
+                    id.email_range.end().into(),
+                ));
             }
         }
     }
