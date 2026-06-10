@@ -74,7 +74,7 @@ See `symbols.rs` for the exact construction of each; the main ones:
   does.
 - **values** -- `license` (DEP-5 short-name), `copyright_files_glob`,
   `changelog_version`, `source_format`, `rules_target` / `rules_variable`,
-  `debcargo_package`, `autopkgtest_test`, `upstream_path`, `patch`.
+  `debcargo_package`, `autopkgtest_test`, `patch`.
 - **identities** -- `identity(email)` for a maintainer/uploader, package-less and
   keyed on the email, so the same person collects across the archive.
 - **file references** -- `file_ref(path)`, package-less and keyed on a repo-relative
@@ -82,6 +82,9 @@ See `symbols.rs` for the exact construction of each; the main ones:
   (`d/control`, `d/patches/foo.patch`). It carries no definition; its
   documentation is a markdown link to the relative path, which a consumer reads
   back and resolves within the package to jump to the file.
+  `patch_target(path, line)` is the same idea keyed on a path and line: emitted for
+  a patch's `--- a/`/`+++ b/` file path and each `@@` hunk header, its documentation
+  links to `path#L<line>` so the path and hunks jump to the patched line.
 - **resource links** -- `web_url(url)` for a URL-valued field (`Homepage`,
   `Vcs-Browser`, copyright `Format`, ...). Its documentation is a markdown link
   to the URL.

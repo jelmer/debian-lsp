@@ -52,7 +52,7 @@ pub fn index(root: &Path, source: &str, version: Option<&str>) -> PatchesIndex {
             continue;
         };
         let relative = format!("debian/patches/{}", patch_name);
-        if let Some(doc) = index_patch(&patch_text, &relative, source, version, &patch_name) {
+        if let Some(doc) = index_patch(root, &patch_text, &relative, source, version, &patch_name) {
             patch_documents.push(doc);
         }
     }
@@ -108,6 +108,7 @@ fn index_series(text: &str, relative_path: &str, source: &str, version: Option<&
 }
 
 fn index_patch(
+    root: &Path,
     text: &str,
     relative_path: &str,
     source: &str,
@@ -158,10 +159,18 @@ fn index_patch(
         &mut symbols_info,
     );
 
-    // Touched upstream file paths from the diff body. Parse with patchkit;
-    // skip silently if the body is malformed (truncated, binary diff, etc.) —
-    // anchored cross-references in the header are still useful on their own.
-    emit_touched_paths(text, diff_offset, source, version, &lines, &mut occurrences);
+    // Touched upstream file paths and hunk headers from the diff body, linked
+    // to the file being patched. Parse with patchkit; skip silently if the body
+    // is malformed (truncated, binary diff, etc.) — header cross-references are
+    // still useful on their own.
+    emit_touched_paths(
+        root,
+        text,
+        diff_offset,
+        &lines,
+        &mut occurrences,
+        &mut symbols_info,
+    );
 
     // BTS cross-reference occurrences via the Bug-Debian field.
     for id_text in &bug_ids {
@@ -298,59 +307,154 @@ fn dep3_field_doc(name: &str) -> Option<String> {
         .map(|f| f.description.to_owned())
 }
 
-/// Emit one occurrence per file path referenced by the diff body of a patch.
+/// Make the file paths and hunk headers in a patch's diff body clickable.
 ///
-/// Each `--- a/path` or `+++ b/path` line that patchkit recognises produces
-/// a reference to the upstream-path symbol for that file. The leading `a/`
-/// or `b/` prefix that quilt-style patches conventionally use is stripped.
+/// Each `--- a/path` / `+++ b/path` line and each `@@ ... @@` hunk header gets a
+/// [`patch_target`](symbols::patch_target) symbol linking into the file being
+/// patched at the touched line. The target line is the hunk's old-side start: in
+/// a clean quilt checkout the file on disk is the unapplied upstream. Paths are
+/// only linked when the file is present, mirroring the changelog file-mention
+/// links.
+///
+/// Spans come from patchkit's lossless CST byte ranges rather than re-scanning.
 fn emit_touched_paths(
+    root: &Path,
     text: &str,
     diff_offset: usize,
-    source: &str,
-    version: Option<&str>,
     lines: &LineTable,
     occurrences: &mut Vec<Occurrence>,
+    symbols_info: &mut Vec<SymbolInformation>,
 ) {
+    use rowan::ast::AstNode;
+
     if diff_offset >= text.len() {
         return;
     }
-    let body = &text.as_bytes()[diff_offset..];
-    let body_lines: Vec<Vec<u8>> = body
-        .split_inclusive(|&b| b == b'\n')
-        .map(|l| l.to_vec())
-        .collect();
-    for patch in patchkit::unified::parse_patches(body_lines.into_iter()) {
-        let Ok(patchkit::unified::PlainOrBinaryPatch::Plain(up)) = patch else {
+    let body = &text[diff_offset..];
+    let parsed = patchkit::edit::lossless::parse(body);
+    let patch = parsed.tree();
+
+    // CST offsets are relative to `body`; shift them onto the whole document.
+    let base = diff_offset as u32;
+    let mut seen = std::collections::HashSet::new();
+
+    for file in patch.patch_files() {
+        // Prefer the new side's path, falling back to the old side.
+        let target = file
+            .new_path()
+            .map(|p| strip_patch_prefix(&p))
+            .filter(|p| !p.is_empty())
+            .or_else(|| file.old_path().map(|p| strip_patch_prefix(&p)))
+            .filter(|p| !p.is_empty());
+        let Some(target) = target else { continue };
+        if !root.join(&target).is_file() {
             continue;
-        };
-        for raw in [up.orig_name.as_slice(), up.mod_name.as_slice()] {
-            let Ok(name) = std::str::from_utf8(raw) else {
+        }
+        // The line the patch first touches, used as the path link's target.
+        let first_line = file
+            .hunks()
+            .next()
+            .and_then(|h| h.header())
+            .and_then(|hdr| hdr.old_range())
+            .and_then(|r| r.start())
+            .unwrap_or(1)
+            .max(1) as usize;
+
+        // Both `--- a/path` and `+++ b/path` resolve to the same target.
+        for path_token in [
+            file.old_file().and_then(|f| f.path()),
+            file.new_file().and_then(|f| f.path()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let r = path_token.text_range();
+            emit_file_link(
+                path_token.text(),
+                &target,
+                first_line,
+                base + u32::from(r.start()),
+                base + u32::from(r.end()),
+                lines,
+                occurrences,
+                symbols_info,
+                &mut seen,
+            );
+        }
+
+        for hunk in file.hunks() {
+            let Some(header) = hunk.header() else {
                 continue;
             };
-            let stripped = strip_quilt_prefix(name);
-            if stripped.is_empty() {
-                continue;
+            let line = header
+                .old_range()
+                .and_then(|r| r.start())
+                .unwrap_or(1)
+                .max(1) as usize;
+            // Trim the header node's trailing newline so the span stops at EOL.
+            let r = header.syntax().text_range();
+            let start = base + u32::from(r.start());
+            let mut end = base + u32::from(r.end());
+            if text[..end as usize].ends_with('\n') {
+                end -= 1;
             }
-            // Anchor the occurrence at the first appearance of the raw path
-            // string in the document. We search for `name` (with the prefix)
-            // because that's what's literally on the `---`/`+++` line.
-            let Some(pos) = text[diff_offset..].find(name) else {
-                continue;
-            };
-            let abs = (diff_offset + pos) as u32;
-            occurrences.push(Occurrence {
-                range: lines.range(abs, abs + name.len() as u32),
-                symbol: symbols::upstream_path(source, version, stripped),
-                ..Default::default()
-            });
+            let label = &text[start as usize..end as usize];
+            emit_file_link(
+                label,
+                &target,
+                line,
+                start,
+                end,
+                lines,
+                occurrences,
+                symbols_info,
+                &mut seen,
+            );
         }
     }
 }
 
-fn strip_quilt_prefix(name: &str) -> &str {
-    name.strip_prefix("a/")
-        .or_else(|| name.strip_prefix("b/"))
-        .unwrap_or(name)
+/// Emit a navigable link occurrence (and, on first sight, its symbol info)
+/// spanning a byte range, targeting `relative_path` at 1-based `line`. `label` is
+/// the link text shown to a consumer (the path or the hunk header). `seen`
+/// deduplicates the symbol info so the path link and a hunk link that share a
+/// target line document the symbol once.
+#[allow(clippy::too_many_arguments)]
+fn emit_file_link(
+    label: &str,
+    relative_path: &str,
+    line: usize,
+    start: u32,
+    end: u32,
+    lines: &LineTable,
+    occurrences: &mut Vec<Occurrence>,
+    symbols_info: &mut Vec<SymbolInformation>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    let sym = symbols::patch_target(relative_path, line);
+    occurrences.push(Occurrence {
+        range: lines.range(start, end),
+        symbol: sym.clone(),
+        syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
+        ..Default::default()
+    });
+    if seen.insert(sym.clone()) {
+        symbols_info.push(SymbolInformation {
+            symbol: sym,
+            kind: scip::types::symbol_information::Kind::File.into(),
+            display_name: relative_path.to_owned(),
+            documentation: vec![symbols::patch_target_doc(label, relative_path, line)],
+            ..Default::default()
+        });
+    }
+}
+
+/// Strip the leading `a/` or `b/` (or other `-p1`) component from a diff path,
+/// yielding the repo-relative path. Quilt applies patches with `-p1`.
+fn strip_patch_prefix(name: &str) -> String {
+    patchkit::strip_prefix(Path::new(name), 1)
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -397,6 +501,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let patches = dir.path().join("debian").join("patches");
         std::fs::create_dir_all(&patches).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src").join("foo.c"), "line1\nold\nline3\n").unwrap();
         std::fs::write(patches.join("series"), "fix-segfault.patch\n").unwrap();
         std::fs::write(
             patches.join("fix-segfault.patch"),
@@ -421,14 +527,12 @@ mod tests {
             .occurrences
             .iter()
             .any(|o| o.symbol.starts_with("scip-debian-bts")));
-        // And the upstream path is cross-referenced.
+        // The touched file path links to src/foo.c at the patched line.
         assert!(
-            patch_doc
-                .occurrences
-                .iter()
-                .any(|o| o.symbol.contains("upstream") && o.symbol.contains("src/foo.c")),
-            "expected upstream-path ref to src/foo.c, got {:?}",
-            patch_doc.occurrences
+            patch_doc.symbols.iter().any(|s| s.documentation
+                == vec![symbols::patch_target_doc("a/src/foo.c", "src/foo.c", 1)]),
+            "expected patch-target link to src/foo.c#L1, got {:?}",
+            patch_doc.symbols
         );
 
         // The patch symbol references the bug it closes and carries a synopsis.
@@ -453,6 +557,7 @@ mod tests {
     fn patch_header_fields_get_symbols_and_docs() {
         let text = "Author: Jane <jane@example.org>\nDescription: Fix the thing\nForwarded: no\n\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-a\n+b\n";
         let doc = index_patch(
+            Path::new("/nonexistent"),
             text,
             "debian/patches/p.patch",
             "hello",
@@ -481,12 +586,190 @@ mod tests {
     fn header_fields_do_not_leak_into_diff_body() {
         // A `+` line in the diff that looks like a field must not be indexed.
         let text = "Author: Jane\n\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n+Forwarded: nope\n";
-        let doc = index_patch(text, "debian/patches/p.patch", "hello", None, "p.patch")
-            .expect("patch document");
+        let doc = index_patch(
+            Path::new("/nonexistent"),
+            text,
+            "debian/patches/p.patch",
+            "hello",
+            None,
+            "p.patch",
+        )
+        .expect("patch document");
         assert!(doc.symbols.iter().any(|s| s.symbol.contains("Author")));
         assert!(
             !doc.symbols.iter().any(|s| s.symbol.contains("Forwarded")),
             "diff-body text must not be parsed as a header field"
         );
+    }
+
+    /// The patch-target symbols carried by the document's occurrences (the
+    /// clickable spans), in document order. A `--- a/`/`+++ b/` path line and each
+    /// `@@` hunk header each produce one occurrence.
+    fn link_occurrences(doc: &Document) -> Vec<String> {
+        doc.occurrences
+            .iter()
+            .map(|o| o.symbol.clone())
+            .filter(|s| {
+                doc.symbols
+                    .iter()
+                    .any(|si| &si.symbol == s && si.documentation.iter().any(|d| d.contains("#L")))
+            })
+            .collect()
+    }
+
+    /// The documented patch-target links (`[label](path#L<n>)`), one per distinct
+    /// (path, line) target.
+    fn link_docs(doc: &Document) -> Vec<String> {
+        let mut docs: Vec<String> = doc
+            .symbols
+            .iter()
+            .flat_map(|s| s.documentation.clone())
+            .filter(|d| d.contains("#L"))
+            .collect();
+        docs.sort();
+        docs
+    }
+
+    fn index_one_patch(patch: &str, present: &[(&str, &str)]) -> Document {
+        let dir = tempdir().unwrap();
+        let patches = dir.path().join("debian").join("patches");
+        std::fs::create_dir_all(&patches).unwrap();
+        for (path, body) in present {
+            let abs = dir.path().join(path);
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(abs, body).unwrap();
+        }
+        std::fs::write(patches.join("series"), "p.patch\n").unwrap();
+        std::fs::write(patches.join("p.patch"), patch).unwrap();
+        let idx = index(dir.path(), "hello", Some("1-1"));
+        idx.patch_documents.into_iter().next().expect("patch doc")
+    }
+
+    #[test]
+    fn single_hunk_links_path_and_header_to_orig_line() {
+        let patch = "Author: Jane\n\n--- a/src/foo.c\n+++ b/src/foo.c\n@@ -10,3 +10,3 @@\n line10\n-old\n+new\n line12\n";
+        let doc = index_one_patch(patch, &[("src/foo.c", "x\n")]);
+        // Three clickable tokens: the `---` path, the `+++` path, the hunk header.
+        // All resolve to src/foo.c at the first touched line, so they share one
+        // documented target.
+        assert_eq!(
+            link_occurrences(&doc),
+            vec![
+                symbols::patch_target("src/foo.c", 10),
+                symbols::patch_target("src/foo.c", 10),
+                symbols::patch_target("src/foo.c", 10),
+            ]
+        );
+        assert_eq!(
+            link_docs(&doc),
+            vec![symbols::patch_target_doc("a/src/foo.c", "src/foo.c", 10)]
+        );
+    }
+
+    #[test]
+    fn each_hunk_links_to_its_own_line() {
+        let patch = "Author: Jane\n\n--- a/m.c\n+++ b/m.c\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n@@ -20,2 +20,2 @@\n y\n-z\n+Z\n";
+        let doc = index_one_patch(patch, &[("m.c", "x\n")]);
+        // Path lines and the first hunk all target line 1; the second hunk
+        // targets line 20.
+        assert_eq!(
+            link_occurrences(&doc),
+            vec![
+                symbols::patch_target("m.c", 1),
+                symbols::patch_target("m.c", 1),
+                symbols::patch_target("m.c", 1),
+                symbols::patch_target("m.c", 20),
+            ]
+        );
+        assert_eq!(
+            link_docs(&doc),
+            vec![
+                symbols::patch_target_doc("@@ -20,2 +20,2 @@", "m.c", 20),
+                symbols::patch_target_doc("a/m.c", "m.c", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn multiple_files_link_independently() {
+        let patch = "Author: Jane\n\n--- a/one.c\n+++ b/one.c\n@@ -1 +1 @@\n-a\n+b\n--- a/two.c\n+++ b/two.c\n@@ -5 +5 @@\n-c\n+d\n";
+        let doc = index_one_patch(patch, &[("one.c", "x\n"), ("two.c", "x\n")]);
+        assert_eq!(
+            link_occurrences(&doc),
+            vec![
+                symbols::patch_target("one.c", 1),
+                symbols::patch_target("one.c", 1),
+                symbols::patch_target("one.c", 1),
+                symbols::patch_target("two.c", 5),
+                symbols::patch_target("two.c", 5),
+                symbols::patch_target("two.c", 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_style_diff_links_path_and_header() {
+        // The `diff --git` / `index` metadata between files must be skipped.
+        let patch = "Description: x\n\ndiff --git a/g.c b/g.c\nindex 1111111..2222222 100644\n--- a/g.c\n+++ b/g.c\n@@ -7,2 +7,2 @@\n a\n-b\n+B\n";
+        let doc = index_one_patch(patch, &[("g.c", "x\n")]);
+        assert_eq!(
+            link_occurrences(&doc),
+            vec![
+                symbols::patch_target("g.c", 7),
+                symbols::patch_target("g.c", 7),
+                symbols::patch_target("g.c", 7),
+            ]
+        );
+        assert_eq!(
+            link_docs(&doc),
+            vec![symbols::patch_target_doc("a/g.c", "g.c", 7)]
+        );
+    }
+
+    #[test]
+    fn p1_strips_only_the_leading_component() {
+        // `-p1` removes the `a/`/`b/` prefix but leaves the rest of the path,
+        // so a nested file resolves to its repo-relative path.
+        let patch =
+            "Author: Jane\n\n--- a/src/sub/foo.c\n+++ b/src/sub/foo.c\n@@ -1 +1 @@\n-a\n+b\n";
+        let doc = index_one_patch(patch, &[("src/sub/foo.c", "x\n")]);
+        assert_eq!(
+            link_docs(&doc),
+            vec![symbols::patch_target_doc(
+                "a/src/sub/foo.c",
+                "src/sub/foo.c",
+                1
+            )]
+        );
+    }
+
+    #[test]
+    fn absent_file_is_not_linked() {
+        // The patched file is not on disk, so there is nothing to resolve to.
+        let patch = "Author: Jane\n\n--- a/gone.c\n+++ b/gone.c\n@@ -1 +1 @@\n-a\n+b\n";
+        let doc = index_one_patch(patch, &[]);
+        assert_eq!(link_occurrences(&doc), Vec::<String>::new());
+    }
+
+    #[test]
+    fn embedded_at_at_in_body_is_not_mistaken_for_a_header() {
+        // A context line containing `@@ ` must not be paired with the second hunk.
+        let patch = "Author: Jane\n\n--- a/c.c\n+++ b/c.c\n@@ -1,2 +1,2 @@\n a @@ b\n-x\n+y\n@@ -30,2 +30,2 @@\n p\n-q\n+r\n";
+        let doc = index_one_patch(patch, &[("c.c", "x\n")]);
+        assert_eq!(
+            link_docs(&doc),
+            vec![
+                symbols::patch_target_doc("@@ -30,2 +30,2 @@", "c.c", 30),
+                symbols::patch_target_doc("a/c.c", "c.c", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_body_does_not_panic() {
+        // A truncated hunk body must not panic; header cross-refs are unaffected.
+        let patch = "Author: Jane\n\n--- a/foo.c\n+++ b/foo.c\n@@ -1,5 +1,5 @@\n only one line\n";
+        let doc = index_one_patch(patch, &[("foo.c", "x\n")]);
+        assert!(doc.symbols.iter().any(|s| s.symbol.contains("Author")));
     }
 }

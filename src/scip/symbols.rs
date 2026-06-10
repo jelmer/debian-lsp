@@ -267,6 +267,31 @@ pub fn file_ref_doc(relative_path: &str) -> String {
     format!("[{relative_path}]({relative_path})")
 }
 
+/// Symbol for a patch's link to a specific line of the file it patches (a file
+/// path or hunk header jumping to the touched line). Package-less and keyed on the
+/// path and line, like [`file_ref`] but distinguishing each target line so every
+/// link gets its own documented symbol. Carries no definition; the link in its
+/// documentation is what a consumer navigates.
+pub fn patch_target(relative_path: &str, line: usize) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        descriptors: vec![
+            desc("file", Suffix::Namespace),
+            desc(relative_path, Suffix::Meta),
+            desc(&line.to_string(), Suffix::Meta),
+        ],
+        ..Default::default()
+    })
+}
+
+/// Markdown documentation for a [`patch_target`] symbol: a link to the file at a
+/// specific line. `label` is the link text (the path or the hunk header); `line`
+/// is 1-based and becomes an `#L<line>` fragment a consumer resolves within the
+/// package.
+pub fn patch_target_doc(label: &str, relative_path: &str, line: usize) -> String {
+    format!("[{label}]({relative_path}#L{line})")
+}
+
 /// Symbol for a build profile name (e.g. `nocheck`, `noudeb`).
 ///
 /// Cross-package, so all uses of a given profile collect under one symbol. A
@@ -427,20 +452,6 @@ pub fn debhelper_command(name: &str) -> String {
         })
         .into(),
         descriptors: vec![desc(name, Suffix::Method)],
-        ..Default::default()
-    })
-}
-
-/// Symbol for an upstream file path referenced from a patch's diff body.
-pub fn upstream_path(source: &str, version: Option<&str>, path: &str) -> String {
-    fmt(Symbol {
-        scheme: SCHEME.to_owned(),
-        package: Some(pkg(source, version)).into(),
-        descriptors: vec![
-            desc(source, Suffix::Namespace),
-            desc("upstream", Suffix::Namespace),
-            desc(path, Suffix::Meta),
-        ],
         ..Default::default()
     })
 }
