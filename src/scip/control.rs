@@ -544,7 +544,6 @@ Description: example
         for (field, url) in [
             ("Homepage", "https://example.org/hello"),
             ("Vcs-Browser", "https://salsa.debian.org/debian/hello"),
-            ("Vcs-Git", "https://salsa.debian.org/debian/hello.git"),
         ] {
             let sym = symbols::web_url(url);
             let occ = idx
@@ -566,6 +565,14 @@ Description: example
                 vec![symbols::web_url_doc_labeled(field, url)]
             );
         }
+
+        // Vcs-Git points at a git remote, not a browsable page, so it is not
+        // linkified even though its value is a URL.
+        let vcs_git = symbols::web_url("https://salsa.debian.org/debian/hello.git");
+        assert!(
+            !idx.document.occurrences.iter().any(|o| o.symbol == vcs_git),
+            "Vcs-Git should not be linkified"
+        );
     }
 
     const PROVIDES_SAMPLE: &str = "\
