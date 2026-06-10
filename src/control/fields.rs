@@ -28,7 +28,9 @@ pub const CONTROL_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("Standards-Version", "Debian Policy version"),
     FieldInfo::new("Homepage", "Upstream project homepage").url(),
     FieldInfo::new("Vcs-Browser", "Web interface for VCS").url(),
-    FieldInfo::new("Vcs-Git", "Git repository URL").url(),
+    // Vcs-Git points at a git remote, not a browsable web page, so it is not
+    // linkified; Vcs-Browser is the field meant for browsing.
+    FieldInfo::new("Vcs-Git", "Git repository URL"),
     FieldInfo::new("Package", "Binary package name"),
     FieldInfo::new("Architecture", "Supported architectures"),
     FieldInfo::new("Multi-Arch", "Multi-architecture support"),
