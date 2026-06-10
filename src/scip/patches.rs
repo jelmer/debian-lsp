@@ -281,6 +281,31 @@ fn index_header_fields(
             documentation: dep3_field_doc(&name).into_iter().collect(),
             ..Default::default()
         });
+
+        // Author/From carry a `Name <email>` identity; link the email so it
+        // resolves to the same person across the archive.
+        if name.eq_ignore_ascii_case("Author") || name.eq_ignore_ascii_case("From") {
+            if let Some(vr) = entry.value_range() {
+                let (vstart, vend): (usize, usize) = (vr.start().into(), vr.end().into());
+                let value = &header_text[vstart..vend];
+                if let Ok((_, email)) = debian_control::parse_identity(value) {
+                    if !email.is_empty() {
+                        // `email` is a trimmed slice into `value`, so its byte
+                        // offset is the pointer difference -- exact, even if the
+                        // same text also appears in the name part.
+                        let rel = email.as_ptr() as usize - value.as_ptr() as usize;
+                        let estart = (vstart + rel) as u32;
+                        let eend = estart + email.len() as u32;
+                        occurrences.push(Occurrence {
+                            range: lines.range(estart, eend),
+                            symbol: symbols::identity(email),
+                            syntax_kind: scip::types::SyntaxKind::IdentifierConstant.into(),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // Syntax highlighting for the header (field names, values, comments). The
@@ -475,6 +500,30 @@ mod tests {
         // Field names are highlighted as attributes; values as strings.
         assert!(has_kind(&doc.occurrences, SyntaxKind::IdentifierAttribute));
         assert!(has_kind(&doc.occurrences, SyntaxKind::StringLiteral));
+
+        // The Author email is linked to a cross-archive identity symbol.
+        let want = symbols::identity("jane@example.org");
+        let id = doc
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == want)
+            .expect("Author email identity occurrence");
+        // Range covers just the email, not the surrounding `Name <...>`.
+        assert_eq!(id.range, vec![0, 14, 0, 30]);
+    }
+
+    #[test]
+    fn from_header_email_is_linked() {
+        // `From` is the git-format-patch alias for `Author`; its email links too.
+        let text =
+            "From: Jane Doe <jane@example.org>\n\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-a\n+b\n";
+        let doc = index_patch(text, "debian/patches/p.patch", "hello", None, "p.patch")
+            .expect("patch document");
+        let want = symbols::identity("jane@example.org");
+        assert!(
+            doc.occurrences.iter().any(|o| o.symbol == want),
+            "From email should be linked to an identity symbol"
+        );
     }
 
     #[test]
