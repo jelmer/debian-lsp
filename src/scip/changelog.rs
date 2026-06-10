@@ -79,12 +79,11 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
         // Identity (maintainer) reference from the footer.
         if let (Some(addr), Some(r)) = (entry.email(), entry.email_range()) {
             if !addr.is_empty() {
-                occurrences.push(Occurrence {
-                    range: lines.range(r.start().into(), r.end().into()),
-                    symbol: symbols::identity(&addr),
-                    syntax_kind: ScipSyntax::IdentifierConstant.into(),
-                    ..Default::default()
-                });
+                occurrences.push(lines.identity_occurrence(
+                    &addr,
+                    r.start().into(),
+                    r.end().into(),
+                ));
             }
         }
 

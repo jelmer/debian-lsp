@@ -46,6 +46,7 @@ pub fn index(
                             &mut occurrences,
                             &mut symbols_info,
                         );
+                        index_identities(table, &lines, text, &mut occurrences);
                     }
                 }
                 "packages" => {
@@ -109,6 +110,35 @@ fn index_table(
             occurrences,
             symbols_info,
         );
+    }
+}
+
+/// Link the people named in `[source]` `maintainer` and `uploaders` to the same
+/// cross-archive identity symbol as control Maintainer/Uploaders, so "find
+/// references" on a person surfaces this package too. Both values are
+/// `Name <email>` strings (uploaders being an array of them); we scan the
+/// value's source span -- quotes and array brackets included -- for the emails.
+fn index_identities(
+    table: &Table,
+    lines: &LineTable,
+    text: &str,
+    occurrences: &mut Vec<Occurrence>,
+) {
+    for key in ["maintainer", "uploaders"] {
+        let Some(span) = table
+            .get(key)
+            .and_then(|i| i.as_value())
+            .and_then(|v| v.span())
+        else {
+            continue;
+        };
+        for (email, rel_start, rel_end) in symbols::identity_emails(&text[span.clone()]) {
+            occurrences.push(lines.identity_occurrence(
+                email,
+                (span.start + rel_start) as u32,
+                (span.start + rel_end) as u32,
+            ));
+        }
     }
 }
 
@@ -244,6 +274,35 @@ summary = \"An example library\"
             .symbols
             .iter()
             .any(|s| s.symbol == symbols::debcargo_package("hello", Some("2.10-3"), "lib")));
+    }
+
+    #[test]
+    fn links_maintainer_and_uploaders_emails() {
+        let text = "\
+[source]
+maintainer = \"Team <team@example.org>\"
+uploaders = [\"Jane Doe <jane@example.org>\", \"John Roe <john@example.org>\"]
+";
+        let idx = index(text, "debian/debcargo.toml", "hello", None);
+
+        for email in ["team@example.org", "jane@example.org", "john@example.org"] {
+            let want = symbols::identity(email);
+            assert!(
+                idx.document.occurrences.iter().any(|o| o.symbol == want),
+                "expected an identity occurrence for {email}"
+            );
+        }
+
+        // The range covers just the email, not the surrounding `Name <...>` or
+        // the TOML quotes. `maintainer = "Team <` is 20 cols on line 1.
+        let team = symbols::identity("team@example.org");
+        let occ = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == team)
+            .expect("maintainer identity occurrence");
+        assert_eq!(occ.range, vec![1, 20, 1, 36]);
     }
 
     #[test]
