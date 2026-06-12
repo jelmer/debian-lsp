@@ -121,11 +121,13 @@ fn index_patch(
     let mut symbols_info = Vec::new();
 
     let patch_sym = symbols::patch(source, version, patch_name);
-    // Definition occurrence: anchor at the first line of the header.
+    // Definition occurrence: anchor at the first line of the header. The whole
+    // patch file is its enclosing scope.
     occurrences.push(Occurrence {
         range: lines.range(0, 0),
         symbol: patch_sym.clone(),
         symbol_roles: SymbolRole::Definition as i32,
+        enclosing_range: lines.range(0, text.len() as u32),
         ..Default::default()
     });
 
@@ -261,6 +263,10 @@ fn index_header_fields(
         return;
     };
 
+    // The DEP-3 header paragraph is the enclosing scope of each of its fields.
+    let para_range = paragraph.text_range();
+    let enclosing_range = lines.range(para_range.start().into(), para_range.end().into());
+
     for entry in paragraph.entries() {
         let Some(name) = entry.key() else {
             continue;
@@ -283,6 +289,7 @@ fn index_header_fields(
             range: lines.range(start, end),
             symbol: sym.clone(),
             symbol_roles: SymbolRole::Definition as i32,
+            enclosing_range: enclosing_range.clone(),
             ..Default::default()
         });
         symbols_info.push(SymbolInformation {
@@ -523,6 +530,42 @@ mod tests {
             .expect("Author email identity occurrence");
         // Range covers just the email, not the surrounding `Name <...>`.
         assert_eq!(id.range, vec![0, 14, 0, 30]);
+    }
+
+    #[test]
+    fn patch_and_field_definitions_carry_enclosing_range() {
+        let text = "Author: Jane <jane@example.org>\nDescription: Fix the thing\nForwarded: no\n\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-a\n+b\n";
+        let doc = index_patch(
+            text,
+            "debian/patches/p.patch",
+            "hello",
+            Some("1-1"),
+            "p.patch",
+        )
+        .expect("patch document");
+        for o in doc
+            .occurrences
+            .iter()
+            .filter(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+        {
+            assert!(
+                !o.enclosing_range.is_empty(),
+                "expected an enclosing range on {}",
+                o.symbol
+            );
+        }
+        // The patch symbol's enclosing range starts at the top of the file.
+        let patch_sym = symbols::patch("hello", Some("1-1"), "p.patch");
+        let patch_def = doc
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == patch_sym)
+            .expect("patch definition");
+        assert_eq!(
+            patch_def.enclosing_range[..2],
+            [0, 0],
+            "patch enclosing range should start at the top of the file"
+        );
     }
 
     #[test]
