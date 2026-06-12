@@ -20,6 +20,8 @@ Language Server Protocol implementation for Debian packaging files.
 - `debian/patches/series` - List of patches applied by dpkg-source
 - `debian/source/lintian-overrides` - Lintian tag overrides for the source package
 - `debian/<package>.lintian-overrides` - Lintian tag overrides for binary packages
+- `debian/conffiles` - List of configuration files to be preserved on upgrade
+- `debian/<package>.conffiles` - Per-package configuration files list
 
 ## Features
 
@@ -77,10 +79,24 @@ Language Server Protocol implementation for Debian packaging files.
 - Package type completions (`source`, `binary`, `udeb`)
 - Lintian tag name completions from `lintian-explain-tags`
 
+**debian/conffiles and debian/<package>.conffiles:**
+- Absolute path completions from debhelper staging directories (`debian/<package>/etc/`)
+- `remove-on-upgrade` flag completion
+- Excludes already listed paths from suggestions
+
 ### Diagnostics
 
 - Field casing validation (e.g. `source` instead of `Source`)
 - Parse error reporting with position information
+
+**debian/conffiles:**
+- Empty or whitespace-only lines -> error
+- Relative paths (not absolute) -> error
+- Unknown flags (only `remove-on-upgrade` is valid) -> error
+- `remove-on-upgrade` file exists in the package -> error (dpkg-deb refuses to build)
+- File not found in debhelper staging directory -> warning (dpkg silently ignores it)
+- Duplicate entries -> error
+- Too many tokens on a line -> error
 
 ### Code Actions
 
@@ -93,6 +109,10 @@ Language Server Protocol implementation for Debian packaging files.
 
 **debian/tests/control:**
 - Field descriptions for autopkgtest control fields
+
+**debian/conffiles:**
+- Absolute paths show whether the file exists in the debhelper staging directory
+- `remove-on-upgrade` flag shows a short description
 
 **debian/source/lintian-overrides and debian/.lintian-overrides:**
 - Lintian tag descriptions fetched from `lintian-explain-tags`
@@ -109,6 +129,9 @@ Language Server Protocol implementation for Debian packaging files.
 
 **debian/source/lintian-overrides and debian/.lintian-overrides:**
 - Package names jump to the matching `Package:` or `Source:` paragraph in `debian/control`
+
+**debian/conffiles:**
+- Absolute paths jump to the corresponding file in the debhelper staging directory (`debian/<package>/etc/...`)
 
 ### On-Type Formatting
 
@@ -162,6 +185,7 @@ Custom token types for syntax highlighting of Debian-specific constructs:
 - Control/copyright/watch/tests-control/upstream-metadata/source-options/rules files: field names, unknown fields, values, comments
 - Changelog files: package name, version, distribution, urgency, maintainer, timestamp
 - Lintian-overrides files: lintian tag names, package names, package types, architecture restrictions, info text, comments
+- Conffiles files: paths as values, `remove-on-upgrade` as field keyword, comments
 
 ## Installation
 
