@@ -7,7 +7,8 @@
 //!
 //! Hovering over a CVE identifier (e.g. `CVE-2024-1234`) shows the security
 //! tracker description and per-release status from UDD, falling back to a plain
-//! link to the Debian Security Tracker.
+//! link to the Debian Security Tracker.  GHSA identifiers (e.g.
+//! `GHSA-jfh8-c2jp-5v3q`) link to the GitHub Advisory Database.
 
 use debian_changelog::bugs::Bug;
 use debian_changelog::SyntaxKind;
@@ -16,6 +17,7 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 
 use crate::bugs::{DebbugsBugSummary, LaunchpadBugSummary, SharedBugCache};
 use crate::cve::{self, SharedCveCache};
+use crate::ghsa;
 use crate::position::Source;
 
 /// A reference found under the cursor in a changelog file.
@@ -27,6 +29,8 @@ enum Reference {
         id: String,
         source: String,
     },
+    /// A GHSA identifier. Linked to the GitHub Advisory Database; no UDD lookup.
+    Ghsa(String),
 }
 
 /// Get hover information for a bug or CVE reference in a changelog file.
@@ -50,13 +54,13 @@ pub async fn get_hover(
         let entry = changelog.entry_at_offset(offset)?;
         match entry.bug_at_offset(offset) {
             Some(bug) => Reference::Bug(bug),
-            None => {
-                let c = cve_at_offset(parse, offset)?;
-                Reference::Cve {
+            None => match cve_at_offset(parse, offset) {
+                Some(c) => Reference::Cve {
                     id: c.id,
                     source: entry.package().unwrap_or_default(),
-                }
-            }
+                },
+                None => Reference::Ghsa(ghsa_at_offset(parse, offset)?.id),
+            },
         }
     };
 
@@ -69,6 +73,7 @@ pub async fn get_hover(
                 None => make_cve_link_hover(&id),
             })
         }
+        Reference::Ghsa(id) => Some(make_ghsa_link_hover(&id)),
     }
 }
 
@@ -130,12 +135,51 @@ fn cve_at_offset(
     None
 }
 
+/// Find the GHSA identifier covering `offset` by scanning the DETAIL token that
+/// contains it.
+fn ghsa_at_offset(
+    parse: &debian_changelog::Parse<debian_changelog::ChangeLog>,
+    offset: text_size::TextSize,
+) -> Option<ghsa::GhsaRef> {
+    for element in parse.syntax_node().descendants_with_tokens() {
+        let rowan::NodeOrToken::Token(token) = element else {
+            continue;
+        };
+        if token.kind() != SyntaxKind::DETAIL {
+            continue;
+        }
+        let range = token.text_range();
+        if !range.contains_inclusive(offset) {
+            continue;
+        }
+        let rel = usize::from(offset - range.start());
+        return ghsa::ghsa_at_offset(token.text(), rel).map(|mut g| {
+            let base = usize::from(range.start());
+            g.start += base;
+            g.end += base;
+            g
+        });
+    }
+    None
+}
+
 /// Hover showing UDD security tracker details for a CVE.
 fn make_cve_hover(summary: &cve::CveSummary) -> Hover {
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
             value: cve::summary_markdown(summary),
+        }),
+        range: None,
+    }
+}
+
+/// Hover for a GHSA identifier: a link to the GitHub Advisory Database.
+fn make_ghsa_link_hover(id: &str) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: ghsa::link_markdown(id),
         }),
         range: None,
     }
@@ -421,6 +465,27 @@ mod tests {
         assert_eq!(
             hover_markdown(&hover),
             "**[CVE-2024-1234](https://security-tracker.debian.org/tracker/CVE-2024-1234)**"
+        );
+    }
+
+    #[test]
+    fn test_ghsa_at_offset_in_detail() {
+        let text = "foo (1.0-1) unstable; urgency=medium\n\n  * Fix GHSA-jfh8-c2jp-5v3q.\n\n -- John Doe <john@example.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = parse_for(text);
+        let byte_offset = text.find("GHSA").unwrap();
+        let offset = TextSize::try_from(byte_offset).unwrap();
+        let found = ghsa_at_offset(&parsed, offset).unwrap();
+        assert_eq!(found.id, "ghsa-jfh8-c2jp-5v3q");
+        assert_eq!(found.start, byte_offset);
+        assert_eq!(&text[found.start..found.end], "GHSA-jfh8-c2jp-5v3q");
+    }
+
+    #[test]
+    fn test_make_ghsa_link_hover() {
+        let hover = make_ghsa_link_hover("ghsa-jfh8-c2jp-5v3q");
+        assert_eq!(
+            hover_markdown(&hover),
+            "**[ghsa-jfh8-c2jp-5v3q](https://github.com/advisories/ghsa-jfh8-c2jp-5v3q)**"
         );
     }
 }

@@ -45,6 +45,7 @@ mod debcargo;
 mod debian_workspace;
 mod dep3;
 mod distros;
+mod ghsa;
 mod links;
 #[cfg(feature = "lintian-brush")]
 mod lintian_brush;
@@ -903,6 +904,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::new("changelogMetadataValue"),
                                     SemanticTokenType::new("changelogBugReference"),
                                     SemanticTokenType::new("changelogCve"),
+                                    SemanticTokenType::new("changelogGhsa"),
                                 ],
                                 token_modifiers: vec![SemanticTokenModifier::DECLARATION],
                             },

@@ -135,6 +135,10 @@ fn push_detail_references(
         spans.push((c.start, c.end, TokenType::ChangelogCve));
     }
 
+    for g in crate::ghsa::find_ghsas(text) {
+        spans.push((g.start, g.end, TokenType::ChangelogGhsa));
+    }
+
     spans.sort_by_key(|(s, _, _)| *s);
 
     for (s, e, token_type) in spans {
@@ -411,5 +415,20 @@ pkg (1.0-1) unstable; urgency=low
         // CVE comes first in the source, so it is emitted first.
         assert_eq!(refs[0].token_type, TokenType::ChangelogCve as u32);
         assert_eq!(refs[1].token_type, TokenType::ChangelogBugReference as u32);
+    }
+
+    #[test]
+    fn test_ghsa_reference() {
+        let text = "pkg (1.0-1) unstable; urgency=low\n\n  * Fix GHSA-jfh8-c2jp-5v3q.\n\n -- T <t@t.com>  Mon, 01 Jan 2024 12:00:00 +0000\n";
+        let parsed = debian_changelog::ChangeLog::parse(text);
+        let idx = crate::position::LineIndex::new(text);
+        let tokens = generate_semantic_tokens(&parsed, Source::new(text, &idx));
+
+        let ghsa_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == TokenType::ChangelogGhsa as u32)
+            .collect();
+        assert_eq!(ghsa_tokens.len(), 1);
+        assert_eq!(ghsa_tokens[0].length, 19); // "GHSA-jfh8-c2jp-5v3q"
     }
 }
