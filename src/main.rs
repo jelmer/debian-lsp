@@ -2596,6 +2596,14 @@ impl LanguageServer for Backend {
                 Ok(dep3::get_hover(&parsed.tree(), header_end, src, position))
             }
             FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
+            FileType::Conffiles => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                let debian_dir = Self::find_debian_dir(uri);
+                Ok(conffiles::get_hover(src, position, debian_dir.as_deref()))
+            }
             _ => Ok(None),
         }
     }
