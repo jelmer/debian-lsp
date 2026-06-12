@@ -4,7 +4,8 @@
 //!
 //! - packaging files (e.g. `d/control`, `debian/patches/03_fix.patch`) jump
 //!   to the referenced file when it exists on disk;
-//! - bug references (`Closes: #NNN`, `LP: #NNN`) open the bug on its tracker.
+//! - bug references (`Closes: #NNN`, `LP: #NNN`) open the bug on its tracker;
+//! - GHSA identifiers open the GitHub Advisory Database.
 
 use debian_changelog::bugs::iter_bug_refs;
 use debian_changelog::SyntaxKind;
@@ -74,6 +75,19 @@ pub fn get_document_links(
             };
             links.push(DocumentLink {
                 range: span_range(src, detail_start, bug_ref.start, bug_ref.end),
+                target: Some(target),
+                tooltip: None,
+                data: None,
+            });
+        }
+
+        // GHSA identifiers link to the GitHub Advisory Database.
+        for ghsa_ref in crate::ghsa::find_ghsas(detail_text) {
+            let Ok(target) = crate::ghsa::advisory_url(&ghsa_ref.id).parse::<Uri>() else {
+                continue;
+            };
+            links.push(DocumentLink {
+                range: span_range(src, detail_start, ghsa_ref.start, ghsa_ref.end),
                 target: Some(target),
                 tooltip: None,
                 data: None,
@@ -229,5 +243,37 @@ hello (2.10-3) unstable; urgency=medium
         let start = src.try_position_to_offset(bug_link.range.start).unwrap();
         let end = src.try_position_to_offset(bug_link.range.end).unwrap();
         assert_eq!(&text[usize::from(start)..usize::from(end)], "999888");
+    }
+
+    #[test]
+    fn links_ghsa_identifiers() {
+        let text = "\
+hello (2.10-3) unstable; urgency=medium
+
+  * Fix advisory GHSA-jfh8-c2jp-5v3q.
+
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
+";
+        let uri: Uri = "untitled:Untitled-1".parse().unwrap();
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let links = get_document_links(&parse(text), src, &uri);
+
+        let targets: Vec<_> = links
+            .iter()
+            .map(|l| l.target.as_ref().unwrap().as_str().to_owned())
+            .collect();
+        assert_eq!(
+            targets,
+            vec!["https://github.com/advisories/ghsa-jfh8-c2jp-5v3q"]
+        );
+
+        // The link covers just the identifier.
+        let start = src.try_position_to_offset(links[0].range.start).unwrap();
+        let end = src.try_position_to_offset(links[0].range.end).unwrap();
+        assert_eq!(
+            &text[usize::from(start)..usize::from(end)],
+            "GHSA-jfh8-c2jp-5v3q"
+        );
     }
 }

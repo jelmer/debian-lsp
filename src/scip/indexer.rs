@@ -55,6 +55,7 @@ impl Indexer {
         let mut launchpad_bug_numbers: std::collections::BTreeSet<u32> =
             std::collections::BTreeSet::new();
         let mut cves: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut ghsas: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
         // Step 1: changelog first, to learn the source name and current version.
         let changelog_text = std::fs::read_to_string(debian.join("changelog")).ok();
@@ -65,6 +66,7 @@ impl Indexer {
             bug_numbers.extend(idx.bug_numbers);
             launchpad_bug_numbers.extend(idx.launchpad_bug_numbers);
             cves.extend(idx.cves);
+            ghsas.extend(idx.ghsas);
             documents.push(idx.document);
             (src, ver)
         } else {
@@ -212,6 +214,15 @@ impl Indexer {
             kind: scip::types::symbol_information::Kind::Constant.into(),
             display_name: id.clone(),
             documentation: vec![symbols::cve_static_doc(id)],
+            ..Default::default()
+        }));
+        // GHSAs referenced from the changelog. Static documentation only (a link
+        // to the GitHub Advisory Database); there is no live lookup to upgrade to.
+        external_symbols.extend(ghsas.iter().map(|id| SymbolInformation {
+            symbol: symbols::ghsa(id),
+            kind: scip::types::symbol_information::Kind::Constant.into(),
+            display_name: id.clone(),
+            documentation: vec![symbols::ghsa_static_doc(id)],
             ..Default::default()
         }));
 

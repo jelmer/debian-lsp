@@ -32,6 +32,9 @@ pub const LP_SCHEME: &str = "scip-launchpad-bug";
 /// Scheme used for CVE references.
 pub const CVE_SCHEME: &str = "scip-cve";
 
+/// Scheme used for GHSA references.
+pub const GHSA_SCHEME: &str = "scip-ghsa";
+
 /// Manager string identifying Debian source packages.
 pub const MANAGER: &str = "debian";
 
@@ -43,6 +46,9 @@ pub const LP_MANAGER: &str = "launchpad";
 
 /// Manager string identifying CVE references.
 pub const CVE_MANAGER: &str = "cve";
+
+/// Manager string identifying GHSA references.
+pub const GHSA_MANAGER: &str = "ghsa";
 
 /// Build a `Descriptor` with the given name and suffix.
 fn desc(name: &str, suffix: Suffix) -> Descriptor {
@@ -620,6 +626,28 @@ pub fn cve_static_doc(id: &str) -> String {
     crate::cve::link_markdown(id)
 }
 
+/// Symbol for a GHSA identifier.
+///
+/// Cross-package, like [`cve`]: every reference to a given GHSA across the
+/// archive resolves to the same symbol, with an empty package field.
+pub fn ghsa(id: &str) -> String {
+    fmt(Symbol {
+        scheme: GHSA_SCHEME.to_owned(),
+        package: Some(Package {
+            manager: GHSA_MANAGER.to_owned(),
+            ..Default::default()
+        })
+        .into(),
+        descriptors: vec![desc(id, Suffix::Meta)],
+        ..Default::default()
+    })
+}
+
+/// Static documentation for a GHSA: a link to the GitHub Advisory Database.
+pub fn ghsa_static_doc(id: &str) -> String {
+    crate::ghsa::link_markdown(id)
+}
+
 /// A [`Relationship`] declaring that the owning symbol is a reference of
 /// `target`.
 ///
@@ -781,6 +809,20 @@ mod tests {
         assert_eq!(
             cve_static_doc("CVE-2024-1234"),
             "**[CVE-2024-1234](https://security-tracker.debian.org/tracker/CVE-2024-1234)**"
+        );
+    }
+
+    #[test]
+    fn ghsa_belongs_to_no_package() {
+        let parsed = scip::symbol::parse_symbol(&ghsa("ghsa-jfh8-c2jp-5v3q")).unwrap();
+        assert!(parsed.package.name.is_empty());
+    }
+
+    #[test]
+    fn ghsa_static_doc_links_to_advisory_database() {
+        assert_eq!(
+            ghsa_static_doc("ghsa-jfh8-c2jp-5v3q"),
+            "**[ghsa-jfh8-c2jp-5v3q](https://github.com/advisories/ghsa-jfh8-c2jp-5v3q)**"
         );
     }
 }

@@ -23,6 +23,8 @@ pub struct ChangelogIndex {
     pub launchpad_bug_numbers: BTreeSet<u32>,
     /// CVE identifiers referenced anywhere in the changelog.
     pub cves: BTreeSet<String>,
+    /// GHSA identifiers referenced anywhere in the changelog.
+    pub ghsas: BTreeSet<String>,
 }
 
 /// Parse and index a `debian/changelog` file.
@@ -43,6 +45,7 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
     let mut bug_numbers: BTreeSet<u32> = BTreeSet::new();
     let mut launchpad_bug_numbers: BTreeSet<u32> = BTreeSet::new();
     let mut cves: BTreeSet<String> = BTreeSet::new();
+    let mut ghsas: BTreeSet<String> = BTreeSet::new();
     // (start, end, path) for each `debian/` file mentioned in a detail line.
     // Emitted as references after the source name and version are known.
     let mut file_mentions: Vec<(u32, u32, String)> = Vec::new();
@@ -137,6 +140,21 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
                 cves.insert(c.id);
             }
 
+            // GHSA identifiers inside detail tokens, mirroring the CVE handling
+            // above. Highlighted as numeric literals and linked to the GitHub
+            // Advisory Database.
+            for g in crate::ghsa::find_ghsas(detail_text) {
+                let abs_start = detail_start + g.start as u32;
+                let abs_end = detail_start + g.end as u32;
+                occurrences.push(Occurrence {
+                    range: lines.range(abs_start, abs_end),
+                    symbol: symbols::ghsa(&g.id),
+                    syntax_kind: ScipSyntax::NumericLiteral.into(),
+                    ..Default::default()
+                });
+                ghsas.insert(g.id);
+            }
+
             // Mentions of other packaging files (`d/control`, `d/patches/...`)
             // and prose `patch <name>` candidates. Both are gated on the
             // target existing under `root`, so archive-section prose like
@@ -201,6 +219,7 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
         bug_numbers,
         launchpad_bug_numbers,
         cves,
+        ghsas,
     }
 }
 
@@ -214,6 +233,7 @@ hello (2.10-3) unstable; urgency=medium
   * Fix segfault on empty input. (Closes: #999888)
   * Another change. (LP: #1234567)
   * Fix buffer overflow (CVE-2024-12345).
+  * Fix advisory GHSA-jfh8-c2jp-5v3q.
 
  -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 27 May 2026 12:00:00 +0000
 
@@ -285,6 +305,29 @@ hello (2.10-2) unstable; urgency=medium
         );
 
         assert_eq!(idx.cves, BTreeSet::from(["CVE-2024-12345".to_string()]));
+    }
+
+    #[test]
+    fn indexes_ghsas() {
+        let idx = index(SAMPLE, "debian/changelog", None);
+
+        let ghsa_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| o.symbol.starts_with("scip-ghsa"))
+            .collect();
+        assert_eq!(ghsa_refs.len(), 1, "expected one GHSA ref");
+        assert_eq!(
+            ghsa_refs[0].syntax_kind,
+            ScipSyntax::NumericLiteral.into(),
+            "GHSA should be highlighted"
+        );
+
+        assert_eq!(
+            idx.ghsas,
+            BTreeSet::from(["ghsa-jfh8-c2jp-5v3q".to_string()])
+        );
     }
 
     #[test]

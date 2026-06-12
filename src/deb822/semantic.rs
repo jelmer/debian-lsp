@@ -33,6 +33,7 @@ pub enum TokenType {
     ChangelogMetadataValue = 10,
     ChangelogBugReference = 11,
     ChangelogCve = 12,
+    ChangelogGhsa = 13,
 }
 
 /// Token modifier bit flags
