@@ -112,7 +112,7 @@ documentation, so those references render with hover text rather than bare.
 | `debian/watch` | `watch.rs` | documented field/option names (deb822 v5 and line-based) |
 | `debian/upstream/metadata` | `upstream_metadata.rs` | documented field names; URL field links |
 | `debian/source/format` | `source_format.rs` | the format value as a cross-package symbol |
-| `debian/patches/*` | `patches.rs` | series entries, patch names, patch-header fields, embedded URLs |
+| `debian/patches/*` | `patches.rs` | series entries, patch names, patch-header fields, embedded URLs; highlighted diff body |
 | `debian/tests/control` | `autopkgtest.rs` | test names; documented fields; `Restrictions`/`Features` refs |
 | `debian/debcargo.toml` | `debcargo.rs` | documented top-level/source/package keys |
 
