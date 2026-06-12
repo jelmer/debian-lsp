@@ -36,6 +36,7 @@ impl Default for Settings {
 mod architecture;
 mod bugs;
 mod changelog;
+mod conffiles;
 mod control;
 mod copyright;
 mod cve;
@@ -128,6 +129,8 @@ enum FileType {
     Patch,
     /// debian/debcargo.toml file (debcargo configuration)
     DebcargoToml,
+    /// debian/conffiles file
+    Conffiles,
 }
 
 impl FileType {
@@ -159,6 +162,8 @@ impl FileType {
             Some(Self::Patch)
         } else if debcargo::is_debcargo_toml(uri) {
             Some(Self::DebcargoToml)
+        } else if conffiles::is_conffiles_file(uri) {
+            Some(Self::Conffiles)
         } else {
             None
         }
@@ -446,7 +451,8 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::DebcargoToml => None,
+            | FileType::DebcargoToml
+            | FileType::Conffiles => None,
         }
     }
 
@@ -501,9 +507,10 @@ impl Backend {
             // not expose its comment tokens publicly.
             // TODO: spell-check UpstreamMetadata comments once yaml-edit exposes
             // a way to iterate comment trivia.
-            FileType::SourceFormat | FileType::UpstreamMetadata | FileType::DebcargoToml => {
-                Vec::new()
-            }
+            FileType::SourceFormat
+            | FileType::UpstreamMetadata
+            | FileType::DebcargoToml
+            | FileType::Conffiles => Vec::new(),
         }
     }
 
@@ -1400,6 +1407,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 debcargo::get_completions(&source_text, position)
             }
+            Some((FileType::Conffiles, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                conffiles::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -1996,6 +2008,7 @@ impl LanguageServer for Backend {
                 dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
             FileType::DebcargoToml => debcargo::generate_semantic_tokens(&source_text, src),
+            FileType::Conffiles => vec![],
         };
 
         if tokens.is_empty() {
