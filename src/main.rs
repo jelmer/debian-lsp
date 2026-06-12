@@ -444,6 +444,12 @@ impl Backend {
                 #[cfg(not(feature = "spellcheck"))]
                 None
             }
+            FileType::Conffiles => {
+                let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                Some(conffiles::diagnostics::get_diagnostics(src, uri))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::SourceFormat
@@ -451,8 +457,7 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::DebcargoToml
-            | FileType::Conffiles => None,
+            | FileType::DebcargoToml => None,
         }
     }
 

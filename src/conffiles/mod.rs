@@ -3,6 +3,7 @@
 pub mod completion;
 pub mod definition;
 pub mod detection;
+pub mod diagnostics;
 pub mod fields;
 pub mod hover;
 pub mod semantic;
