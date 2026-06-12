@@ -2596,6 +2596,13 @@ impl LanguageServer for Backend {
             }
             FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
             FileType::SourceOptions => Ok(source_options::get_hover(&source_text, position)),
+            FileType::Conffiles => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                Ok(conffiles::get_hover(src, position))
+            }
             _ => Ok(None),
         }
     }
