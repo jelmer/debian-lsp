@@ -2008,7 +2008,11 @@ impl LanguageServer for Backend {
                 dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
             FileType::DebcargoToml => debcargo::generate_semantic_tokens(&source_text, src),
-            FileType::Conffiles => vec![],
+            FileType::Conffiles => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                conffiles::generate_semantic_tokens(&source_text)
+            }
         };
 
         if tokens.is_empty() {
