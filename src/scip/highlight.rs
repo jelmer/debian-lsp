@@ -106,6 +106,51 @@ pub fn series(
     out
 }
 
+/// Emit highlight occurrences for the unified-diff body of a patch file.
+///
+/// `body` is the slice of the document starting at `base` (the byte offset
+/// where the diff body begins, i.e. just after the DEP-3 header). The body is
+/// parsed into patchkit's lossless syntax tree and each line/header node is
+/// highlighted by its node kind:
+///
+/// - file-header lines (`--- `/`+++ `) -> [`SyntaxKind::IdentifierNamespace`]
+/// - hunk headers (`@@ ... @@`) -> [`SyntaxKind::IdentifierFunction`]
+/// - added lines (`+`) -> [`SyntaxKind::StringLiteral`]
+/// - removed/changed lines (`-`/`!`) -> [`SyntaxKind::Comment`]
+/// - the `\ No newline at end of file` marker -> [`SyntaxKind::Comment`]
+///
+/// Context lines carry no highlight. Node ranges are relative to `body`, so
+/// `base` is added to map them back onto the whole document.
+pub fn diff(body: &str, base: u32, lines: &LineTable) -> Vec<Occurrence> {
+    use patchkit::edit::lex::SyntaxKind as Pk;
+    use rowan::ast::AstNode;
+
+    let parsed = patchkit::edit::parse(body);
+    let mut out = Vec::new();
+    for node in parsed.tree().syntax().descendants() {
+        let kind = match node.kind() {
+            Pk::OLD_FILE | Pk::NEW_FILE | Pk::CONTEXT_OLD_FILE | Pk::CONTEXT_NEW_FILE => {
+                SyntaxKind::IdentifierNamespace
+            }
+            Pk::HUNK_HEADER | Pk::CONTEXT_HUNK_HEADER => SyntaxKind::IdentifierFunction,
+            Pk::ADD_LINE => SyntaxKind::StringLiteral,
+            Pk::DELETE_LINE | Pk::CONTEXT_CHANGE_LINE => SyntaxKind::Comment,
+            Pk::NO_NEWLINE_LINE => SyntaxKind::Comment,
+            _ => continue,
+        };
+        let r = node.text_range();
+        let (rstart, rend) = (usize::from(r.start()), usize::from(r.end()));
+        // Trim a trailing newline so the highlight stops at the line break.
+        let span = body[rstart..rend].trim_end_matches('\n');
+        let start = base + rstart as u32;
+        let end = start + span.len() as u32;
+        if end > start {
+            out.push(occurrence(lines, start, end, kind));
+        }
+    }
+    out
+}
+
 /// Emit highlight occurrences for a `debian/changelog` file.
 pub fn changelog(cl: &debian_changelog::ChangeLog, lines: &LineTable) -> Vec<Occurrence> {
     use debian_changelog::SyntaxKind as Ck;
@@ -270,6 +315,56 @@ mod tests {
         assert!(has_kind(&occs, SyntaxKind::IdentifierAttribute)); // version key
         assert!(has_kind(&occs, SyntaxKind::StringLiteral)); // URL
         assert!(occs.iter().all(|o| o.symbol.is_empty()));
+    }
+
+    #[test]
+    fn diff_highlights_markers_hunks_and_changes() {
+        let text = "--- a/foo.c\n+++ b/foo.c\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n more\n";
+        let lines = LineTable::new(text);
+        let occs = diff(text, 0, &lines);
+
+        // File markers and the hunk header are highlighted.
+        assert!(has_kind(&occs, SyntaxKind::IdentifierNamespace)); // ---/+++
+        assert!(has_kind(&occs, SyntaxKind::IdentifierFunction)); // @@ header
+                                                                  // Removed -> Comment, inserted -> StringLiteral.
+        assert!(has_kind(&occs, SyntaxKind::Comment)); // -removed
+        assert!(has_kind(&occs, SyntaxKind::StringLiteral)); // +added
+        assert!(occs.iter().all(|o| o.symbol.is_empty()));
+
+        // The `---` marker covers the whole line (offsets 0..11), no newline.
+        let marker = occs
+            .iter()
+            .find(|o| o.range == vec![0, 0, 0, 11])
+            .expect("--- marker occurrence");
+        assert_eq!(marker.syntax_kind, SyntaxKind::IdentifierNamespace.into());
+    }
+
+    #[test]
+    fn diff_offsets_are_relative_to_base() {
+        // A header precedes the body; the body starts at `base`.
+        let full = "Author: a\n\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-x\n+y\n";
+        let base = full.find("--- ").unwrap() as u32;
+        let lines = LineTable::new(full);
+        let occs = diff(&full[base as usize..], base, &lines);
+
+        // The `--- a/x` marker sits on line 2 (zero-indexed) of the full file.
+        assert!(occs.iter().any(|o| o.range == vec![2, 0, 2, 7]));
+    }
+
+    #[test]
+    fn diff_highlights_no_newline_marker_as_comment() {
+        let text = "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n";
+        let lines = LineTable::new(text);
+        let occs = diff(text, 0, &lines);
+        // The "\ No newline" marker is its own node, highlighted as a comment.
+        let nl_line = text.lines().position(|l| l.starts_with('\\')).unwrap() as i32;
+        let marker = occs
+            .iter()
+            .find(|o| o.range[0] == nl_line)
+            .expect("no-newline marker occurrence");
+        assert_eq!(marker.syntax_kind, SyntaxKind::Comment.into());
+        // The addition after it is still highlighted distinctly.
+        assert!(has_kind(&occs, SyntaxKind::StringLiteral)); // +b
     }
 
     #[test]

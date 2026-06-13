@@ -6,9 +6,10 @@
 //! and for cross-links to BTS bug symbols emitted by the changelog indexer.
 //!
 //! The output aims for parity with the editor (LSP) features for these files:
-//! syntax-highlighting occurrences for the series file and the patch headers,
-//! a symbol per DEP-3 header field carrying the spec description as hover
-//! documentation, and a synopsis on the patch symbol itself.
+//! syntax-highlighting occurrences for the series file, the patch headers and
+//! the unified-diff body, a symbol per DEP-3 header field carrying the spec
+//! description as hover documentation, and a synopsis on the patch symbol
+//! itself.
 
 use crate::scip::linetable::LineTable;
 use crate::scip::symbols;
@@ -145,8 +146,8 @@ fn index_patch(
     });
 
     // DEP-3 header fields: one symbol+occurrence each, with the spec
-    // description as hover documentation and deb822 highlighting. This is the
-    // header portion only; the diff body is left to diff-lsp.
+    // description as hover documentation and deb822 highlighting. This covers
+    // the header portion; the diff body is highlighted separately below.
     index_header_fields(
         text,
         diff_offset,
@@ -162,6 +163,16 @@ fn index_patch(
     // skip silently if the body is malformed (truncated, binary diff, etc.) —
     // anchored cross-references in the header are still useful on their own.
     emit_touched_paths(text, diff_offset, source, version, &lines, &mut occurrences);
+
+    // Syntax-highlight the diff body itself (file markers, hunk headers,
+    // added/removed lines) from patchkit's lossless syntax tree.
+    if diff_offset < text.len() {
+        occurrences.extend(crate::scip::highlight::diff(
+            &text[diff_offset..],
+            diff_offset as u32,
+            &lines,
+        ));
+    }
 
     // BTS cross-reference occurrences via the Bug-Debian field.
     for id_text in &bug_ids {
@@ -450,6 +461,13 @@ mod tests {
             "expected upstream-path ref to src/foo.c, got {:?}",
             patch_doc.occurrences
         );
+
+        // The diff body is syntax-highlighted (hunk header, inserted line).
+        assert!(has_kind(
+            &patch_doc.occurrences,
+            SyntaxKind::IdentifierFunction
+        ));
+        assert!(has_kind(&patch_doc.occurrences, SyntaxKind::StringLiteral));
 
         // The patch symbol references the bug it closes and carries a synopsis.
         let patch_sym = patch_doc
