@@ -114,7 +114,7 @@ documentation, so those references render with hover text rather than bare.
 | `debian/source/format` | `source_format.rs` | the format value as a cross-package symbol |
 | `debian/source/options`, `debian/source/local-options` | `source_options.rs` | dpkg-source option names as cross-package symbols |
 | `debian/patches/*` | `patches.rs` | series entries, patch names, patch-header fields, embedded URLs; highlighted diff body |
-| `debian/tests/control` | `autopkgtest.rs` | test names; documented fields; `Restrictions`/`Features` refs |
+| `debian/tests/control` | `autopkgtest.rs` | test names (cross-file refs to their scripts, which are indexed as documents); documented fields; `Restrictions`/`Features` refs |
 | `debian/debcargo.toml` | `debcargo.rs` | documented top-level/source/package keys |
 
 `links.rs` is shared: it scans a deb822 document's URL-valued and prose fields
