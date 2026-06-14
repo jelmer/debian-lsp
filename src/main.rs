@@ -1451,6 +1451,7 @@ impl LanguageServer for Backend {
             | FileType::Rules
             | FileType::SourceOptions
             | FileType::LintianOverrides
+            | FileType::Dirs
             | FileType::PatchesSeries => {}
             _ => return Ok(None),
         }
@@ -1660,6 +1661,13 @@ impl LanguageServer for Backend {
                         &params.context.diagnostics,
                     ));
                 }
+            }
+            FileType::Dirs => {
+                actions.extend(debhelper::dirs::get_code_actions(
+                    src,
+                    &params.text_document.uri,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Watch
             | FileType::UpstreamMetadata
@@ -2353,6 +2361,16 @@ impl LanguageServer for Backend {
                     new_text: formatted,
                 }]))
             }
+            FileType::Dirs => Ok(debhelper::dirs::format_dirs(&source_text).map(|formatted| {
+                let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
+                    0.into(),
+                    (source_text.len() as u32).into(),
+                ));
+                vec![TextEdit {
+                    range: full_range,
+                    new_text: formatted,
+                }]
+            })),
             _ => Ok(None),
         }
     }
