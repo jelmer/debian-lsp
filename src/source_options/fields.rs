@@ -164,6 +164,11 @@ pub const SOURCE_OPTIONS: &[SourceOption] = &[
     },
 ];
 
+/// Look up a dpkg-source option by name.
+pub fn find_option(name: &str) -> Option<&'static SourceOption> {
+    SOURCE_OPTIONS.iter().find(|opt| opt.name == name)
+}
+
 /// Valid values for the --compression option
 pub const COMPRESSION_VALUES: &[(&str, &str)] = &[
     ("xz", "XZ compression (default)"),

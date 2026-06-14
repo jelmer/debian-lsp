@@ -51,6 +51,11 @@ fn write_tree(dir: &std::path::Path) {
     fs::create_dir_all(debian.join("source")).unwrap();
     fs::write(debian.join("source").join("format"), "3.0 (quilt)\n").unwrap();
     fs::write(
+        debian.join("source").join("options"),
+        "compression = xz\nsingle-debian-patch\n",
+    )
+    .unwrap();
+    fs::write(
         debian.join("rules"),
         "#!/usr/bin/make -f\nDEB_BUILD_OPTIONS = nocheck\n\n%:\n\tdh $@\n\noverride_dh_auto_test:\n\tdh_auto_test --no-act\n",
     )
@@ -94,6 +99,7 @@ fn full_tree_round_trip() {
     assert!(paths.contains(&"debian/watch"));
     assert!(paths.contains(&"debian/upstream/metadata"));
     assert!(paths.contains(&"debian/source/format"));
+    assert!(paths.contains(&"debian/source/options"));
     assert!(paths.contains(&"debian/rules"));
     assert!(paths.contains(&"debian/patches/series"));
     assert!(paths.contains(&"debian/patches/fix-segfault.patch"));
@@ -149,6 +155,16 @@ fn full_tree_round_trip() {
         .find(|s| s.symbol.contains("autopkgtest-restriction") && s.symbol.contains("needs-root"))
         .expect("restriction external symbol");
     assert_eq!(needs_root.documentation, vec!["Test must be run as root"]);
+
+    let single_patch = index
+        .external_symbols
+        .iter()
+        .find(|s| s.symbol == super::symbols::source_option("single-debian-patch"))
+        .expect("source-option external symbol");
+    assert_eq!(
+        single_patch.documentation,
+        vec!["Use debian/patches/debian-changes as automatic patch"]
+    );
 
     // The changelog's Closes bug is an external symbol with static link
     // documentation (live BTS enrichment happens later, only when online).

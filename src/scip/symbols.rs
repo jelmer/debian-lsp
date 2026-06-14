@@ -224,6 +224,22 @@ pub fn source_format(format: &str) -> String {
     })
 }
 
+/// Symbol for a dpkg-source option named in `debian/source/options` or
+/// `debian/source/local-options` (e.g. `single-debian-patch`, `compression`).
+///
+/// Cross-package and keyed on the option name, like [`build_profile`], so
+/// archive-wide search can find every package that sets a given option.
+pub fn source_option(name: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        descriptors: vec![
+            desc("source-option", Suffix::Namespace),
+            desc(name, Suffix::Type),
+        ],
+        ..Default::default()
+    })
+}
+
 /// Symbol for a web URL referenced from packaging metadata (a `Homepage`,
 /// `Vcs-Browser`, copyright `Format`, upstream `Repository`, etc.).
 ///
@@ -719,6 +735,7 @@ mod tests {
             autopkgtest_restriction("needs-root"),
             autopkgtest_feature("test-name"),
             source_format("3.0 (quilt)"),
+            source_option("single-debian-patch"),
         ] {
             let parsed = scip::symbol::parse_symbol(&s).unwrap();
             assert!(

@@ -23,6 +23,7 @@ pub mod links;
 pub mod patches;
 pub mod rules;
 pub mod source_format;
+pub mod source_options;
 pub mod symbols;
 pub mod upstream_metadata;
 pub mod watch;
