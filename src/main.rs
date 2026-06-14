@@ -2643,6 +2643,18 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 Ok(Some(changelog::get_document_links(&parsed, src, uri)))
             }
+            FileType::TestsControl => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_deb822(file.source_file);
+                Ok(Some(tests::document_link::get_document_links(
+                    &parsed.tree(),
+                    src,
+                    uri,
+                )))
+            }
             _ => Ok(None),
         }
     }
