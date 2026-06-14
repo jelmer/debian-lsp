@@ -1,8 +1,8 @@
 //! Top-level indexer: discover `debian/` files and assemble a SCIP [`Index`].
 
 use super::{
-    autopkgtest, changelog, control, copyright, debcargo, patches, rules, source_format, symbols,
-    upstream_metadata, watch,
+    autopkgtest, changelog, control, copyright, debcargo, patches, rules, source_format,
+    source_options, symbols, upstream_metadata, watch,
 };
 use scip::types::{Index, Metadata, SymbolInformation, ToolInfo};
 use std::collections::HashSet;
@@ -56,6 +56,8 @@ impl Indexer {
             std::collections::BTreeSet::new();
         let mut cves: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut ghsas: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut source_option_names: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
 
         // Step 1: changelog first, to learn the source name and current version.
         let changelog_text = std::fs::read_to_string(debian.join("changelog")).ok();
@@ -111,6 +113,16 @@ impl Indexer {
         if let Ok(text) = std::fs::read_to_string(debian.join("source").join("format")) {
             let idx = source_format::index(&text, "debian/source/format");
             documents.push(idx.document);
+        }
+
+        // source/options and source/local-options.
+        for name in ["options", "local-options"] {
+            let rel = format!("debian/source/{name}");
+            if let Ok(text) = std::fs::read_to_string(debian.join("source").join(name)) {
+                let idx = source_options::index(&text, &rel);
+                source_option_names.extend(idx.options);
+                documents.push(idx.document);
+            }
         }
 
         // Step 7: rules (Makefile).
@@ -181,6 +193,17 @@ impl Indexer {
                 kind: scip::types::symbol_information::Kind::Type.into(),
                 documentation: crate::tests::fields::feature_description(name)
                     .map(str::to_owned)
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }
+        }));
+        external_symbols.extend(source_option_names.iter().map(|name| {
+            SymbolInformation {
+                symbol: symbols::source_option(name),
+                kind: scip::types::symbol_information::Kind::Type.into(),
+                display_name: name.clone(),
+                documentation: source_options::option_documentation(name)
                     .into_iter()
                     .collect(),
                 ..Default::default()

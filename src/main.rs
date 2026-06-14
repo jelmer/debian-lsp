@@ -2582,6 +2582,7 @@ impl LanguageServer for Backend {
                 Ok(dep3::get_hover(&parsed.tree(), header_end, src, position))
             }
             FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
+            FileType::SourceOptions => Ok(source_options::get_hover(&source_text, position)),
             _ => Ok(None),
         }
     }
