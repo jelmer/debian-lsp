@@ -444,6 +444,12 @@ impl Backend {
                 #[cfg(not(feature = "spellcheck"))]
                 None
             }
+            FileType::Dirs => {
+                let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                Some(debhelper::dirs::diagnostics::get_diagnostics(src))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::SourceFormat
@@ -451,7 +457,6 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::Dirs
             | FileType::DebcargoToml => None,
         }
     }
