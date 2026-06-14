@@ -1451,7 +1451,8 @@ impl LanguageServer for Backend {
             | FileType::Rules
             | FileType::SourceOptions
             | FileType::LintianOverrides
-            | FileType::PatchesSeries => {}
+            | FileType::PatchesSeries
+            | FileType::Conffiles => {}
             _ => return Ok(None),
         }
 
@@ -1660,6 +1661,13 @@ impl LanguageServer for Backend {
                         &params.context.diagnostics,
                     ));
                 }
+            }
+            FileType::Conffiles => {
+                actions.extend(conffiles::get_code_actions(
+                    src,
+                    &params.text_document.uri,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Watch
             | FileType::UpstreamMetadata
