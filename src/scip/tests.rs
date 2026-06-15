@@ -74,6 +74,7 @@ fn write_tree(dir: &std::path::Path) {
         "Tests: smoke\nDepends: @, python3-foo\nRestrictions: needs-root\n",
     )
     .unwrap();
+    fs::write(debian.join("tests").join("smoke"), "#!/bin/sh\necho ok\n").unwrap();
     fs::write(
         debian.join("debcargo.toml"),
         "overlay = \".\"\n\n[source]\nhomepage = \"https://example.org\"\n\n[packages.lib]\nsummary = \"Example\"\n",
@@ -247,18 +248,40 @@ fn full_tree_round_trip() {
         );
     }
 
-    // autopkgtest test definitions carry the Test role.
+    // The autopkgtest test name references its script symbol; the definition
+    // lives in the script document, so the reference must not carry Definition.
     let tests_doc = index
         .documents
         .iter()
         .find(|d| d.relative_path == "debian/tests/control")
         .expect("tests/control document");
-    assert!(
-        tests_doc.occurrences.iter().any(|o| {
+    let smoke_ref = tests_doc
+        .occurrences
+        .iter()
+        .find(|o| {
             (o.symbol_roles & scip::types::SymbolRole::Test as i32) != 0
                 && o.symbol.contains("/tests/smoke")
+        })
+        .expect("expected a Test-role occurrence for the smoke test");
+    assert_eq!(
+        smoke_ref.symbol_roles & scip::types::SymbolRole::Definition as i32,
+        0,
+        "smoke reference in control must not be a definition"
+    );
+
+    // The smoke script is indexed as its own document, defining the same symbol.
+    assert!(paths.contains(&"debian/tests/smoke"));
+    let script_doc = index
+        .documents
+        .iter()
+        .find(|d| d.relative_path == "debian/tests/smoke")
+        .expect("tests/smoke document");
+    assert!(
+        script_doc.occurrences.iter().any(|o| {
+            o.symbol == smoke_ref.symbol
+                && (o.symbol_roles & scip::types::SymbolRole::Definition as i32) != 0
         }),
-        "expected a Test-role occurrence for the smoke test"
+        "smoke script should define the test symbol"
     );
 
     let out = dir.path().join("index.scip");

@@ -140,11 +140,18 @@ impl Indexer {
 
         // Step 9: tests/control (autopkgtest).
         if let Ok(text) = std::fs::read_to_string(debian.join("tests").join("control")) {
-            let idx = autopkgtest::index(&text, "debian/tests/control", src, version.as_deref());
+            let idx = autopkgtest::index(
+                &text,
+                "debian/tests/control",
+                &self.root,
+                src,
+                version.as_deref(),
+            );
             external_binaries.extend(idx.external_binaries);
             restrictions.extend(idx.restrictions);
             features.extend(idx.features);
             documents.push(idx.document);
+            documents.extend(idx.script_documents);
         }
 
         // Step 10: debcargo.toml.

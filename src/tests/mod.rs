@@ -7,8 +7,10 @@
 pub mod completion;
 pub mod definition;
 pub mod detection;
+pub mod document_link;
 pub mod fields;
 pub mod hover;
+pub mod resolve;
 pub mod semantic;
 
 pub use completion::*;

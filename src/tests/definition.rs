@@ -6,8 +6,7 @@ use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use crate::deb822::completion::{get_cursor_context, CursorContext};
 use crate::position::{LineIndex, Source};
-
-const DEFAULT_TESTS_DIRECTORY: &str = "debian/tests";
+use crate::tests::resolve::{source_root, tests_directory};
 
 /// Find the test name within a `Tests:` field value.
 ///
@@ -114,10 +113,7 @@ fn goto_definition_tests(
     let current_paragraph = deb822.paragraph_at_position(offset)?;
     let root = source_root(uri)?;
 
-    let tests_dir = current_paragraph
-        .get("Tests-Directory")
-        .map(|v| root.join(v.trim()))
-        .unwrap_or_else(|| root.join(DEFAULT_TESTS_DIRECTORY));
+    let tests_dir = tests_directory(Some(&current_paragraph), &root);
 
     let test_path = tests_dir.join(&test_name);
     if !test_path.is_file() {
@@ -186,14 +182,6 @@ fn goto_definition_tests_directory(
         uri: Uri::from_file_path(&dir_path)?,
         range: Range::new(Position::new(0, 0), Position::new(0, 0)),
     })
-}
-
-/// Derive the source root from a `debian/tests/control` URI.
-///
-/// debian/tests/control -> debian/tests -> debian -> source root
-fn source_root(uri: &Uri) -> Option<std::path::PathBuf> {
-    let control_path = uri.to_file_path()?;
-    Some(control_path.parent()?.parent()?.parent()?.to_path_buf())
 }
 
 #[cfg(test)]
