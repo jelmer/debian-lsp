@@ -8,8 +8,7 @@
 use tower_lsp_server::ls_types::{DocumentLink, Uri};
 
 use crate::position::Source;
-
-const DEFAULT_TESTS_DIRECTORY: &str = "debian/tests";
+use crate::tests::resolve::{source_root, tests_directory};
 
 /// Get document links for test names in the `Tests:` fields of a
 /// debian/tests/control file.
@@ -40,10 +39,7 @@ pub fn get_document_links(
         let value_end: usize = vr.end().into();
         let value = &src.text[value_start..value_end];
 
-        let tests_dir = para
-            .get("Tests-Directory")
-            .map(|v| root.join(v.trim()))
-            .unwrap_or_else(|| root.join(DEFAULT_TESTS_DIRECTORY));
+        let tests_dir = tests_directory(Some(&para), &root);
 
         for (rel_start, name) in iter_tokens(value) {
             let test_path = tests_dir.join(name);
@@ -79,14 +75,6 @@ fn iter_tokens(value: &str) -> impl Iterator<Item = (usize, &str)> {
             Some((seg_start, token))
         })
         .filter(|(_, token)| !token.is_empty())
-}
-
-/// Resolve the source-tree root (the directory containing `debian/`) from a
-/// control URI of the form `.../debian/tests/control`.
-fn source_root(uri: &Uri) -> Option<std::path::PathBuf> {
-    let path = uri.to_file_path()?;
-    // `<root>/debian/tests/control` -> `<root>`.
-    Some(path.parent()?.parent()?.parent()?.to_path_buf())
 }
 
 #[cfg(test)]

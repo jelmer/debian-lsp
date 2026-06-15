@@ -5,8 +5,7 @@ use crate::architecture::SharedArchitectureList;
 use crate::deb822::completion::*;
 use crate::package_cache::SharedPackageCache;
 use crate::position::Source;
-
-const DEFAULT_TESTS_DIRECTORY: &str = "debian/tests";
+use crate::tests::resolve::tests_directory;
 
 use super::fields::{
     TESTS_DEPENDS_SUBSTITUTION_VALUES, TESTS_FEATURES_VALUES, TESTS_FIELDS,
@@ -241,10 +240,7 @@ pub fn get_tests_value_completions(
         .find(|p| p.text_range().contains_inclusive(offset));
 
     // Use Tests-Directory if specified, otherwise fall back to debian/tests
-    let tests_dir = current_paragraph
-        .and_then(|p| p.get("Tests-Directory"))
-        .map(|v| source_root.join(v.trim()))
-        .unwrap_or_else(|| source_root.join(DEFAULT_TESTS_DIRECTORY));
+    let tests_dir = tests_directory(current_paragraph.as_ref(), source_root);
 
     let Ok(entries) = std::fs::read_dir(&tests_dir) else {
         return vec![];
