@@ -7,6 +7,16 @@ use debian_control::{BINARY_RELATION_FIELDS, SOURCE_RELATION_FIELDS};
 use scip::types::{Document, Occurrence, SymbolInformation, SymbolRole};
 use std::collections::HashSet;
 
+/// Classification fields whose value is emitted as a cross-package `field_value`
+/// symbol (so it can be searched and "find references"d), keyed by the lowercased
+/// field name used in the symbol. `Architecture` is whitespace-separated and
+/// multi-valued; the others are single-valued.
+const VALUE_FIELDS: &[(&str, &str)] = &[
+    ("Section", "section"),
+    ("Priority", "priority"),
+    ("Architecture", "architecture"),
+];
+
 /// Indexed result for a single `debian/control` document.
 pub struct ControlIndex {
     /// The SCIP document, ready to be appended to an [`scip::types::Index`].
@@ -82,6 +92,9 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
                 |field| symbols::source_field(&name, version, field),
                 control_field_description,
             );
+
+            // Searchable classification-value symbols (Section/Priority/...).
+            emit_field_values(source.as_deb822(), text, &lines, &mut occurrences);
 
             // References inside source-stanza relation fields.
             for field in SOURCE_RELATION_FIELDS {
@@ -166,6 +179,9 @@ pub fn index(text: &str, relative_path: &str, version: Option<&str>) -> ControlI
             |field| symbols::binary_field(&field_source, version, &bname, field),
             control_field_description,
         );
+
+        // Searchable classification-value symbols on the binary stanza.
+        emit_field_values(binary.as_deb822(), text, &lines, &mut occurrences);
 
         for field in BINARY_RELATION_FIELDS {
             // `Provides` declares the (often versioned, virtual) binary packages
@@ -340,6 +356,51 @@ fn emit_provides(
                 display_name: name,
                 ..Default::default()
             });
+        }
+    }
+}
+
+/// Emit a `field_value` definition occurrence for each classification field
+/// ([`VALUE_FIELDS`]) in `paragraph`. Multi-valued fields (Architecture) emit one
+/// symbol per whitespace-separated value, each at its own range. Values are
+/// lowercased so the symbol is canonical.
+fn emit_field_values(
+    paragraph: &deb822_lossless::Paragraph,
+    text: &str,
+    lines: &LineTable,
+    occurrences: &mut Vec<Occurrence>,
+) {
+    for (field, key) in VALUE_FIELDS {
+        let Some(entry) = paragraph.get_entry(field) else {
+            continue;
+        };
+        let Some(vr) = entry.value_range() else {
+            continue;
+        };
+        let value_start = u32::from(vr.start());
+        let value_end = u32::from(vr.end());
+        let value_text = &text[value_start as usize..value_end as usize];
+        // One occurrence per whitespace-separated token, at its own sub-range.
+        let mut offset = 0usize;
+        for token in value_text.split_whitespace() {
+            // Locate this token in the remaining text to get its exact range
+            // (handles arbitrary inter-token spacing).
+            let Some(rel) = value_text[offset..].find(token) else {
+                continue;
+            };
+            let abs_start = value_start + (offset + rel) as u32;
+            let abs_end = abs_start + token.len() as u32;
+            offset += rel + token.len();
+            if abs_end > value_end {
+                continue;
+            }
+            let sym = symbols::field_value(key, &token.to_lowercase());
+            occurrences.push(occurrence(
+                lines,
+                (abs_start, abs_end),
+                &sym,
+                SymbolRole::Definition,
+            ));
         }
     }
 }
@@ -662,5 +723,38 @@ Depends: librust-bar-1+default-dev
         assert!(idx.document.occurrences.iter().any(|o| {
             o.symbol == bd_sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0
         }));
+    }
+
+    #[test]
+    fn classification_field_values_are_searchable_symbols() {
+        let text = "\
+Source: hello
+Section: net
+Priority: optional
+
+Package: hello
+Architecture: amd64 arm64
+Description: x
+";
+        let idx = index(text, "debian/control", Some("2.10-3"));
+        let occs = &idx.document.occurrences;
+
+        let has_def = |sym: &str| {
+            occs.iter()
+                .any(|o| o.symbol == sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+        };
+        // Section/Priority from the source stanza.
+        assert!(has_def(&symbols::field_value("section", "net")));
+        assert!(has_def(&symbols::field_value("priority", "optional")));
+        // Architecture is multi-valued: one symbol per value, lowercased.
+        assert!(has_def(&symbols::field_value("architecture", "amd64")));
+        assert!(has_def(&symbols::field_value("architecture", "arm64")));
+
+        // The `net` value occurrence points at its exact byte range (line 1).
+        let net = occs
+            .iter()
+            .find(|o| o.symbol == symbols::field_value("section", "net"))
+            .expect("section/net occurrence");
+        assert_eq!(net.range, vec![1, 9, 1, 12]);
     }
 }

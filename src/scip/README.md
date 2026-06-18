@@ -20,7 +20,7 @@ Documents embed their own source text, so the index is self-contained.
 
 ## Symbols
 
-Every symbol uses one of four schemes:
+Every symbol uses one of these schemes:
 
 | scheme | for |
 | --- | --- |
@@ -28,6 +28,7 @@ Every symbol uses one of four schemes:
 | `scip-debian-bts` | Debian BTS bug references |
 | `scip-launchpad-bug` | Launchpad bug references |
 | `scip-cve` | CVE references |
+| `scip-ghsa` | GitHub Security Advisory references |
 
 `scip-debian` symbols carry a protobuf `Package` (`manager="debian"`,
 `name=<src>`, `version`) followed by a descriptor chain that names the entity.
@@ -73,8 +74,10 @@ See `symbols.rs` for the exact construction of each; the main ones:
   with the field's description, so a consumer shows the same hover the editor
   does.
 - **values** -- `license` (DEP-5 short-name), `copyright_files_glob`,
-  `changelog_version`, `source_format`, `rules_target` / `rules_variable`,
-  `debcargo_package`, `autopkgtest_test`, `upstream_path`, `patch`.
+  `changelog_version`, `source_format`, `source_option`, `rules_target` /
+  `rules_variable`, `debcargo_package`, `autopkgtest_test`, `upstream_path`,
+  `patch`. Classification field values (`Section`, `Priority`, `Architecture`)
+  become cross-package `field_value` symbols (e.g. `section/net`).
 - **identities** -- `identity(email)` for a maintainer/uploader, package-less and
   keyed on the email, so the same person collects across the archive.
 - **file references** -- `file_ref(path)`, package-less and keyed on a repo-relative
@@ -89,16 +92,18 @@ See `symbols.rs` for the exact construction of each; the main ones:
 ### Cross-package vocabularies
 
 Some symbols are package-less so the same value collects across the whole
-archive, enabling queries like "all packages using `3.0 (quilt)`":
-`build_profile`, `debhelper_command`, `source_format`,
-`autopkgtest_restriction`, `autopkgtest_feature`, `identity`, `file_ref`,
-`web_url`.
+archive, enabling queries like "all packages using `3.0 (quilt)`" or "all
+packages in section `net`": `build_profile`, `debhelper_command`,
+`source_format`, `source_option`, `field_value` (`Section`/`Priority`/
+`Architecture`), `autopkgtest_restriction`, `autopkgtest_feature`, `identity`,
+`file_ref`, `web_url`.
 
 ### External symbols
 
 Things referenced from a tree but defined elsewhere -- another source package, or
-an archive-wide vocabulary (build profiles, autopkgtest restrictions, bug/CVE
-references) -- are emitted as index-level `external_symbols` carrying their
+an archive-wide vocabulary (build profiles, autopkgtest restrictions,
+bug/CVE/GHSA references) -- are emitted as index-level `external_symbols` carrying
+their
 documentation, so those references render with hover text rather than bare.
 
 ## Per-file indexers
@@ -106,7 +111,7 @@ documentation, so those references render with hover text rather than bare.
 | file | module | notable output |
 | --- | --- | --- |
 | `debian/changelog` | `changelog.rs` | entry-version defs; maintainer `identity` refs; bug/CVE refs; `file_ref` mentions of other files |
-| `debian/control` | `control.rs` | source/binary package defs; documented field names; relation-field refs to other binaries; URL field links |
+| `debian/control` | `control.rs` | source/binary package defs; documented field names; relation-field refs to other binaries; URL field links; `Section`/`Priority`/`Architecture` value defs |
 | `debian/copyright` | `copyright.rs` | DEP-5 `License` defs and `Files` glob defs/refs; documented field names; `Format` URL link |
 | `debian/rules` | `rules.rs` | target and variable defs; `debhelper_command` refs |
 | `debian/watch` | `watch.rs` | documented field/option names (deb822 v5 and line-based) |
@@ -123,11 +128,12 @@ deb822 file's known field-name keys from the same tables the LSP hover uses.
 
 ## Bug, CVE and live enrichment
 
-`debian/changelog` (and patch headers) reference bugs and CVEs:
-`Closes: #NNN` -> `bts_bug`, `LP: #NNN` -> `lp_bug`, `CVE-YYYY-NNNN` -> `cve`.
-Each is emitted with a static markdown link to its tracker. When run online,
-`bug_info::attach` upgrades these to a richer live summary (title, status),
-reusing the LSP's caches; offline, the static link stands.
+`debian/changelog` (and patch headers) reference bugs, CVEs and GHSAs:
+`Closes: #NNN` -> `bts_bug`, `LP: #NNN` -> `lp_bug`, `CVE-YYYY-NNNN` -> `cve`,
+`GHSA-xxxx-xxxx-xxxx` -> `ghsa`. Each is emitted with a static markdown link to
+its tracker (the GHSA links to the GitHub Advisory Database). When run online,
+`bug_info::attach` upgrades the bug and CVE references to a richer live summary
+(title, status), reusing the LSP's caches; offline, the static link stands.
 
 ## Index metadata
 
