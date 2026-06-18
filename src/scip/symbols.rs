@@ -11,6 +11,8 @@
 //! - Field on a stanza: `<src>/<bin?>/<field>` — terminated by `Term`.
 //! - Changelog version: `<src>/changelog/<version>` — `Namespace/Meta`.
 //! - License short-name (DEP-5): `<src>/license/<short>` — `Namespace/Type`.
+//! - Classification value: `<field>/<value>` — `Namespace/Term`, package-less and
+//!   cross-package (e.g. `section/net`).
 //!
 //! External symbols (a referenced source/binary defined in a different index)
 //! use the same scheme but with `version=""` in the `Package`, so they remain
@@ -386,6 +388,21 @@ pub fn copyright_files_glob(source: &str, version: Option<&str>, glob: &str) -> 
             desc("copyright", Suffix::Namespace),
             desc(glob, Suffix::Meta),
         ],
+        ..Default::default()
+    })
+}
+
+/// Symbol for a classification field's value, e.g. `Section: net` or
+/// `Priority: optional`. `field` is the lowercased field name, `value` the
+/// (lowercased) value.
+///
+/// Cross-package and package-less like [`identity`]: every package in section
+/// `net` shares the one `section/net` symbol, so "find references" lists them and
+/// a consumer can scope a search by it.
+pub fn field_value(field: &str, value: &str) -> String {
+    fmt(Symbol {
+        scheme: SCHEME.to_owned(),
+        descriptors: vec![desc(field, Suffix::Namespace), desc(value, Suffix::Term)],
         ..Default::default()
     })
 }
