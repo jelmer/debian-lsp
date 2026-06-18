@@ -53,6 +53,10 @@ pub fn emit_field_symbols(
 /// distinct symbol gets a single [`SymbolInformation`] entry: `seen` tracks the
 /// symbols already documented, so a field name that recurs (across paragraphs
 /// or stanzas) is documented once while every occurrence still points at it.
+///
+/// Each field definition carries the enclosing paragraph (stanza) as its
+/// `enclosing_range`, so a consumer can fold or select the whole stanza from the
+/// field name.
 pub fn emit_paragraph_field_symbols(
     paragraph: &deb822_lossless::Paragraph,
     lines: &LineTable,
@@ -62,6 +66,8 @@ pub fn emit_paragraph_field_symbols(
     field_sym: impl Fn(&str) -> String,
     lookup: impl Fn(&str) -> Option<(&'static str, &'static str)>,
 ) {
+    let stanza = paragraph.text_range();
+    let enclosing_range = lines.range(stanza.start().into(), stanza.end().into());
     for entry in paragraph.entries() {
         let Some(key) = entry.key() else { continue };
         let Some((canonical, description)) = lookup(&key) else {
@@ -75,6 +81,7 @@ pub fn emit_paragraph_field_symbols(
             range: lines.range(range.start().into(), range.end().into()),
             symbol: sym.clone(),
             symbol_roles: SymbolRole::Definition as i32,
+            enclosing_range: enclosing_range.clone(),
             ..Default::default()
         });
         if seen.insert(sym.clone()) {

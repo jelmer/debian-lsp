@@ -66,6 +66,9 @@ pub fn index(
                     name,
                     symbols::debcargo_key(source, version, "", name),
                     fields::top_level_key_description(name),
+                    // The root table spans the whole file, so it is not a useful
+                    // enclosing scope for a top-level key.
+                    None,
                     &lines,
                     &mut occurrences,
                     &mut symbols_info,
@@ -100,12 +103,16 @@ fn index_table(
     occurrences: &mut Vec<Occurrence>,
     symbols_info: &mut Vec<SymbolInformation>,
 ) {
+    // The table itself ([source] or [packages.NAME]) is the enclosing scope of
+    // each of its keys.
+    let enclosing = table.span();
     for (name, _) in table.iter() {
         emit_key(
             table,
             name,
             symbols::debcargo_key(source, version, scope, name),
             describe(name),
+            enclosing.as_ref(),
             lines,
             occurrences,
             symbols_info,
@@ -158,7 +165,9 @@ fn index_packages(
         // The package name in the `[packages.NAME]` header is a definition.
         let pkg_sym = symbols::debcargo_package(source, version, pkg_name);
         if let Some(span) = packages.key(pkg_name).and_then(|k| k.span()) {
-            occurrences.push(definition(lines, span, &pkg_sym));
+            // The `[packages.NAME]` table is the name's enclosing scope.
+            let enclosing = table.span();
+            occurrences.push(definition(lines, span, &pkg_sym, enclosing.as_ref()));
             symbols_info.push(SymbolInformation {
                 symbol: pkg_sym,
                 kind: scip::types::symbol_information::Kind::Namespace.into(),
@@ -180,11 +189,13 @@ fn index_packages(
 }
 
 /// Emit a definition occurrence and a documented symbol for a single key.
+#[allow(clippy::too_many_arguments)]
 fn emit_key(
     table: &Table,
     name: &str,
     symbol: String,
     description: Option<&'static str>,
+    enclosing: Option<&std::ops::Range<usize>>,
     lines: &LineTable,
     occurrences: &mut Vec<Occurrence>,
     symbols_info: &mut Vec<SymbolInformation>,
@@ -192,7 +203,7 @@ fn emit_key(
     let Some(span) = table.key(name).and_then(|k| k.span()) else {
         return;
     };
-    occurrences.push(definition(lines, span, &symbol));
+    occurrences.push(definition(lines, span, &symbol, enclosing));
     symbols_info.push(SymbolInformation {
         symbol,
         kind: scip::types::symbol_information::Kind::Field.into(),
@@ -202,13 +213,22 @@ fn emit_key(
     });
 }
 
-/// Build a highlighted definition occurrence covering a key's byte span.
-fn definition(lines: &LineTable, span: std::ops::Range<usize>, symbol: &str) -> Occurrence {
+/// Build a highlighted definition occurrence covering a key's byte span,
+/// optionally enclosed by its containing table's span.
+fn definition(
+    lines: &LineTable,
+    span: std::ops::Range<usize>,
+    symbol: &str,
+    enclosing: Option<&std::ops::Range<usize>>,
+) -> Occurrence {
     Occurrence {
         range: lines.range(span.start as u32, span.end as u32),
         symbol: symbol.to_owned(),
         symbol_roles: SymbolRole::Definition as i32,
         syntax_kind: SyntaxKind::IdentifierAttribute.into(),
+        enclosing_range: enclosing
+            .map(|e| lines.range(e.start as u32, e.end as u32))
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -274,6 +294,25 @@ summary = \"An example library\"
             .symbols
             .iter()
             .any(|s| s.symbol == symbols::debcargo_package("hello", Some("2.10-3"), "lib")));
+    }
+
+    #[test]
+    fn table_keys_carry_enclosing_range_top_level_keys_do_not() {
+        let idx = index(SAMPLE, "debian/debcargo.toml", "hello", Some("2.10-3"));
+        let def = |scope: &str, key: &str| {
+            let sym = symbols::debcargo_key("hello", Some("2.10-3"), scope, key);
+            idx.document
+                .occurrences
+                .iter()
+                .find(|o| o.symbol == sym)
+                .unwrap_or_else(|| panic!("definition for {scope}/{key}"))
+        };
+        // Keys inside [source] and [packages.NAME] are enclosed by their table.
+        assert!(!def("source", "homepage").enclosing_range.is_empty());
+        assert!(!def("lib", "summary").enclosing_range.is_empty());
+        // Top-level keys have no useful enclosing scope (the root table is the
+        // whole file), so they carry none.
+        assert!(def("", "overlay").enclosing_range.is_empty());
     }
 
     #[test]

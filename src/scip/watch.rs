@@ -57,11 +57,14 @@ pub fn index(text: &str, relative_path: &str, source: &str, version: Option<&str
             let r = url_node.text_range();
             let s: u32 = r.start().into();
             let e: u32 = r.end().into();
+            // The whole watch entry is the enclosing scope of its URL.
+            let node = entry.syntax().text_range();
             occurrences.push(Occurrence {
                 range: lines.range(s, e),
                 symbol: entry_sym.clone(),
                 symbol_roles: SymbolRole::Definition as i32,
                 syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
+                enclosing_range: lines.range(node.start().into(), node.end().into()),
                 ..Default::default()
             });
             symbols_info.push(SymbolInformation {
@@ -129,10 +132,19 @@ fn emit_linebased_option_symbols(
         };
         let sym = symbols::watch_field(source, version, canonical);
         let r = token.text_range();
+        // The enclosing OPTION or VERSION node is the key's scope.
+        let enclosing_range = token
+            .parent()
+            .map(|p| {
+                let pr = p.text_range();
+                lines.range(pr.start().into(), pr.end().into())
+            })
+            .unwrap_or_default();
         occurrences.push(Occurrence {
             range: lines.range(r.start().into(), r.end().into()),
             symbol: sym.clone(),
             symbol_roles: SymbolRole::Definition as i32,
+            enclosing_range,
             ..Default::default()
         });
         if seen.insert(sym.clone()) {
@@ -170,6 +182,37 @@ opts=\"uversionmangle=s/-/./\" https://example.org/hello/ hello-(.+)\\.tar\\.gz
             })
             .collect();
         assert_eq!(defs.len(), 1);
+    }
+
+    #[test]
+    fn definitions_carry_enclosing_range() {
+        let idx = index(SAMPLE, "debian/watch", "hello", Some("2.10-3"));
+        for o in idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+        {
+            assert!(
+                !o.enclosing_range.is_empty(),
+                "expected an enclosing range on {}",
+                o.symbol
+            );
+        }
+    }
+
+    #[test]
+    fn v5_field_definitions_carry_enclosing_range() {
+        let text = "Version: 5\n\nSource: https://example.org/hello/\nMatching-Pattern: hello-(.+)\\.tar\\.gz\n";
+        let idx = index(text, "debian/watch", "hello", Some("2.10-3"));
+        let mp_sym = symbols::watch_field("hello", Some("2.10-3"), "Matching-Pattern");
+        let def = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == mp_sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .expect("Matching-Pattern definition");
+        assert!(!def.enclosing_range.is_empty());
     }
 
     #[test]

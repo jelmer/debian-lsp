@@ -6,6 +6,7 @@
 
 use crate::scip::linetable::LineTable;
 use crate::scip::symbols;
+use rowan::ast::AstNode;
 use scip::types::{Document, Occurrence, SymbolInformation, SymbolRole};
 use yaml_edit::{Parse, YamlFile};
 
@@ -42,12 +43,17 @@ pub fn index(
                 continue;
             }
             let range = scalar.byte_range();
+            // The whole key/value entry is the field's enclosing scope, so a
+            // consumer can fold or select a multi-line value from its key.
+            let entry_range = entry.syntax().text_range();
             let sym = symbols::upstream_metadata_field(source, version, &key);
             occurrences.push(Occurrence {
                 range: lines.range(range.start, range.end),
                 symbol: sym.clone(),
                 symbol_roles: SymbolRole::Definition as i32,
                 syntax_kind: scip::types::SyntaxKind::IdentifierAttribute.into(),
+                enclosing_range: lines
+                    .range(u32::from(entry_range.start()), u32::from(entry_range.end())),
                 ..Default::default()
             });
             symbols_info.push(SymbolInformation {
@@ -130,6 +136,22 @@ Reference:
         // Repository, Bug-Database, Archive, Reference — but not the nested
         // Author/Title.
         assert_eq!(defs.len(), 4);
+        // Each key is enclosed by its full entry. For the multi-line `Reference`
+        // value, the enclosing range spans more than the key's own line.
+        for def in &defs {
+            assert!(
+                !def.enclosing_range.is_empty(),
+                "expected an enclosing range on {}",
+                def.symbol
+            );
+        }
+        let reference = defs
+            .iter()
+            .find(|o| o.symbol.contains("Reference"))
+            .expect("Reference definition");
+        // enclosing_range is [start_line, start_col, end_line, end_col]; the
+        // multi-line value pushes the end past the key's own line.
+        assert!(reference.enclosing_range[2] > reference.enclosing_range[0]);
         let repository = idx
             .document
             .symbols

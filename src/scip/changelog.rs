@@ -63,11 +63,14 @@ pub fn index(text: &str, relative_path: &str, root: Option<&Path>) -> ChangelogI
         if let (Some(p), Some(v)) = (pkg.as_deref(), ver_string.as_deref()) {
             let sym = symbols::changelog_version(p, v);
             if let Some(vr) = entry.version_range() {
+                // The whole changelog entry block is the version's enclosing scope.
+                let block = entry.syntax().text_range();
                 occurrences.push(Occurrence {
                     range: lines.range(vr.start().into(), vr.end().into()),
                     symbol: sym.clone(),
                     symbol_roles: SymbolRole::Definition as i32,
                     syntax_kind: ScipSyntax::StringLiteral.into(),
+                    enclosing_range: lines.range(block.start().into(), block.end().into()),
                     ..Default::default()
                 });
             }
@@ -257,6 +260,14 @@ hello (2.10-2) unstable; urgency=medium
             .filter(|o| (o.symbol_roles & SymbolRole::Definition as i32) != 0)
             .collect();
         assert_eq!(defs.len(), 2);
+        // Each version definition is enclosed by its changelog entry block.
+        for def in &defs {
+            assert!(
+                !def.enclosing_range.is_empty(),
+                "expected an enclosing range on {}",
+                def.symbol
+            );
+        }
 
         let bts_refs: Vec<_> = idx
             .document

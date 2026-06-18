@@ -74,6 +74,9 @@ pub fn index(
     );
 
     for para in deb822.paragraphs() {
+        // The test stanza is the enclosing scope of each test it names.
+        let stanza = para.text_range();
+        let enclosing_range = lines.range(stanza.start().into(), stanza.end().into());
         if let Some(entry) = para.get_entry("Tests") {
             if let Some(vr) = entry.value_range() {
                 let tests_dir = tests_directory(Some(&para), root);
@@ -99,6 +102,7 @@ pub fn index(
                         symbol: sym.clone(),
                         symbol_roles,
                         syntax_kind: scip::types::SyntaxKind::IdentifierFunctionDefinition.into(),
+                        enclosing_range: enclosing_range.clone(),
                         ..Default::default()
                     });
                     if let Some((script_path, script_text)) = resolved {
@@ -510,6 +514,30 @@ Features: test-name
         let dir = tempdir().unwrap();
         let outside = dir.path().parent().unwrap().join("elsewhere");
         assert_eq!(script_relative_path(dir.path(), &outside), None);
+    }
+
+    #[test]
+    fn test_definitions_carry_enclosing_range() {
+        let dir = tempdir().unwrap();
+        let idx = index(
+            SAMPLE,
+            "debian/tests/control",
+            dir.path(),
+            "hello",
+            Some("2.10-3"),
+        );
+        for o in idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| (o.symbol_roles & SymbolRole::Test as i32) != 0)
+        {
+            assert!(
+                !o.enclosing_range.is_empty(),
+                "expected an enclosing range on {}",
+                o.symbol
+            );
+        }
     }
 
     #[test]
