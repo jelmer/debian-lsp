@@ -131,6 +131,8 @@ enum FileType {
     DebcargoToml,
     /// debian/dirs or debian/<package>.dirs file
     Dirs,
+    /// debian/install or debian/<package>.install file
+    Install,
 }
 
 impl FileType {
@@ -164,6 +166,8 @@ impl FileType {
             Some(Self::DebcargoToml)
         } else if debhelper::dirs::is_dirs_file(uri) {
             Some(Self::Dirs)
+        } else if debhelper::install::is_install_file(uri) {
+            Some(Self::Install)
         } else {
             None
         }
@@ -457,6 +461,7 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
+            | FileType::Install
             | FileType::DebcargoToml => None,
         }
     }
@@ -515,7 +520,8 @@ impl Backend {
             FileType::SourceFormat
             | FileType::UpstreamMetadata
             | FileType::DebcargoToml
-            | FileType::Dirs => Vec::new(),
+            | FileType::Dirs
+            | FileType::Install => Vec::new(),
         }
     }
 
@@ -1417,6 +1423,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 debhelper::dirs::get_completions(&source_text, position)
             }
+            Some((FileType::Install, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                debhelper::install::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -2021,7 +2032,7 @@ impl LanguageServer for Backend {
                 dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
             FileType::DebcargoToml => debcargo::generate_semantic_tokens(&source_text, src),
-            FileType::Dirs => vec![],
+            FileType::Dirs | FileType::Install => vec![],
         };
 
         if tokens.is_empty() {

@@ -8,3 +8,4 @@ pub mod detection;
 pub mod diagnostics;
 
 pub mod dirs;
+pub mod install;
