@@ -2630,10 +2630,11 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 let idx = crate::position::LineIndex::new(&source_text);
                 let src = crate::position::Source::new(&source_text, &idx);
-                Ok(Some(crate::deb822::document_link::get_document_links(
-                    parsed.tree().as_deb822(),
+                Ok(Some(crate::copyright::document_link::get_document_links(
+                    &parsed.tree(),
                     copyright::fields::COPYRIGHT_FIELDS,
                     src,
+                    uri,
                 )))
             }
             FileType::Changelog => {
