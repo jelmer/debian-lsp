@@ -1683,6 +1683,13 @@ impl LanguageServer for Backend {
                     &params.context.diagnostics,
                 ));
             }
+            FileType::Install => {
+                actions.extend(debhelper::install::get_code_actions(
+                    src,
+                    &params.text_document.uri,
+                    &params.context.diagnostics,
+                ));
+            }
             FileType::Watch
             | FileType::UpstreamMetadata
             | FileType::TestsControl
@@ -2375,8 +2382,8 @@ impl LanguageServer for Backend {
                     new_text: formatted,
                 }]))
             }
-            FileType::Dirs => Ok(debhelper::actions::format_debhelper(&source_text).map(
-                |formatted| {
+            FileType::Dirs | FileType::Install => {
+                Ok(debhelper::actions::format_debhelper(&source_text).map(|formatted| {
                     let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
                         0.into(),
                         (source_text.len() as u32).into(),
@@ -2385,8 +2392,8 @@ impl LanguageServer for Backend {
                         range: full_range,
                         new_text: formatted,
                     }]
-                },
-            )),
+                }))
+            }
             _ => Ok(None),
         }
     }
