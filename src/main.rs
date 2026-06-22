@@ -448,11 +448,15 @@ impl Backend {
                 #[cfg(not(feature = "spellcheck"))]
                 None
             }
-            FileType::Dirs => {
+            FileType::Dirs | FileType::Install => {
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
-                Some(debhelper::dirs::diagnostics::get_diagnostics(src))
+                let diags = match file_type {
+                    FileType::Dirs => debhelper::dirs::diagnostics::get_diagnostics(src),
+                    _ => debhelper::install::diagnostics::get_diagnostics(src),
+                };
+                Some(diags)
             }
             FileType::Watch
             | FileType::TestsControl
@@ -461,7 +465,6 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::Install
             | FileType::DebcargoToml => None,
         }
     }
