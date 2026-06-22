@@ -24,6 +24,8 @@ Language Server Protocol implementation for Debian packaging files.
 **debhelper files:**
 - `debian/dirs` - Directories to create in the package build directory
 - `debian/<package>.dirs` - Per-package directory lists
+- `debian/install` - Files to install and where they go
+- `debian/<package>.install` - Per-package install lists
 
 ## Features
 
@@ -85,12 +87,19 @@ Language Server Protocol implementation for Debian packaging files.
 - Common directory prefix completions (`usr/share/`, `usr/lib/`, `usr/bin/`, `etc/`, `var/lib/`, etc.)
 - Excludes already-listed directories from suggestions
 
+**debian/install:**
+- Common directory prefix completions for the destination path
+- Substitution variables (`${DEB_HOST_MULTIARCH}`, `${Space}`, etc.) after `$` / `${`
+
 ### Diagnostics
 
 - Field casing validation (e.g. `source` instead of `Source`)
 - Parse error reporting with position information
 
 **debian/dirs:**
+- Duplicate entries -> warning
+
+**debian/install:**
 - Duplicate entries -> warning
 
 ### Code Actions
@@ -100,6 +109,7 @@ Language Server Protocol implementation for Debian packaging files.
 - **Add changelog entry** - create a new changelog entry with incremented version, UNRELEASED distribution, and auto-populated maintainer
 - **Mark for upload** - replace UNRELEASED with the target distribution
 - **Fix dirs issues** - remove duplicate directory entries
+- **Fix install issues** - remove duplicate install entries
 
 ### Hover
 
@@ -166,8 +176,8 @@ tests/control) and entry-level folding for changelog files.
 ### Document Formatting
 
 Wrap-and-sort formatting for debian/control, debian/copyright, and debian/watch
-(deb822 format) files. debian/dirs entries are sorted alphabetically, with blank lines
-removed.
+(deb822 format) files. debian/dirs and debian/install entries are sorted
+alphabetically, with blank lines removed.
 
 ### Semantic Highlighting
 
@@ -226,7 +236,7 @@ function! s:config_debian_lsp()
       autocmd User lsp_setup call lsp#register_server({
         \ 'name': 'debian-lsp',
         \ 'cmd': {server_info -> ['debian-lsp']},
-        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest', 'debrules', 'debpatches', 'debdirs'],
+        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest', 'debrules', 'debpatches', 'debdirs', 'debinstall'],
         \ 'blocklist': [],
         \ 'enabled': 1,
         \ })
@@ -252,6 +262,8 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/patches/series setfiletype debpatches
   autocmd BufNewFile,BufRead */debian/dirs setfiletype debdirs
   autocmd BufNewFile,BufRead */debian/*.dirs setfiletype debdirs
+  autocmd BufNewFile,BufRead */debian/install setfiletype debinstall
+  autocmd BufNewFile,BufRead */debian/*.install setfiletype debinstall
 augroup END
 ```
 
@@ -308,6 +320,8 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
     '*/debian/patches/series',
     '*/debian/dirs',
     '*/debian/*.dirs',
+    '*/debian/install',
+    '*/debian/*.install',
   },
   callback = function()
     vim.lsp.start({
