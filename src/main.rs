@@ -45,6 +45,7 @@ mod debcargo;
 mod debian_workspace;
 mod dep3;
 mod distros;
+mod file_links;
 mod ghsa;
 mod links;
 #[cfg(feature = "lintian-brush")]

@@ -86,7 +86,13 @@ impl Indexer {
         // Step 3: copyright.
         if let Ok(text) = std::fs::read_to_string(debian.join("copyright")) {
             let src = source_name.as_deref().unwrap_or("unknown");
-            let idx = copyright::index(&text, "debian/copyright", src, version.as_deref());
+            let idx = copyright::index(
+                &text,
+                "debian/copyright",
+                src,
+                version.as_deref(),
+                Some(&self.root),
+            );
             documents.push(idx.document);
         }
 

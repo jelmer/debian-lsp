@@ -1,9 +1,11 @@
 //! Index a `debian/copyright` (DEP-5) file into SCIP documents.
 
+use crate::file_links::file_link_target;
 use crate::scip::linetable::LineTable;
 use crate::scip::symbols;
 use debian_copyright::lossless::Copyright;
 use scip::types::{Document, Occurrence, SymbolInformation, SymbolRole};
+use std::path::Path;
 
 /// Indexed result for `debian/copyright`.
 pub struct CopyrightIndex {
@@ -14,12 +16,16 @@ pub struct CopyrightIndex {
 /// Parse and index a `debian/copyright` file.
 ///
 /// `source_name` and `version` are used to scope license short-name symbols to
-/// this source package's index.
+/// this source package's index. `root` is the package root (the directory
+/// containing `debian/`), used to resolve and validate the literal paths named
+/// in `Files:` paragraphs; pass `None` to skip file links when the tree is
+/// unavailable.
 pub fn index(
     text: &str,
     relative_path: &str,
     source_name: &str,
     version: Option<&str>,
+    root: Option<&Path>,
 ) -> CopyrightIndex {
     let (cp, _errors) = Copyright::from_str_relaxed(text).unwrap_or_else(|_| {
         // Fallback: empty document.
@@ -111,6 +117,7 @@ pub fn index(
 
     // References: per-Files paragraphs that cite a license expression, plus
     // a definition for the Files: glob pattern itself.
+    let mut file_links_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for fp in cp.iter_files() {
         // The whole Files paragraph is the enclosing scope of its glob.
         let stanza = fp.as_deb822().text_range();
@@ -173,6 +180,35 @@ pub fn index(
                         relationships,
                         ..Default::default()
                     });
+
+                    // A `Files:` pattern that names a literal path (no glob
+                    // wildcard) and resolves to a file under the tree becomes a
+                    // navigable link to that file, like the file mentions in the
+                    // changelog. Wildcard patterns match many files and can't
+                    // resolve to one, so they stay plain.
+                    if let Some(root) = root {
+                        for (pattern, span) in fp.file_spans() {
+                            let Some(rel) = file_link_target(root, &pattern) else {
+                                continue;
+                            };
+                            let sym = symbols::file_ref(&rel);
+                            occurrences.push(Occurrence {
+                                range: lines.range(span.start().into(), span.end().into()),
+                                symbol: sym.clone(),
+                                syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
+                                ..Default::default()
+                            });
+                            if file_links_seen.insert(rel.clone()) {
+                                symbols_info.push(SymbolInformation {
+                                    symbol: sym,
+                                    kind: scip::types::symbol_information::Kind::File.into(),
+                                    display_name: rel.clone(),
+                                    documentation: vec![symbols::file_ref_doc(&rel)],
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -229,7 +265,7 @@ License: MIT
 
     #[test]
     fn indexes_license_defs_and_refs() {
-        let idx = index(SAMPLE, "debian/copyright", "hello", Some("2.10-3"));
+        let idx = index(SAMPLE, "debian/copyright", "hello", Some("2.10-3"), None);
         // License-stanza and Files-glob definitions, excluding the
         // field-name definitions emitted for documentation.
         let field_syms: std::collections::HashSet<String> =
@@ -341,7 +377,7 @@ License: Apache-2.0
 License: MIT
  Permission is hereby granted...
 ";
-        let idx = index(text, "debian/copyright", "git2", Some("0.1-1"));
+        let idx = index(text, "debian/copyright", "git2", Some("0.1-1"), None);
 
         let license_refs: Vec<_> = idx
             .document
@@ -409,7 +445,7 @@ License: GPL-2+ with OpenSSL-exception
 License: GPL-2+
  Licensed under the GNU GPL...
 ";
-        let idx = index(text, "debian/copyright", "pkg", Some("1-1"));
+        let idx = index(text, "debian/copyright", "pkg", Some("1-1"), None);
 
         let gpl_sym = symbols::license("pkg", Some("1-1"), "GPL-2+");
         let license_refs: Vec<_> = idx
@@ -439,7 +475,7 @@ License: GPL-2+
 License: GPL-2+
  text
 ";
-        let idx = index(text, "debian/copyright", "hello", Some("1-1"));
+        let idx = index(text, "debian/copyright", "hello", Some("1-1"), None);
 
         let upstream = symbols::identity("jane@example.org");
         let up = idx
@@ -461,7 +497,7 @@ License: GPL-2+
 
     #[test]
     fn field_names_carry_documentation() {
-        let idx = index(SAMPLE, "debian/copyright", "hello", Some("2.10-3"));
+        let idx = index(SAMPLE, "debian/copyright", "hello", Some("2.10-3"), None);
 
         // The `Format` header field is a documented symbol matching the LSP
         // hover description.
@@ -501,5 +537,127 @@ License: GPL-2+
             .count();
         // Two Files paragraphs + two standalone License paragraphs.
         assert_eq!(occs, 4);
+    }
+
+    #[test]
+    fn links_literal_files_paths() {
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: src/main.c debian/copyright vendor/*
+Copyright: 2026 Jelmer Vernoo\u{133} <jelmer@debian.org>
+License: GPL-2+
+
+License: GPL-2+
+ text
+";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("debian")).unwrap();
+        std::fs::write(dir.path().join("src/main.c"), "int main() {}\n").unwrap();
+        std::fs::write(dir.path().join("debian/copyright"), text).unwrap();
+
+        let idx = index(
+            text,
+            "debian/copyright",
+            "hello",
+            Some("1-1"),
+            Some(dir.path()),
+        );
+
+        // The two literal paths that exist are linked, in source order; the
+        // `vendor/*` glob is not, because it matches many files and resolves
+        // to none.
+        let candidates = [
+            symbols::file_ref("src/main.c"),
+            symbols::file_ref("debian/copyright"),
+            symbols::file_ref("vendor/*"),
+        ];
+        let file_refs: Vec<_> = idx
+            .document
+            .occurrences
+            .iter()
+            .filter(|o| candidates.contains(&o.symbol))
+            .map(|o| o.symbol.as_str())
+            .collect();
+        assert_eq!(
+            file_refs,
+            vec![
+                symbols::file_ref("src/main.c"),
+                symbols::file_ref("debian/copyright"),
+            ]
+        );
+
+        // `src/main.c` starts at col 7 on line 2 (`Files: ` is 7 cols).
+        let main_c = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == symbols::file_ref("src/main.c"))
+            .expect("src/main.c link");
+        assert_eq!(main_c.range, vec![2, 7, 2, 17]);
+
+        // The link carries its repo-relative path as navigable documentation.
+        let info = idx
+            .document
+            .symbols
+            .iter()
+            .find(|s| s.symbol == symbols::file_ref("src/main.c"))
+            .expect("src/main.c symbol info");
+        assert_eq!(
+            info.documentation,
+            vec![symbols::file_ref_doc("src/main.c")]
+        );
+    }
+
+    #[test]
+    fn skips_missing_files_paths() {
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: src/absent.c
+Copyright: 2026 Alice
+License: GPL-2+
+
+License: GPL-2+
+ text
+";
+        let dir = tempfile::tempdir().unwrap();
+        let idx = index(
+            text,
+            "debian/copyright",
+            "hello",
+            Some("1-1"),
+            Some(dir.path()),
+        );
+        assert!(
+            !idx.document
+                .occurrences
+                .iter()
+                .any(|o| o.symbol == symbols::file_ref("src/absent.c")),
+            "a path that does not exist under the tree should not be linked"
+        );
+    }
+
+    #[test]
+    fn skips_file_links_without_root() {
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: src/main.c
+Copyright: 2026 Alice
+License: GPL-2+
+
+License: GPL-2+
+ text
+";
+        let idx = index(text, "debian/copyright", "hello", Some("1-1"), None);
+        assert!(
+            !idx.document
+                .occurrences
+                .iter()
+                .any(|o| o.symbol == symbols::file_ref("src/main.c")),
+            "without a root, file paths cannot be validated and stay plain"
+        );
     }
 }

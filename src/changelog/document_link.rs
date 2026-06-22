@@ -29,7 +29,7 @@ pub fn get_document_links(
     let Some(changelog) = debian_changelog::ChangeLog::cast(parse.syntax_node()) else {
         return Vec::new();
     };
-    let root = source_root(uri);
+    let root = crate::file_links::source_root(uri);
 
     let mut links = Vec::new();
     for token in changelog
@@ -104,14 +104,6 @@ fn span_range(src: Source<'_>, detail_start: usize, rel_start: usize, rel_end: u
     let start = (detail_start + rel_start) as u32;
     let end = (detail_start + rel_end) as u32;
     src.text_range_to_lsp_range(text_size::TextRange::new(start.into(), end.into()))
-}
-
-/// Resolve the source-tree root (the directory containing `debian/`) from a
-/// changelog URI of the form `.../debian/changelog`.
-fn source_root(uri: &Uri) -> Option<std::path::PathBuf> {
-    let path = uri.to_file_path()?;
-    // `<root>/debian/changelog` -> `<root>`.
-    Some(path.parent()?.parent()?.to_path_buf())
 }
 
 #[cfg(test)]
