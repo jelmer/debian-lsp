@@ -1,81 +1,28 @@
+use crate::debhelper::diagnostics;
 use crate::position::Source;
-use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
+use tower_lsp_server::ls_types::Diagnostic;
 
-/// All types of diagnostic issues in a debian/dirs file.
-#[derive(Debug, Clone)]
-pub enum DiagnosticIssue {
-    /// Duplicate directory entry
-    DuplicateEntry { path: String, range: Range },
-}
-
-/// Find all diagnostic issues in a debian/dirs file.
-pub fn find_all_issues(src: Source<'_>) -> Vec<DiagnosticIssue> {
-    let mut issues = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for (line_num, line) in src.text.lines().enumerate() {
-        let trimmed = line.trim();
-
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Normalize: strip leading slash for dedup key
-        let key = trimmed.trim_start_matches('/').to_string();
-        if !seen.insert(key) {
-            issues.push(DiagnosticIssue::DuplicateEntry {
-                path: trimmed.to_string(),
-                range: line_range(src, line_num),
-            });
-        }
-    }
-
-    issues
-}
-
-/// Build the LSP Range for an entire line.
-fn line_range(src: Source<'_>, line_num: usize) -> Range {
-    let line = src.text.lines().nth(line_num).unwrap_or("");
-    let start = tower_lsp_server::ls_types::Position::new(line_num as u32, 0);
-    let end = tower_lsp_server::ls_types::Position::new(
-        line_num as u32,
-        crate::position::utf16_len(line),
-    );
-    Range::new(start, end)
-}
-
-/// Convert a DiagnosticIssue to an LSP Diagnostic.
-pub fn issue_to_diagnostic(issue: DiagnosticIssue) -> Diagnostic {
-    match issue {
-        DiagnosticIssue::DuplicateEntry { path, range } => Diagnostic {
-            range,
-            severity: Some(DiagnosticSeverity::WARNING),
-            code: Some(NumberOrString::String("duplicate-entry".to_string())),
-            source: Some("debian-lsp".to_string()),
-            message: format!("Duplicate entry '{}'", path),
-            ..Default::default()
-        },
-    }
+/// Dedup key for a debian/dirs entry: ignore a leading slash so `/usr/bin`
+/// and `usr/bin` count as the same directory.
+fn dirs_key(trimmed: &str) -> String {
+    trimmed.trim_start_matches('/').to_string()
 }
 
 /// Get all LSP diagnostics for a debian/dirs file.
 pub fn get_diagnostics(src: Source<'_>) -> Vec<Diagnostic> {
-    find_all_issues(src)
-        .into_iter()
-        .map(issue_to_diagnostic)
-        .collect()
+    diagnostics::get_diagnostics(src, dirs_key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debhelper::diagnostics::{find_duplicate_entries, DiagnosticIssue};
     use crate::position::LineIndex;
 
     fn issues(text: &str) -> Vec<DiagnosticIssue> {
         let idx = LineIndex::new(text);
         let src = Source::new(text, &idx);
-        find_all_issues(src)
+        find_duplicate_entries(src, dirs_key)
     }
 
     #[test]

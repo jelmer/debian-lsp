@@ -1,9 +1,9 @@
+use crate::debhelper::detection::is_debhelper_file;
 use tower_lsp_server::ls_types::Uri;
 
 /// Check if a given URI represents a debian/dirs or debian/<package>.dirs file.
 pub fn is_dirs_file(uri: &Uri) -> bool {
-    let path = uri.as_str();
-    path.ends_with("/debian/dirs") || path.ends_with(".dirs")
+    is_debhelper_file(uri, "dirs")
 }
 
 #[cfg(test)]

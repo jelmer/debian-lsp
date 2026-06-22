@@ -1,70 +1,24 @@
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
+use std::collections::HashSet;
+use tower_lsp_server::ls_types::{CompletionItem, Position};
 
-/// Common directories that packages are expected to install files into.
-const COMMON_DIRS: &[&str] = &[
-    "etc/",
-    "etc/default/",
-    "etc/init.d/",
-    "etc/systemd/system/",
-    "usr/bin/",
-    "usr/sbin/",
-    "usr/lib/",
-    "usr/lib/systemd/system/",
-    "usr/share/",
-    "usr/share/doc/",
-    "usr/share/man/",
-    "usr/share/man/man1/",
-    "usr/share/man/man5/",
-    "usr/share/man/man8/",
-    "usr/share/applications/",
-    "usr/share/icons/",
-    "usr/share/locale/",
-];
-
-/// Substitution variables available in debhelper config files.
-const SUBSTITUTION_VARS: &[(&str, &str)] = &[
-    ("DEB_HOST_ARCH", "dpkg-architecture host architecture"),
-    (
-        "DEB_HOST_MULTIARCH",
-        "dpkg-architecture host multiarch tuple",
-    ),
-    ("DEB_HOST_ARCH_OS", "dpkg-architecture host OS"),
-    ("DEB_BUILD_ARCH", "dpkg-architecture build architecture"),
-    (
-        "DEB_BUILD_MULTIARCH",
-        "dpkg-architecture build multiarch tuple",
-    ),
-    (
-        "DEB_TARGET_ARCH",
-        "dpkg-architecture target architecture (cross builds)",
-    ),
-    ("Dollar", "A literal '$' character"),
-    ("Newline", "A literal newline character"),
-    ("Space", "A literal space character"),
-    ("Tab", "A literal tab character"),
-];
+use crate::debhelper::completion::{dir_items, substitution_completions};
 
 /// Get completions for a debian/dirs file at the given cursor position.
+///
+/// Every entry is a directory, so the whole line is the path prefix.
+/// Directories already listed elsewhere in the file are excluded.
 pub fn get_completions(text: &str, position: Position) -> Vec<CompletionItem> {
     let current_line = text.lines().nth(position.line as usize).unwrap_or("");
 
     let char_idx = (position.character as usize).min(current_line.len());
     let before_cursor = current_line.get(..char_idx).unwrap_or(current_line);
 
-    if before_cursor.ends_with("${") {
-        return substitution_var_items(false);
+    if let Some(items) = substitution_completions(before_cursor) {
+        return items;
     }
-    if before_cursor.ends_with('$') {
-        return substitution_var_items(true);
-    }
-
-    let trimmed = current_line.trim_start();
-
-    // Strip a leading slash so prefix matching works for both styles.
-    let prefix = trimmed.trim_start_matches('/');
 
     // Collect already-listed directories to avoid suggesting duplicates.
-    let existing: std::collections::HashSet<&str> = text
+    let existing: HashSet<&str> = text
         .lines()
         .enumerate()
         .filter(|(i, _)| *i != position.line as usize)
@@ -72,41 +26,13 @@ pub fn get_completions(text: &str, position: Position) -> Vec<CompletionItem> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
 
-    COMMON_DIRS
-        .iter()
-        .filter(|&&dir| dir.starts_with(prefix) && !existing.contains(dir))
-        .map(|&dir| CompletionItem {
-            label: dir.to_string(),
-            kind: Some(CompletionItemKind::FOLDER),
-            ..Default::default()
-        })
-        .collect()
-}
-
-/// Build completion items for debhelper substitution variables.
-fn substitution_var_items(needs_braces: bool) -> Vec<CompletionItem> {
-    SUBSTITUTION_VARS
-        .iter()
-        .map(|&(name, detail)| {
-            let insert_text = if needs_braces {
-                format!("{{{name}}}")
-            } else {
-                name.to_string()
-            };
-            CompletionItem {
-                label: format!("${{{name}}}"),
-                insert_text: Some(insert_text),
-                kind: Some(CompletionItemKind::VARIABLE),
-                detail: Some(detail.to_string()),
-                ..Default::default()
-            }
-        })
-        .collect()
+    dir_items(current_line.trim_start(), &existing)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower_lsp_server::ls_types::CompletionItemKind;
 
     #[test]
     fn test_completion_empty_line() {

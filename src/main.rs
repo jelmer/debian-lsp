@@ -2361,16 +2361,18 @@ impl LanguageServer for Backend {
                     new_text: formatted,
                 }]))
             }
-            FileType::Dirs => Ok(debhelper::dirs::format_dirs(&source_text).map(|formatted| {
-                let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
-                    0.into(),
-                    (source_text.len() as u32).into(),
-                ));
-                vec![TextEdit {
-                    range: full_range,
-                    new_text: formatted,
-                }]
-            })),
+            FileType::Dirs => Ok(debhelper::actions::format_debhelper(&source_text).map(
+                |formatted| {
+                    let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
+                        0.into(),
+                        (source_text.len() as u32).into(),
+                    ));
+                    vec![TextEdit {
+                        range: full_range,
+                        new_text: formatted,
+                    }]
+                },
+            )),
             _ => Ok(None),
         }
     }

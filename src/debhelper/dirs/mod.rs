@@ -5,6 +5,6 @@ pub mod completion;
 pub mod detection;
 pub mod diagnostics;
 
-pub use actions::*;
+pub use actions::get_code_actions;
 pub use completion::*;
 pub use detection::is_dirs_file;
