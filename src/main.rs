@@ -2515,6 +2515,19 @@ impl LanguageServer for Backend {
                     Ok(Some(hints))
                 }
             }
+            FileType::Watch => {
+                let workspace = self.workspace.lock().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_watch(file.source_file);
+                let hints = watch::generate_inlay_hints(&parsed, src, &params.range);
+                if hints.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(hints))
+                }
+            }
             _ => Ok(None),
         }
     }
