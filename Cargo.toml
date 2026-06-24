@@ -26,7 +26,7 @@ async-trait = "0.1"
 chrono = "0.4"
 debian-changelog = "0.2.24"
 debian-control = { version = "0.3.12" }
-debian-copyright = { version = "0.1.52", features = ["lossless"] }
+debian-copyright = { version = "0.1.53", features = ["lossless"] }
 debian-watch = { version = "0.4.12", features = ["linebased", "deb822"] }
 dep3 = "0.2.3"
 distro-info = "0.4"

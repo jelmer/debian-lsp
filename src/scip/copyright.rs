@@ -142,39 +142,33 @@ pub fn index(
             })
             .unwrap_or_default();
 
-        // Files: glob definition.
-        let files = fp.files();
-        if !files.is_empty() {
-            let glob_key = files.join(" ");
-            let glob_sym = symbols::copyright_files_glob(source_name, version, &glob_key);
-            if let Some(entry) = fp.as_deb822().get_entry("Files") {
-                if let Some(vr) = entry.value_range() {
-                    occurrences.push(Occurrence {
-                        range: lines.range(vr.start().into(), vr.end().into()),
-                        symbol: glob_sym.clone(),
-                        symbol_roles: SymbolRole::Definition as i32,
-                        syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
-                        enclosing_range: enclosing_range.clone(),
-                        ..Default::default()
-                    });
-                    // The glob references every license that applies to it, so
-                    // "find references" on a license surfaces the file globs
-                    // it covers.
-                    let relationships = license_names
-                        .iter()
-                        .map(|(name, _, _)| {
-                            symbols::rel_reference(symbols::license(source_name, version, name))
-                        })
-                        .collect();
-                    symbols_info.push(SymbolInformation {
-                        symbol: glob_sym,
-                        kind: scip::types::symbol_information::Kind::File.into(),
-                        display_name: glob_key.clone(),
-                        relationships,
-                        ..Default::default()
-                    });
-                }
-            }
+        // Files: glob definitions -- one symbol per individual pattern in the
+        // paragraph rather than one symbol for the whole field. Each pattern
+        // references every license that applies to the paragraph, so "find
+        // references" on a license surfaces the file globs it covers.
+        let relationships: Vec<_> = license_names
+            .iter()
+            .map(|(name, _, _)| {
+                symbols::rel_reference(symbols::license(source_name, version, name))
+            })
+            .collect();
+        for (pattern, range) in fp.file_spans() {
+            let glob_sym = symbols::copyright_files_glob(source_name, version, &pattern);
+            occurrences.push(Occurrence {
+                range: lines.range(range.start().into(), range.end().into()),
+                symbol: glob_sym.clone(),
+                symbol_roles: SymbolRole::Definition as i32,
+                syntax_kind: scip::types::SyntaxKind::StringLiteral.into(),
+                enclosing_range: enclosing_range.clone(),
+                ..Default::default()
+            });
+            symbols_info.push(SymbolInformation {
+                symbol: glob_sym,
+                kind: scip::types::symbol_information::Kind::File.into(),
+                display_name: pattern,
+                relationships: relationships.clone(),
+                ..Default::default()
+            });
         }
 
         // One reference occurrence per license name in the expression.
@@ -393,6 +387,72 @@ License: MIT
             .collect();
         assert!(rel_syms.contains(&mit_sym.as_str()));
         assert!(rel_syms.contains(&apache_sym.as_str()));
+    }
+
+    #[test]
+    fn indexes_one_symbol_per_files_pattern() {
+        // A Files paragraph listing several patterns, one of them on a
+        // continuation line, yields one glob symbol per pattern.
+        let text = "\
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: src/*.c src/*.h
+ include/*
+Copyright: 2024 Alice
+License: MIT
+
+License: MIT
+ Permission is hereby granted...
+";
+        let idx = index(text, "debian/copyright", "pkg", Some("1-1"));
+
+        for pattern in ["src/*.c", "src/*.h", "include/*"] {
+            let sym = symbols::copyright_files_glob("pkg", Some("1-1"), pattern);
+            let info = idx
+                .document
+                .symbols
+                .iter()
+                .find(|s| s.symbol == sym)
+                .unwrap_or_else(|| panic!("missing glob symbol for {pattern}"));
+            assert_eq!(info.display_name, pattern);
+            assert_eq!(info.relationships.len(), 1);
+            assert_eq!(
+                info.relationships[0].symbol,
+                symbols::license("pkg", Some("1-1"), "MIT")
+            );
+            let def = idx
+                .document
+                .occurrences
+                .iter()
+                .find(|o| o.symbol == sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+                .unwrap_or_else(|| panic!("missing glob definition for {pattern}"));
+            assert_eq!(
+                def.syntax_kind,
+                scip::types::SyntaxKind::StringLiteral.into()
+            );
+        }
+
+        // `src/*.h` is on line 2 (zero-indexed), after `Files: src/*.c ` which
+        // is 15 cols, so it spans cols 15..22.
+        let h_sym = symbols::copyright_files_glob("pkg", Some("1-1"), "src/*.h");
+        let h_def = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == h_sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .expect("src/*.h def");
+        assert_eq!(h_def.range, vec![2, 15, 2, 22]);
+
+        // `include/*` is on the continuation line 3, indented one space, so it
+        // spans cols 1..10.
+        let inc_sym = symbols::copyright_files_glob("pkg", Some("1-1"), "include/*");
+        let inc_def = idx
+            .document
+            .occurrences
+            .iter()
+            .find(|o| o.symbol == inc_sym && (o.symbol_roles & SymbolRole::Definition as i32) != 0)
+            .expect("include/* def");
+        assert_eq!(inc_def.range, vec![3, 1, 3, 10]);
     }
 
     #[test]
