@@ -42,6 +42,7 @@ mod copyright;
 mod cve;
 mod deb822;
 mod debcargo;
+mod debhelper;
 #[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
 mod debian_workspace;
 mod dep3;
