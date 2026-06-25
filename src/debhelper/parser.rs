@@ -129,6 +129,48 @@ fn parse_word(line: &str, range: Range<usize>) -> Word {
     Word { range, parts }
 }
 
+/// A lexical error in a line. Kept free of LSP types so the diagnostics layer
+/// owns severity and wording.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseError {
+    /// Range of the offending text.
+    pub range: Range<usize>,
+    pub kind: ParseErrorKind,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ParseErrorKind {
+    /// A `${` with no closing `}`. The rest of the token is swallowed as the
+    /// variable name, so the substitution never resolves.
+    UnterminatedSubstitution,
+    /// A closed `${}` with no variable name between the braces. It resolves to
+    /// nothing.
+    EmptySubstitution,
+}
+
+impl Line {
+    /// The lexical errors in the line, in source order. A bare `$` and
+    /// `${Space}` are well-formed; an unterminated `${` and an empty `${}` are
+    /// not.
+    pub fn errors(&self) -> Vec<ParseError> {
+        self.words
+            .iter()
+            .flat_map(|word| &word.parts)
+            .filter_map(|part| match part {
+                Part::Substitution(sub) if !sub.terminated => Some(ParseError {
+                    range: sub.range.clone(),
+                    kind: ParseErrorKind::UnterminatedSubstitution,
+                }),
+                Part::Substitution(sub) if sub.name.is_empty() => Some(ParseError {
+                    range: sub.range.clone(),
+                    kind: ParseErrorKind::EmptySubstitution,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 /// An open substitution immediately to the left of the cursor.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SubstitutionStart {
@@ -259,6 +301,39 @@ mod tests {
                 terminated: false,
             })
         );
+    }
+
+    #[test]
+    fn an_unterminated_substitution_is_an_error() {
+        let errors = parse_line("usr/lib/${DEB_HOST").errors();
+        assert_eq!(
+            errors,
+            vec![ParseError {
+                range: 8..18,
+                kind: ParseErrorKind::UnterminatedSubstitution,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_empty_substitution_is_an_error() {
+        let errors = parse_line("a${}b").errors();
+        assert_eq!(
+            errors,
+            vec![ParseError {
+                range: 1..4,
+                kind: ParseErrorKind::EmptySubstitution,
+            }]
+        );
+    }
+
+    #[test]
+    fn well_formed_substitutions_are_not_errors() {
+        // A bare `$` and a closed `${VAR}` are both fine.
+        assert!(parse_line("usr/lib/$").errors().is_empty());
+        assert!(parse_line("usr/${DEB_HOST_MULTIARCH}/foo")
+            .errors()
+            .is_empty());
     }
 
     #[test]
