@@ -21,6 +21,10 @@ Language Server Protocol implementation for Debian packaging files.
 - `debian/source/lintian-overrides` - Lintian tag overrides for the source package
 - `debian/<package>.lintian-overrides` - Lintian tag overrides for binary packages
 
+**debhelper files:**
+- `debian/dirs` - Directories to create in the package build directory
+- `debian/<package>.dirs` - Per-package directory lists
+
 ## Features
 
 ### Completions
@@ -77,10 +81,17 @@ Language Server Protocol implementation for Debian packaging files.
 - Package type completions (`source`, `binary`, `udeb`)
 - Lintian tag name completions from `lintian-explain-tags`
 
+**debian/dirs:**
+- Common directory prefix completions (`usr/share/`, `usr/lib/`, `usr/bin/`, `etc/`, `var/lib/`, etc.)
+- Excludes already-listed directories from suggestions
+
 ### Diagnostics
 
 - Field casing validation (e.g. `source` instead of `Source`)
 - Parse error reporting with position information
+
+**debian/dirs:**
+- Duplicate entries -> warning
 
 ### Code Actions
 
@@ -88,6 +99,7 @@ Language Server Protocol implementation for Debian packaging files.
 - **Wrap and sort** - wrap long fields to 79 characters and sort dependency lists (control and copyright files)
 - **Add changelog entry** - create a new changelog entry with incremented version, UNRELEASED distribution, and auto-populated maintainer
 - **Mark for upload** - replace UNRELEASED with the target distribution
+- **Fix dirs issues** - remove duplicate directory entries
 
 ### Hover
 
@@ -154,7 +166,8 @@ tests/control) and entry-level folding for changelog files.
 ### Document Formatting
 
 Wrap-and-sort formatting for debian/control, debian/copyright, and debian/watch
-(deb822 format) files.
+(deb822 format) files. debian/dirs entries are sorted alphabetically, with blank lines
+removed.
 
 ### Semantic Highlighting
 
@@ -213,7 +226,7 @@ function! s:config_debian_lsp()
       autocmd User lsp_setup call lsp#register_server({
         \ 'name': 'debian-lsp',
         \ 'cmd': {server_info -> ['debian-lsp']},
-        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest', 'debrules', 'debpatches'],
+        \ 'allowlist': ['debcontrol', 'debcopyright', 'debchangelog', 'debsources', 'debsourceoptions', 'debwatch', 'debupstream', 'autopkgtest', 'debrules', 'debpatches', 'debdirs'],
         \ 'blocklist': [],
         \ 'enabled': 1,
         \ })
@@ -237,6 +250,8 @@ augroup debian_filetypes
   autocmd BufNewFile,BufRead */debian/upstream/metadata setfiletype debupstream
   autocmd BufNewFile,BufRead */debian/rules setfiletype debrules
   autocmd BufNewFile,BufRead */debian/patches/series setfiletype debpatches
+  autocmd BufNewFile,BufRead */debian/dirs setfiletype debdirs
+  autocmd BufNewFile,BufRead */debian/*.dirs setfiletype debdirs
 augroup END
 ```
 
@@ -291,6 +306,8 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
     '*/debian/upstream/metadata',
     '*/debian/rules',
     '*/debian/patches/series',
+    '*/debian/dirs',
+    '*/debian/*.dirs',
   },
   callback = function()
     vim.lsp.start({
@@ -301,6 +318,7 @@ vim.api.nvim_create_autocmd({'BufEnter', 'BufWinEnter'}, {
   end,
 })
 ```
+
 ### Using with Helix
 
 See [helix-lspconfig/README.md](helix-lspconfig/README.md) for installation and configuration instructions.

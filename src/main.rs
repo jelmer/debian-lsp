@@ -41,6 +41,7 @@ mod copyright;
 mod cve;
 mod deb822;
 mod debcargo;
+mod debhelper;
 #[cfg(any(feature = "lintian-brush", feature = "multiarch-hints"))]
 mod debian_workspace;
 mod dep3;
@@ -128,6 +129,8 @@ enum FileType {
     Patch,
     /// debian/debcargo.toml file (debcargo configuration)
     DebcargoToml,
+    /// debian/dirs or debian/<package>.dirs file
+    Dirs,
 }
 
 impl FileType {
@@ -159,6 +162,8 @@ impl FileType {
             Some(Self::Patch)
         } else if debcargo::is_debcargo_toml(uri) {
             Some(Self::DebcargoToml)
+        } else if debhelper::dirs::is_dirs_file(uri) {
+            Some(Self::Dirs)
         } else {
             None
         }
@@ -439,6 +444,12 @@ impl Backend {
                 #[cfg(not(feature = "spellcheck"))]
                 None
             }
+            FileType::Dirs => {
+                let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                Some(debhelper::dirs::diagnostics::get_diagnostics(src))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::SourceFormat
@@ -501,9 +512,10 @@ impl Backend {
             // not expose its comment tokens publicly.
             // TODO: spell-check UpstreamMetadata comments once yaml-edit exposes
             // a way to iterate comment trivia.
-            FileType::SourceFormat | FileType::UpstreamMetadata | FileType::DebcargoToml => {
-                Vec::new()
-            }
+            FileType::SourceFormat
+            | FileType::UpstreamMetadata
+            | FileType::DebcargoToml
+            | FileType::Dirs => Vec::new(),
         }
     }
 
@@ -1400,6 +1412,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 debcargo::get_completions(&source_text, position)
             }
+            Some((FileType::Dirs, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                debhelper::dirs::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -1434,6 +1451,7 @@ impl LanguageServer for Backend {
             | FileType::Rules
             | FileType::SourceOptions
             | FileType::LintianOverrides
+            | FileType::Dirs
             | FileType::PatchesSeries => {}
             _ => return Ok(None),
         }
@@ -1643,6 +1661,13 @@ impl LanguageServer for Backend {
                         &params.context.diagnostics,
                     ));
                 }
+            }
+            FileType::Dirs => {
+                actions.extend(debhelper::dirs::get_code_actions(
+                    src,
+                    &params.text_document.uri,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Watch
             | FileType::UpstreamMetadata
@@ -1996,6 +2021,7 @@ impl LanguageServer for Backend {
                 dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
             FileType::DebcargoToml => debcargo::generate_semantic_tokens(&source_text, src),
+            FileType::Dirs => vec![],
         };
 
         if tokens.is_empty() {
@@ -2335,6 +2361,16 @@ impl LanguageServer for Backend {
                     new_text: formatted,
                 }]))
             }
+            FileType::Dirs => Ok(debhelper::dirs::format_dirs(&source_text).map(|formatted| {
+                let full_range = src.text_range_to_lsp_range(text_size::TextRange::new(
+                    0.into(),
+                    (source_text.len() as u32).into(),
+                ));
+                vec![TextEdit {
+                    range: full_range,
+                    new_text: formatted,
+                }]
+            })),
             _ => Ok(None),
         }
     }
