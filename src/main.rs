@@ -684,6 +684,61 @@ impl Backend {
         }
     }
 
+    /// Read package names (Source: and Package:) from the control file
+    /// for the debian directory containing the given URI.
+    /// Checks open files first, falls back to reading from disk.
+    fn get_local_package_names(
+        uri: &Uri,
+        files: &HashMap<Uri, FileInfo>,
+        workspace: &mut Workspace,
+    ) -> Vec<String> {
+        let Some((control_sf, _)) = Self::get_control_for_uri(uri, files, workspace) else {
+            return Vec::new();
+        };
+        let text = workspace.source_text(control_sf);
+        let Ok(deb822) = deb822_lossless::Deb822::parse(&text).to_result() else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut packages = Vec::new();
+        for paragraph in deb822.paragraphs() {
+            for key in ["Source", "Package"] {
+                if let Some(value) = paragraph.get(key) {
+                    let name = value.trim().to_string();
+                    if !name.is_empty() && seen.insert(name.clone()) {
+                        packages.push(name);
+                    }
+                }
+            }
+        }
+        packages
+    }
+
+    /// Get or load the control source file for the debian directory
+    /// containing the given URI. If the control is already open, reuses the
+    /// existing workspace entry; otherwise reads it from disk and inserts it
+    /// into the workspace so the Salsa cache is populated.
+    fn get_control_for_uri(
+        uri: &Uri,
+        files: &HashMap<Uri, FileInfo>,
+        workspace: &mut Workspace,
+    ) -> Option<(workspace::SourceFile, Uri)> {
+        let debian_dir = Self::find_debian_dir(uri)?;
+        let control_path = debian_dir.join("control");
+        let control_uri = Uri::from_file_path(&control_path)?;
+
+        if let Some(info) = files.get(&control_uri) {
+            return Some((info.source_file, control_uri));
+        }
+
+        // Not open - read from disk and insert into the workspace.
+        let text = std::fs::read_to_string(&control_path).ok()?;
+        Some((
+            workspace.update_file(control_uri.clone(), text),
+            control_uri,
+        ))
+    }
+
     /// Get or load the changelog source file for the debian directory
     /// containing the given URI. If the changelog is already open, reuses the
     /// existing workspace entry; otherwise reads it from disk and inserts it
@@ -1342,6 +1397,11 @@ impl LanguageServer for Backend {
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
+                let packages = {
+                    let files = self.files.lock().await;
+                    let mut workspace = self.workspace.lock().await;
+                    Self::get_local_package_names(&uri, &files, &mut workspace)
+                };
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -1350,7 +1410,15 @@ impl LanguageServer for Backend {
                 drop(workspace);
                 let mut tag_cache = self.lintian_tag_cache.write().await;
                 let tags = tag_cache.get_tags().await;
-                lintian_overrides::get_completions(&parsed, src, position, tags)
+                let architectures = self.architecture_list.read().await;
+                lintian_overrides::get_completions(
+                    &parsed,
+                    src,
+                    position,
+                    tags,
+                    &packages,
+                    &architectures,
+                )
             }
             Some((FileType::SourceOptions, source_file)) => {
                 let workspace = self.workspace_clone().await;
@@ -2528,6 +2596,7 @@ impl LanguageServer for Backend {
             Some(f) => *f,
             None => return Ok(None),
         };
+        let files_snapshot = files.clone();
         drop(files);
 
         let workspace = self.workspace_clone().await;
@@ -2560,6 +2629,25 @@ impl LanguageServer for Backend {
                         Ok(watch::get_linebased_hover(wf, src, position))
                     }
                 }
+            }
+            FileType::LintianOverrides => {
+                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                let token = src
+                    .try_position_to_offset(position)
+                    .and_then(|offset| parsed.tree().token_at_offset(offset));
+                let packages =
+                    Self::get_local_package_names(uri, &files_snapshot, &mut workspace.clone());
+                drop(workspace);
+
+                let Some((kind, text)) = token else {
+                    return Ok(None);
+                };
+
+                let tags: Vec<(String, String)> = {
+                    let mut tag_cache = self.lintian_tag_cache.write().await;
+                    tag_cache.get_tags().await.to_vec()
+                };
+                Ok(lintian_overrides::get_hover(kind, &text, &tags, &packages))
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
