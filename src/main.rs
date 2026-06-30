@@ -36,6 +36,7 @@ impl Default for Settings {
 mod architecture;
 mod bugs;
 mod changelog;
+mod conffiles;
 mod control;
 mod copyright;
 mod cve;
@@ -128,6 +129,8 @@ enum FileType {
     Patch,
     /// debian/debcargo.toml file (debcargo configuration)
     DebcargoToml,
+    /// debian/conffiles file
+    Conffiles,
 }
 
 impl FileType {
@@ -159,6 +162,8 @@ impl FileType {
             Some(Self::Patch)
         } else if debcargo::is_debcargo_toml(uri) {
             Some(Self::DebcargoToml)
+        } else if conffiles::is_conffiles_file(uri) {
+            Some(Self::Conffiles)
         } else {
             None
         }
@@ -439,6 +444,12 @@ impl Backend {
                 #[cfg(not(feature = "spellcheck"))]
                 None
             }
+            FileType::Conffiles => {
+                let source_text = workspace.source_text(source_file);
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                Some(conffiles::diagnostics::get_diagnostics(src))
+            }
             FileType::Watch
             | FileType::TestsControl
             | FileType::SourceFormat
@@ -501,9 +512,10 @@ impl Backend {
             // not expose its comment tokens publicly.
             // TODO: spell-check UpstreamMetadata comments once yaml-edit exposes
             // a way to iterate comment trivia.
-            FileType::SourceFormat | FileType::UpstreamMetadata | FileType::DebcargoToml => {
-                Vec::new()
-            }
+            FileType::SourceFormat
+            | FileType::UpstreamMetadata
+            | FileType::DebcargoToml
+            | FileType::Conffiles => Vec::new(),
         }
     }
 
@@ -1400,6 +1412,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 debcargo::get_completions(&source_text, position)
             }
+            Some((FileType::Conffiles, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                conffiles::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -1434,7 +1451,8 @@ impl LanguageServer for Backend {
             | FileType::Rules
             | FileType::SourceOptions
             | FileType::LintianOverrides
-            | FileType::PatchesSeries => {}
+            | FileType::PatchesSeries
+            | FileType::Conffiles => {}
             _ => return Ok(None),
         }
 
@@ -1643,6 +1661,13 @@ impl LanguageServer for Backend {
                         &params.context.diagnostics,
                     ));
                 }
+            }
+            FileType::Conffiles => {
+                actions.extend(conffiles::get_code_actions(
+                    src,
+                    &params.text_document.uri,
+                    &params.context.diagnostics,
+                ));
             }
             FileType::Watch
             | FileType::UpstreamMetadata
@@ -1996,6 +2021,11 @@ impl LanguageServer for Backend {
                 dep3::generate_semantic_tokens(&parsed.tree(), src)
             }
             FileType::DebcargoToml => debcargo::generate_semantic_tokens(&source_text, src),
+            FileType::Conffiles => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                conffiles::generate_semantic_tokens(&source_text)
+            }
         };
 
         if tokens.is_empty() {
@@ -2583,6 +2613,13 @@ impl LanguageServer for Backend {
             }
             FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
             FileType::SourceOptions => Ok(source_options::get_hover(&source_text, position)),
+            FileType::Conffiles => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(file.source_file);
+                let idx = workspace.get_line_index(file.source_file);
+                let src = Source::new(&source_text, &idx);
+                Ok(conffiles::get_hover(src, position))
+            }
             _ => Ok(None),
         }
     }
