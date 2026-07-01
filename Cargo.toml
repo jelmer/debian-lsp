@@ -47,16 +47,16 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-salsa = ">=0.23, <0.27"
+salsa = ">=0.23, <0.28"
 text-size = "1.1"
 patchkit = "0.3.3"
-scip = { version = "0.7", optional = true }
+scip = { version = "0.9", optional = true }
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = ">=0.12,<0.19"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
-lintian-brush = { version = "0.180", optional = true }
-multiarch-hints = { version = "0.180", default-features = false, features = ["async"], optional = true }
-debian-workspace = { version = "0.180", optional = true }
+lintian-brush = { version = "0.181", optional = true }
+multiarch-hints = { version = "0.181", default-features = false, features = ["async"], optional = true }
+debian-workspace = { version = "0.181", optional = true }
 typos = { version = "0.10", optional = true }
 typos-dict = { version = "0.13", optional = true }
 unicase = { version = "2.9", optional = true }
