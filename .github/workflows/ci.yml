@@ -30,7 +30,7 @@ jobs:
             id: multiarch-hints
             flags: "--no-default-features --features multiarch-hints"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -89,7 +89,7 @@ jobs:
       run:
         working-directory: ./coc-debian
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -115,7 +115,7 @@ jobs:
       run:
         working-directory: ./vscode-debian
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -141,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [rust-check, coc-debian-check, vscode-debian-check]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
