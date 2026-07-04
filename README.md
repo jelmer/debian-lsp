@@ -7,183 +7,44 @@ Language Server Protocol implementation for Debian packaging files.
 
 ## Supported Files
 
-- `debian/control` - Package control files
-- `debian/copyright` - DEP-5 copyright files
-- `debian/watch` - Upstream watch files (v1-4 line-based and v5 deb822 formats)
-- `debian/changelog` - Package changelog files
-- `debian/source/format` - Source format declaration files
-- `debian/source/options` - dpkg-source options files
-- `debian/source/local-options` - Local dpkg-source options files
-- `debian/tests/control` - Autopkgtest control files
-- `debian/upstream/metadata` - DEP-12 upstream metadata files
-- `debian/rules` - Package build rules (Makefile)
-- `debian/patches/series` - List of patches applied by dpkg-source
-- `debian/source/lintian-overrides` - Lintian tag overrides for the source package
-- `debian/<package>.lintian-overrides` - Lintian tag overrides for binary packages
-- `debian/conffiles` - List of configuration files to be preserved on upgrade
-- `debian/<package>.conffiles` - Per-package configuration files list
+Most files under `debian/` are supported, including `control`, `copyright`,
+`changelog`, `watch`, `rules`, `source/format`, `source/options`,
+`source/local-options`, `tests/control`, `upstream/metadata`, `patches/series`,
+`conffiles`, `lintian-overrides`, and their per-package variants.
 
 ## Features
 
-### Completions
+The server implements the standard LSP surface across these files:
 
-**debian/control:**
-- Field name completions for all standard source and binary package fields
-- Package name completions for relationship fields (Depends, Build-Depends, Recommends, etc.) using the system package cache
-- Value completions for Section (all Debian sections including area-qualified), Priority, and architecture fields
+- **Completions** for field names, package names (from the system package
+  cache and `debian/control`), and enumerated values (sections, distributions,
+  architectures, licenses, dpkg-source options, autopkgtest restrictions,
+  lintian tags, etc.)
+- **Diagnostics** for parse errors, field casing, and file-specific problems
+  (invalid paths and flags in `conffiles`, duplicate entries, and similar)
+- **Code actions** including fix field casing, wrap-and-sort, add changelog
+  entry, mark for upload, and fixes for `conffiles` issues
+- **Hover** with field descriptions, lintian tag explanations (via
+  `lintian-explain-tags`), and context for architectures and package types
+- **Go to definition** from test names, package references, and directory
+  paths to their targets in the source tree
+- **Inlay hints** for archive versions, virtual package providers,
+  substitution variables, and distribution-to-suite mappings
+- **Code lenses** on `Standards-Version`, `debhelper-compat`, and `Vcs-Git`
+  in `debian/control`
+- **Document symbols** for paragraphs and changelog entries
+- **Folding ranges** for deb822 paragraphs and changelog entries
+- **Document formatting** (wrap-and-sort) for deb822 files
+- **Semantic highlighting** with Debian-specific token types
+- **On-type formatting** for deb822 files (space after `:`, continuation-line
+  indentation on Enter)
 
-**debian/copyright:**
-- Field name completions for header, files, and license paragraphs
-- Value completions for Format and License (from `/usr/share/common-licenses`)
+On-type formatting requires the editor to have format-on-type enabled:
 
-**debian/watch:**
-- Field name completions for watch file fields
-- Version number completions
-- Option value completions (compression, mode, pgpmode, searchmode, gitmode, gitexport, component)
-
-**debian/changelog:**
-- Distribution completions (unstable, stable, testing, experimental, UNRELEASED, plus release codenames)
-- Urgency level completions (low, medium, high, critical, emergency)
-
-**debian/source/format:**
-- Format value completions (3.0 (quilt), 3.0 (native), 3.0 (git), 1.0, etc.)
-
-**debian/source/options and debian/source/local-options:**
-- Option name completions for all dpkg-source long options (compression, single-debian-patch, etc.)
-- Value completions for compression and compression-level options
-- Filters options by file type (some options are local-options only)
-
-**debian/tests/control:**
-- Field name completions for autopkgtest control fields (Tests, Test-Command, Depends, Restrictions, Features, Classes, Tests-Directory, Architecture)
-- Package name completions for the Depends field using the system package cache, including the `@`, `@builddeps@`, and `@recommends@` substitution variables
-- Value completions for Restrictions and Features (from the autopkgtest/DEP-8 spec) and architecture fields
-- Test script completions for the Tests field (executable files in the tests directory, respecting Tests-Directory)
-- Directory completions for the Tests-Directory field
-
-**debian/upstream/metadata:**
-- Field name completions for all DEP-12 fields (Repository, Bug-Database, Contact, etc.)
-
-**debian/rules:**
-- Target name completions for standard Debian Policy targets (clean, build, binary, etc.) and debhelper override/execute targets
-- Variable name completions for common build variables (DEB_BUILD_OPTIONS, DEB_HOST_MULTIARCH, etc.)
-- Excludes already-defined targets from completions
-
-**debian/patches/series:**
-- Patch name completions based on files present in the `debian/patches/` directory
-- Package name completions for patch entries, excluding already listed patches
-- Option value completions for patch application flags (`-p0`, `-p1`, `-p2`, etc.)
-
-**debian/source/lintian-overrides and debian/.lintian-overrides:**
-- Package name completions from `debian/control` (source and binary package names)
-- Architecture completions from the known architecture list, including negations (e.g. `!amd64`)
-- Package type completions (`source`, `binary`, `udeb`)
-- Lintian tag name completions from `lintian-explain-tags`
-
-**debian/conffiles and debian/<package>.conffiles:**
-- `remove-on-upgrade` flag completion
-- Excludes already listed paths from suggestions
-
-### Diagnostics
-
-- Field casing validation (e.g. `source` instead of `Source`)
-- Parse error reporting with position information
-
-**debian/conffiles and debian/<package>.conffiles:**
-- Empty or whitespace-only lines -> error
-- Relative paths (not absolute) -> error
-- Unknown flags (only `remove-on-upgrade` is valid) -> error
-- Duplicate entries -> warning
-- Too many tokens on a line -> error
-
-### Code Actions
-
-- **Fix field casing** - automatically correct field names to canonical casing
-- **Wrap and sort** - wrap long fields to 79 characters and sort dependency lists (control and copyright files)
-- **Add changelog entry** - create a new changelog entry with incremented version, UNRELEASED distribution, and auto-populated maintainer
-- **Mark for upload** - replace UNRELEASED with the target distribution
-
-**debian/conffiles and debian/<package>.conffiles:**
-- Remove empty lines
-- Prepend '/' to relative paths
-- Remove duplicate entries
-
-### Hover
-
-**debian/tests/control:**
-- Field descriptions for autopkgtest control fields
-
-**debian/conffiles and debian/<package>.conffiles:**
-- `remove-on-upgrade` flag shows a short description
-
-**debian/source/lintian-overrides and debian/.lintian-overrides:**
-- Lintian tag descriptions fetched from `lintian-explain-tags`
-- Package names show whether the package is defined in `debian/control` or not found
-- Architecture restrictions show the architecture name, with a note for negations (e.g. `!amd64` excludes `amd64`)
-- Package type keywords (`source`, `binary`, `udeb`) show a short description
-
-### Go to Definition
-
-**debian/tests/control:**
-- Test names in the `Tests` field jump to the corresponding test script in the tests directory (respecting `Tests-Directory`)
-- Package names in relationship fields (`Depends`) jump to the matching binary package paragraph in `debian/control`
-- Paths in the `Tests-Directory` field jump to the directory on disk
-
-**debian/source/lintian-overrides and debian/.lintian-overrides:**
-- Package names jump to the matching `Package:` or `Source:` paragraph in `debian/control`
-
-### On-Type Formatting
-
-For deb822-based files (control, copyright, watch, tests/control), the server provides on-type formatting:
-- Automatically inserts a space after typing `:` at the end of a field name
-- Inserts continuation-line indentation after pressing Enter inside a field value
-
-This requires the editor to have format-on-type enabled:
-
-- **VS Code**: Enabled by default via the extension's `configurationDefaults`
-- **coc.nvim**: Set `"coc.preferences.formatOnType": true` in your coc-settings.json (`:CocConfig`)
-- **Native Neovim LSP**: Pass `on_type_formatting = true` in your client capabilities, or call `vim.lsp.buf.format()` manually
-- **ALE**: Not supported (ALE does not handle `textDocument/onTypeFormatting`)
-
-### Inlay Hints
-
-**debian/control:**
-- Archive versions per suite for packages in dependency fields
-- Providers for virtual packages
-- Resolved values for substitution variables (`${shlibs:Depends}`, etc.)
-
-**debian/changelog:**
-- Distribution-to-suite mappings (e.g. `unstable = sid`, `UNRELEASED -> unstable`)
-
-### Code Lenses
-
-**debian/control:**
-- Standards-Version: shows the latest version when outdated
-- debhelper-compat: shows stable and maximum compat levels (via `dh_assistant`)
-- Vcs-Git: shows the packaged version from UDD vcswatch
-
-### Document Symbols
-
-- **debian/control** - source and binary package paragraphs
-- **debian/copyright** - header, files, and license paragraphs
-- **debian/changelog** - changelog entries
-
-### Folding Ranges
-
-Paragraph-level folding for deb822-based files (control, copyright, watch,
-tests/control) and entry-level folding for changelog files.
-
-### Document Formatting
-
-Wrap-and-sort formatting for debian/control, debian/copyright, and debian/watch
-(deb822 format) files.
-
-### Semantic Highlighting
-
-Custom token types for syntax highlighting of Debian-specific constructs:
-- Control/copyright/watch/tests-control/upstream-metadata/source-options/rules files: field names, unknown fields, values, comments
-- Changelog files: package name, version, distribution, urgency, maintainer, timestamp
-- Lintian-overrides files: lintian tag names, package names, package types, architecture restrictions, info text, comments
-- Conffiles files: paths as values, `remove-on-upgrade` as field keyword
+- **VS Code**: enabled by default via the extension
+- **coc.nvim**: set `"coc.preferences.formatOnType": true`
+- **Native Neovim LSP**: pass `on_type_formatting = true` in client capabilities
+- **ALE**: not supported
 
 ## Installation
 
