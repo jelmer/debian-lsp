@@ -41,6 +41,12 @@ pub(super) fn deb822_action_to_text_edits(
             package,
             ..
         } => drop_relation_edits(control, paragraph, field, package, original_src),
+        Deb822Action::DropRelationEntry {
+            paragraph,
+            field,
+            entry,
+            ..
+        } => drop_relation_entry_edits(control, paragraph, field, entry, original_src),
         Deb822Action::EnsureSubstvar {
             paragraph,
             field,
@@ -167,6 +173,7 @@ pub fn copyright_action_to_text_edits(
         // Relations / substvars apply only to debian/control; ignore
         // these on debian/copyright so we don't emit spurious edits.
         Deb822Action::DropRelation { .. }
+        | Deb822Action::DropRelationEntry { .. }
         | Deb822Action::SetRelationVersionConstraint { .. }
         | Deb822Action::ReplaceRelation { .. }
         | Deb822Action::EnsureRelation { .. }
@@ -834,6 +841,32 @@ pub fn drop_relation_edits(
         for idx in indices.into_iter().rev() {
             relations.remove_entry(idx);
         }
+        true
+    })
+}
+
+/// `Deb822Action::DropRelationEntry`: drop the first entry whose parsed
+/// form equals `entry` (e.g. `libfoo-perl | perl`). Mirrors the applier's
+/// `drop_relation_entry_in_paragraph`.
+pub fn drop_relation_entry_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    entry: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    use debian_control::lossless::relations::Entry;
+    use std::str::FromStr;
+
+    let Ok(target) = Entry::from_str(entry) else {
+        return Vec::new();
+    };
+    let target = target.to_string();
+    relations_field_edits(control, selector, field, original_src, |relations| {
+        let Some(idx) = relations.entries().position(|e| e.to_string() == target) else {
+            return false;
+        };
+        relations.remove_entry(idx);
         true
     })
 }

@@ -190,6 +190,9 @@ pub(super) fn locate_action_target(
                 | Deb822Action::DropRelation {
                     paragraph, field, ..
                 }
+                | Deb822Action::DropRelationEntry {
+                    paragraph, field, ..
+                }
                 | Deb822Action::SetRelationVersionConstraint {
                     paragraph, field, ..
                 }
@@ -552,6 +555,7 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | Deb822Action::AppendParagraph { file, .. }
             | Deb822Action::NormalizeFieldSpacing { file, .. }
             | Deb822Action::DropRelation { file, .. }
+            | Deb822Action::DropRelationEntry { file, .. }
             | Deb822Action::SetRelationVersionConstraint { file, .. }
             | Deb822Action::ReplaceRelation { file, .. }
             | Deb822Action::EnsureSubstvar { file, .. }
