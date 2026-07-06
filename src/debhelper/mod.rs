@@ -2,6 +2,7 @@ pub mod actions;
 pub mod clean;
 pub mod completion;
 pub mod detection;
+pub mod diagnostics;
 pub mod dirs;
 pub mod docs;
 pub mod examples;
