@@ -1,4 +1,6 @@
 pub mod completion;
+pub use definition::goto_definition;
+pub mod definition;
 pub mod detection;
 pub mod semantic;
 pub mod tags;
