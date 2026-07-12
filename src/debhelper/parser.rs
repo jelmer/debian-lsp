@@ -169,6 +169,61 @@ impl Line {
             })
             .collect()
     }
+
+    /// This line in canonical form: a comment trimmed of trailing whitespace,
+    /// or the path tokens joined by single spaces. `None` for a blank line.
+    pub fn render(&self, line: &str) -> Option<String> {
+        if let Some(comment) = &self.comment {
+            return Some(line[comment.clone()].trim_end().to_string());
+        }
+        if self.words.is_empty() {
+            return None;
+        }
+        Some(
+            self.words
+                .iter()
+                .map(|word| &line[word.range.clone()])
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+}
+
+/// Wrap-and-sort a debhelper document: drop blank lines, render each line in
+/// canonical spacing, keep every comment attached to the entry below it, and
+/// sort the entries. The parser owns this layout so the formatter and any
+/// editor command agree on one canonical form.
+pub fn wrap_and_sort(text: &str) -> String {
+    // Each entry carries the comment lines sitting directly above it, so the
+    // two sort together and a comment never floats away from what it explains.
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        let parsed = parse_line(line);
+        let Some(rendered) = parsed.render(line) else {
+            continue; // Blank line.
+        };
+        if parsed.comment.is_some() {
+            pending.push(rendered);
+        } else {
+            let mut group = std::mem::take(&mut pending);
+            group.push(rendered.clone());
+            groups.push((rendered, group));
+        }
+    }
+
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut out: Vec<String> = groups.into_iter().flat_map(|(_, group)| group).collect();
+    // Trailing comments have no entry to attach to; keep them at the end.
+    out.extend(pending);
+
+    if out.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", out.join("\n"))
+    }
 }
 
 /// An open substitution immediately to the left of the cursor.
@@ -412,5 +467,38 @@ mod tests {
     fn cursor_after_dollar_brace_reports_a_braced_substitution() {
         let cx = CursorContext::at("usr/lib/${", 10);
         assert_eq!(cx.substitution, Some(SubstitutionStart::Brace));
+    }
+
+    #[test]
+    fn render_collapses_whitespace_between_tokens() {
+        let parsed = parse_line("  foo   usr/bin  ");
+        assert_eq!(
+            parsed.render("  foo   usr/bin  ").as_deref(),
+            Some("foo usr/bin")
+        );
+    }
+
+    #[test]
+    fn render_is_none_for_a_blank_line() {
+        assert_eq!(parse_line("   ").render("   "), None);
+    }
+
+    #[test]
+    fn wrap_and_sort_sorts_entries_and_drops_blanks() {
+        let out = wrap_and_sort("usr/share/myapp\n\netc/myapp\nusr/bin\n");
+        assert_eq!(out, "etc/myapp\nusr/bin\nusr/share/myapp\n");
+    }
+
+    #[test]
+    fn wrap_and_sort_keeps_a_comment_with_the_entry_below_it() {
+        // Sorting on its own would float the comment to the top; attached, it
+        // stays with ccc/z which sorts last.
+        let out = wrap_and_sort("bbb/y\naaa/x\n# note for ccc\nccc/z\n");
+        assert_eq!(out, "aaa/x\nbbb/y\n# note for ccc\nccc/z\n");
+    }
+
+    #[test]
+    fn wrap_and_sort_of_nothing_is_empty() {
+        assert_eq!(wrap_and_sort("\n\n"), "");
     }
 }
