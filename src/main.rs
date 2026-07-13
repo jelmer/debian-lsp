@@ -132,6 +132,8 @@ enum FileType {
     DebcargoToml,
     /// debian/conffiles file
     Conffiles,
+    /// debian/dirs or debian/<package>.dirs file
+    Dirs,
 }
 
 impl FileType {
@@ -165,6 +167,8 @@ impl FileType {
             Some(Self::DebcargoToml)
         } else if conffiles::is_conffiles_file(uri) {
             Some(Self::Conffiles)
+        } else if debhelper::dirs::is_dirs_file(uri) {
+            Some(Self::Dirs)
         } else {
             None
         }
@@ -458,7 +462,8 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::Rules
             | FileType::LintianOverrides
-            | FileType::DebcargoToml => None,
+            | FileType::DebcargoToml
+            | FileType::Dirs => None,
         }
     }
 
@@ -516,7 +521,8 @@ impl Backend {
             FileType::SourceFormat
             | FileType::UpstreamMetadata
             | FileType::DebcargoToml
-            | FileType::Conffiles => Vec::new(),
+            | FileType::Conffiles
+            | FileType::Dirs => Vec::new(),
         }
     }
 
@@ -1418,6 +1424,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 conffiles::get_completions(&source_text, position)
             }
+            Some((FileType::Dirs, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                debhelper::dirs::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -2027,6 +2038,7 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(file.source_file);
                 conffiles::generate_semantic_tokens(&source_text)
             }
+            FileType::Dirs => debhelper::semantic::generate_semantic_tokens(src),
         };
 
         if tokens.is_empty() {
