@@ -66,6 +66,7 @@ mod rules;
 mod scip;
 mod source_format;
 mod source_options;
+mod source_scan;
 #[cfg(feature = "spellcheck")]
 mod spelling;
 mod tests;
