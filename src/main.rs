@@ -70,6 +70,7 @@ mod source_scan;
 #[cfg(feature = "spellcheck")]
 mod spelling;
 mod tests;
+mod triggers;
 mod udd;
 mod upstream_metadata;
 mod vcswatch;
@@ -139,6 +140,8 @@ enum FileType {
     Docs,
     /// debian/examples or debian/<package>.examples file
     Examples,
+    /// debian/triggers or debian/<package>.triggers file
+    Triggers,
 }
 
 impl FileType {
@@ -178,6 +181,8 @@ impl FileType {
             Some(Self::Docs)
         } else if debhelper::examples::is_examples_file(uri) {
             Some(Self::Examples)
+        } else if triggers::is_triggers_file(uri) {
+            Some(Self::Triggers)
         } else {
             None
         }
@@ -474,7 +479,8 @@ impl Backend {
             | FileType::DebcargoToml
             | FileType::Dirs
             | FileType::Docs
-            | FileType::Examples => None,
+            | FileType::Examples
+            | FileType::Triggers => None,
         }
     }
 
@@ -535,7 +541,8 @@ impl Backend {
             | FileType::Conffiles
             | FileType::Dirs
             | FileType::Docs
-            | FileType::Examples => Vec::new(),
+            | FileType::Examples
+            | FileType::Triggers => Vec::new(),
         }
     }
 
@@ -1477,6 +1484,11 @@ impl LanguageServer for Backend {
                 let debian_dir = Self::find_debian_dir(&uri);
                 debhelper::examples::get_completions(&source_text, position, debian_dir.as_deref())
             }
+            Some((FileType::Triggers, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                triggers::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -2089,6 +2101,7 @@ impl LanguageServer for Backend {
             FileType::Dirs | FileType::Docs | FileType::Examples => {
                 debhelper::semantic::generate_semantic_tokens(src)
             }
+            FileType::Triggers => triggers::generate_semantic_tokens(src),
         };
 
         if tokens.is_empty() {
