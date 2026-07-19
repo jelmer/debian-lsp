@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::debhelper::parser::{parse_line, CursorContext, SubstitutionStart};
 
@@ -89,7 +89,6 @@ pub(crate) fn dir_items(prefix: &str, taken: &HashSet<&str>) -> Vec<CompletionIt
         .collect()
 }
 
-/// The completions every line-oriented debhelper file shares.
 pub(crate) fn common_completions(cx: &CursorContext) -> Option<Vec<CompletionItem>> {
     if cx.in_comment {
         return Some(Vec::new());
@@ -101,6 +100,22 @@ pub(crate) fn common_completions(cx: &CursorContext) -> Option<Vec<CompletionIte
         Some(SubstitutionStart::Brace) => Some(substitution_completions(SubstitutionStart::Brace)),
         None => None,
     }
+}
+
+/// The completion shape every line-oriented debhelper file shares
+pub(crate) fn get_completions(
+    text: &str,
+    position: Position,
+    field: impl Fn(usize, &str) -> Vec<CompletionItem>,
+) -> Vec<CompletionItem> {
+    let line = text.lines().nth(position.line as usize).unwrap_or("");
+    let offset = (position.character as usize).min(line.len());
+    let cx = CursorContext::at(line, offset);
+
+    if let Some(items) = common_completions(&cx) {
+        return items;
+    }
+    field(cx.token_index, cx.prefix)
 }
 
 /// The entries listed on every line.
@@ -189,6 +204,34 @@ mod tests {
     fn common_completions_defers_on_a_plain_token() {
         let cx = CursorContext::at("usr/bi", 6);
         assert_eq!(common_completions(&cx), None);
+    }
+
+    #[test]
+    fn get_completions_defers_to_the_field_callback() {
+        let items = get_completions("usr etc", Position::new(0, 7), |index, prefix| {
+            vec![CompletionItem {
+                label: format!("{index}:{prefix}"),
+                ..Default::default()
+            }]
+        });
+        assert_eq!(items[0].label, "1:etc");
+    }
+
+    #[test]
+    fn get_completions_skips_the_field_callback_in_a_comment() {
+        let items = get_completions("# note", Position::new(0, 6), |_, _| {
+            vec![CompletionItem {
+                label: "unreachable".to_string(),
+                ..Default::default()
+            }]
+        });
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn get_completions_offers_substitutions_over_the_field_callback() {
+        let items = get_completions("usr/$", Position::new(0, 5), |_, _| Vec::new());
+        assert!(items.iter().any(|i| i.label == "${DEB_HOST_MULTIARCH}"));
     }
 
     #[test]
