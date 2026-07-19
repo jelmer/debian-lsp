@@ -71,3 +71,7 @@ tower-test = "0.4"
 [[bin]]
 name = "debian-lsp"
 test = true
+
+[workspace]
+members = [".", "zed-debian"]
+resolver = "2"
