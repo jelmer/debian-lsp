@@ -703,6 +703,24 @@ impl Backend {
         }
     }
 
+    /// Read package names (Source: and Package:) from the control file
+    /// for the debian directory containing the given URI.
+    /// Checks open files first, falls back to reading from disk.
+    fn get_local_package_names(
+        uri: &Uri,
+        files: &HashMap<Uri, FileInfo>,
+        workspace: &mut Workspace,
+    ) -> Vec<String> {
+        let Some((control_sf, _)) = Self::get_control_for_uri(uri, files, workspace) else {
+            return Vec::new();
+        };
+        // Lintian override specs name binary packages, so complete from the
+        // binary paragraphs via the high-level control API rather than the
+        // source name or an ad-hoc reparse.
+        let parsed = workspace.get_parsed_control(control_sf);
+        parsed.tree().binaries().filter_map(|b| b.name()).collect()
+    }
+
     /// Get or load the control source file for the debian directory
     /// containing the given URI.
     fn get_control_for_uri(
@@ -1249,6 +1267,7 @@ impl LanguageServer for Backend {
         let file_info = files
             .get(&uri)
             .map(|info| (info.file_type, info.source_file));
+        let files_snapshot = files.clone();
         drop(files); // Release the lock
 
         let completions = match file_info {
@@ -1385,14 +1404,26 @@ impl LanguageServer for Backend {
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
                 let workspace = self.workspace_clone().await;
+                let packages =
+                    Self::get_local_package_names(&uri, &files_snapshot, &mut workspace.clone());
+                let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
                 let src = Source::new(&source_text, &idx);
-                let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 drop(workspace);
-                let mut tag_cache = self.lintian_tag_cache.write().await;
-                let tags = tag_cache.get_tags().await;
-                lintian_overrides::get_completions(&parsed, src, position, tags)
+                let tags: Vec<(String, String)> = {
+                    let mut tag_cache = self.lintian_tag_cache.write().await;
+                    tag_cache.get_tags().await.to_vec()
+                };
+                let architectures = self.architecture_list.read().await;
+                lintian_overrides::get_completions(
+                    &parsed,
+                    src,
+                    position,
+                    &tags,
+                    &packages,
+                    &architectures,
+                )
             }
             Some((FileType::SourceOptions, source_file)) => {
                 let workspace = self.workspace_clone().await;
@@ -2594,6 +2625,7 @@ impl LanguageServer for Backend {
             Some(f) => *f,
             None => return Ok(None),
         };
+        let files_snapshot = files.clone();
         drop(files);
 
         let workspace = self.workspace_clone().await;
@@ -2626,6 +2658,40 @@ impl LanguageServer for Backend {
                         Ok(watch::get_linebased_hover(wf, src, position))
                     }
                 }
+            }
+            FileType::LintianOverrides => {
+                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                let token = src.try_position_to_offset(position).and_then(|offset| {
+                    use ::lintian_overrides::{AstNode, SyntaxKind};
+                    // The cursor's package-name / arch / type / tag token, if any.
+                    let line = parsed.tree().line_at_offset(offset)?;
+                    line.syntax()
+                        .descendants_with_tokens()
+                        .filter_map(|it| it.into_token())
+                        .find(|tok| {
+                            matches!(
+                                tok.kind(),
+                                SyntaxKind::PACKAGE_NAME
+                                    | SyntaxKind::ARCH
+                                    | SyntaxKind::PACKAGE_TYPE
+                                    | SyntaxKind::TAG
+                            ) && tok.text_range().contains(offset)
+                        })
+                        .map(|tok| (tok.kind(), tok.text().to_string()))
+                });
+                let packages =
+                    Self::get_local_package_names(uri, &files_snapshot, &mut workspace.clone());
+                drop(workspace);
+
+                let Some((kind, text)) = token else {
+                    return Ok(None);
+                };
+
+                let tags: Vec<(String, String)> = {
+                    let mut tag_cache = self.lintian_tag_cache.write().await;
+                    tag_cache.get_tags().await.to_vec()
+                };
+                Ok(lintian_overrides::get_hover(kind, &text, &tags, &packages))
             }
             FileType::Changelog => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
