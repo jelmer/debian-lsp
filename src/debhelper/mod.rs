@@ -6,6 +6,7 @@ pub mod dirs;
 pub mod docs;
 pub mod examples;
 pub mod info;
+pub mod install;
 pub mod manpages;
 pub mod parser;
 pub mod semantic;
