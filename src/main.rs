@@ -134,6 +134,8 @@ enum FileType {
     Conffiles,
     /// debian/dirs or debian/<package>.dirs file
     Dirs,
+    /// debian/links or debian/<package>.links file
+    Links,
 }
 
 impl FileType {
@@ -169,6 +171,8 @@ impl FileType {
             Some(Self::Conffiles)
         } else if debhelper::dirs::is_dirs_file(uri) {
             Some(Self::Dirs)
+        } else if debhelper::links::is_links_file(uri) {
+            Some(Self::Links)
         } else {
             None
         }
@@ -463,7 +467,8 @@ impl Backend {
             | FileType::Rules
             | FileType::LintianOverrides
             | FileType::DebcargoToml
-            | FileType::Dirs => None,
+            | FileType::Dirs
+            | FileType::Links => None,
         }
     }
 
@@ -522,7 +527,8 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::DebcargoToml
             | FileType::Conffiles
-            | FileType::Dirs => Vec::new(),
+            | FileType::Dirs
+            | FileType::Links => Vec::new(),
         }
     }
 
@@ -1452,6 +1458,13 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 debhelper::dirs::get_completions(&source_text, position)
             }
+            Some((FileType::Links, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                let package_dir =
+                    Self::find_debian_dir(&uri).map(|d| debhelper::links::package_dir(&d, &uri));
+                debhelper::links::get_completions(&source_text, position, package_dir.as_deref())
+            }
             None => Vec::new(),
         };
 
@@ -2061,7 +2074,7 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(file.source_file);
                 conffiles::generate_semantic_tokens(&source_text)
             }
-            FileType::Dirs => debhelper::semantic::generate_semantic_tokens(src),
+            FileType::Dirs | FileType::Links => debhelper::semantic::generate_semantic_tokens(src),
         };
 
         if tokens.is_empty() {
