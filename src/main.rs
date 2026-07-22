@@ -134,6 +134,8 @@ enum FileType {
     Conffiles,
     /// debian/dirs or debian/<package>.dirs file
     Dirs,
+    /// debian/manpages or debian/<package>.manpages file
+    Manpages,
 }
 
 impl FileType {
@@ -169,6 +171,8 @@ impl FileType {
             Some(Self::Conffiles)
         } else if debhelper::dirs::is_dirs_file(uri) {
             Some(Self::Dirs)
+        } else if debhelper::manpages::is_manpages_file(uri) {
+            Some(Self::Manpages)
         } else {
             None
         }
@@ -463,7 +467,8 @@ impl Backend {
             | FileType::Rules
             | FileType::LintianOverrides
             | FileType::DebcargoToml
-            | FileType::Dirs => None,
+            | FileType::Dirs
+            | FileType::Manpages => None,
         }
     }
 
@@ -522,7 +527,8 @@ impl Backend {
             | FileType::UpstreamMetadata
             | FileType::DebcargoToml
             | FileType::Conffiles
-            | FileType::Dirs => Vec::new(),
+            | FileType::Dirs
+            | FileType::Manpages => Vec::new(),
         }
     }
 
@@ -1452,6 +1458,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(source_file);
                 debhelper::dirs::get_completions(&source_text, position)
             }
+            Some((FileType::Manpages, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                debhelper::manpages::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -2061,7 +2072,9 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(file.source_file);
                 conffiles::generate_semantic_tokens(&source_text)
             }
-            FileType::Dirs => debhelper::semantic::generate_semantic_tokens(src),
+            FileType::Dirs | FileType::Manpages => {
+                debhelper::semantic::generate_semantic_tokens(src)
+            }
         };
 
         if tokens.is_empty() {
