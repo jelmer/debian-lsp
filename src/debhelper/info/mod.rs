@@ -1,0 +1,7 @@
+//! Support for debian/info and debian/<package>.info files.
+
+pub mod completion;
+pub mod detection;
+
+pub use completion::get_completions;
+pub use detection::is_info_file;

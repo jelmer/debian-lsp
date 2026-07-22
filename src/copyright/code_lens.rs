@@ -100,7 +100,7 @@ async fn get_file_count_lenses(
         Some(files) => files,
         None => {
             let root_buf = root.to_path_buf();
-            tokio::task::spawn_blocking(move || git_ls_files(&root_buf))
+            tokio::task::spawn_blocking(move || crate::source_scan::git_ls_files(&root_buf))
                 .await
                 .ok()
                 .flatten()?
@@ -174,37 +174,6 @@ async fn get_file_count_lenses(
     }
 
     Some(lenses)
-}
-
-/// List git-tracked files relative to the given working directory.
-fn git_ls_files(root: &Path) -> Option<Vec<String>> {
-    let output = match std::process::Command::new("git")
-        .arg("ls-files")
-        .arg("-z")
-        .current_dir(root)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!("failed to run git ls-files in {}: {e}", root.display());
-            return None;
-        }
-    };
-    if !output.status.success() {
-        tracing::info!(
-            "git ls-files failed in {} (not a git repo?)",
-            root.display()
-        );
-        return None;
-    }
-    Some(
-        output
-            .stdout
-            .split(|&b| b == 0)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| std::str::from_utf8(s).ok().map(|s| s.to_string()))
-            .collect(),
-    )
 }
 
 /// Generate code lenses for copyright license and files paragraphs.
