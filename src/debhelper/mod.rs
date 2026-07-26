@@ -3,6 +3,7 @@ pub mod completion;
 pub mod detection;
 pub mod dirs;
 pub mod docs;
+pub mod examples;
 pub mod parser;
 pub mod semantic;
 pub mod source;

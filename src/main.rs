@@ -137,6 +137,8 @@ enum FileType {
     Dirs,
     /// debian/docs or debian/<package>.docs file
     Docs,
+    /// debian/examples or debian/<package>.examples file
+    Examples,
 }
 
 impl FileType {
@@ -174,6 +176,8 @@ impl FileType {
             Some(Self::Dirs)
         } else if debhelper::docs::is_docs_file(uri) {
             Some(Self::Docs)
+        } else if debhelper::examples::is_examples_file(uri) {
+            Some(Self::Examples)
         } else {
             None
         }
@@ -469,7 +473,8 @@ impl Backend {
             | FileType::LintianOverrides
             | FileType::DebcargoToml
             | FileType::Dirs
-            | FileType::Docs => None,
+            | FileType::Docs
+            | FileType::Examples => None,
         }
     }
 
@@ -529,7 +534,8 @@ impl Backend {
             | FileType::DebcargoToml
             | FileType::Conffiles
             | FileType::Dirs
-            | FileType::Docs => Vec::new(),
+            | FileType::Docs
+            | FileType::Examples => Vec::new(),
         }
     }
 
@@ -1465,6 +1471,12 @@ impl LanguageServer for Backend {
                 let debian_dir = Self::find_debian_dir(&uri);
                 debhelper::docs::get_completions(&source_text, position, debian_dir.as_deref())
             }
+            Some((FileType::Examples, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                let debian_dir = Self::find_debian_dir(&uri);
+                debhelper::examples::get_completions(&source_text, position, debian_dir.as_deref())
+            }
             None => Vec::new(),
         };
 
@@ -2074,7 +2086,9 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(file.source_file);
                 conffiles::generate_semantic_tokens(&source_text)
             }
-            FileType::Dirs | FileType::Docs => debhelper::semantic::generate_semantic_tokens(src),
+            FileType::Dirs | FileType::Docs | FileType::Examples => {
+                debhelper::semantic::generate_semantic_tokens(src)
+            }
         };
 
         if tokens.is_empty() {
