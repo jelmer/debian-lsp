@@ -1043,7 +1043,7 @@ dependencies = [
  "debian-control",
  "debian-copyright",
  "debian-watch",
- "debian-workspace",
+ "debian-workspace 0.182.0",
  "dep3",
  "distro-info",
  "futures",
@@ -1118,6 +1118,35 @@ dependencies = [
  "lintian-overrides",
  "makefile-lossless",
  "patchkit 0.2.7",
+ "serde",
+ "systemd-unit-edit",
+ "tempfile",
+ "toml_edit",
+ "tracing",
+ "url",
+ "yaml-edit",
+]
+
+[[package]]
+name = "debian-workspace"
+version = "0.182.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9faaa20d3cd5b1a767af168c627920db1ddf1c686089c8aa492ae2c0ac4e655"
+dependencies = [
+ "chrono",
+ "deb822-lossless",
+ "debian-analyzer",
+ "debian-changelog",
+ "debian-control",
+ "debian-copyright",
+ "debian-watch",
+ "debversion",
+ "dep3",
+ "desktop-edit",
+ "inventory",
+ "lintian-overrides",
+ "makefile-lossless",
+ "patchkit 0.3.3",
  "serde",
  "systemd-unit-edit",
  "tempfile",
@@ -3006,7 +3035,7 @@ dependencies = [
  "debian-control",
  "debian-copyright",
  "debian-watch",
- "debian-workspace",
+ "debian-workspace 0.181.1",
  "debversion",
  "dep3",
  "desktop-edit",
@@ -3154,9 +3183,9 @@ dependencies = [
 
 [[package]]
 name = "makefile-lossless"
-version = "0.3.40"
+version = "0.3.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a892a73d2d24783ef4355b310e9d04e5a1c91aabca3c417d60ac524d64e4217a"
+checksum = "8544910ac6727155f2938ec28e59ca9f7f1e7d7a7697de99dced6837f62d9771"
 dependencies = [
  "log",
  "rowan",
@@ -3357,18 +3386,17 @@ dependencies = [
 
 [[package]]
 name = "multiarch-hints"
-version = "0.181.1"
+version = "0.182.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2289ab1bbafbd8f800512eba5f1542de132b05b132a536391fc3df30577ca505"
+checksum = "61a1b507cfee748ffe2cec720e19587e7911a3808fffa52608ea1dd9dcd59bbd"
 dependencies = [
- "breezyshim",
  "chrono",
  "configparser",
  "deb822-lossless",
  "debian-analyzer",
  "debian-changelog",
  "debian-control",
- "debian-workspace",
+ "debian-workspace 0.182.0",
  "debversion",
  "lazy-regex",
  "lazy_static",

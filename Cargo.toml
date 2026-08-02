@@ -32,7 +32,7 @@ dep3 = "0.2.3"
 distro-info = "0.4"
 rowan = "0.16.1"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres"] }
-makefile-lossless = "0.3.38"
+makefile-lossless = "0.3.41"
 deb822-fast = "0.2"
 deb822-lossless = { version = "0.5.17" }
 lintian-overrides = "0.1.7"
@@ -55,8 +55,8 @@ launchpadlib = { version = "0.5.7", optional = true, default-features = false, f
 lru = ">=0.12,<0.19"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
 lintian-brush = { version = "0.181", optional = true }
-multiarch-hints = { version = "0.181", default-features = false, features = ["async"], optional = true }
-debian-workspace = { version = "0.181", optional = true }
+multiarch-hints = { version = "0.182", default-features = false, features = ["async"], optional = true }
+debian-workspace = { version = "0.182", optional = true }
 typos = { version = "0.10", optional = true }
 typos-dict = { version = "0.13", optional = true }
 unicase = { version = "2.9", optional = true }
