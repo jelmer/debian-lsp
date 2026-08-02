@@ -204,7 +204,7 @@ pub fn watch_action_to_text_edits(
     original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let original_text = original_src.text;
-    use debian_watch::parse::ParsedEntry;
+    use debian_watch::parse::{ParsedEntry, ParsedWatchFile};
 
     let result = match action {
         WatchAction::SetEntryMatchingPattern {
@@ -700,13 +700,13 @@ pub(super) fn makefile_action_range(
         MakefileAction::SetVariable { name, .. }
         | MakefileAction::SetVariableOperator { name, .. }
         | MakefileAction::RemoveVariable { name, .. }
+        | MakefileAction::RenameVariable {
+            from_name: name, ..
+        }
         | MakefileAction::ReplaceVariableWithInclude { name, .. }
         | MakefileAction::InsertIncludeBeforeVariable {
             before_variable: name,
             ..
-        }
-        | MakefileAction::RenameVariable {
-            from_name: name, ..
         } => {
             use rowan::ast::AstNode as _;
             let var = makefile.variable_definitions_by_name(name).next()?;
