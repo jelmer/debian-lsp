@@ -9,7 +9,19 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/jelmer/debian-lsp"
 keywords = ["lsp", "debian", "control", "language-server"]
 categories = ["development-tools", "text-editors"]
-include = ["ale-debian-lsp.vim", "emacs-lspconfig/README.md", "helix-lspconfig/README.md", "nvim-lspconfig/README.md", "src/**", "tests/**", "examples/**", "Cargo.toml", "README.md", "nvim-lspconfig/README.md", "nvim-lspconfig/lsp/debian_lsp.lua"]
+include = [
+	"ale-debian-lsp.vim",
+	"emacs-lspconfig/README.md",
+	"helix-lspconfig/README.md",
+	"nvim-lspconfig/README.md",
+	"src/**",
+	"tests/**",
+	"examples/**",
+	"Cargo.toml",
+	"README.md",
+	"nvim-lspconfig/README.md",
+	"nvim-lspconfig/lsp/debian_lsp.lua",
+]
 
 [features]
 default = ["launchpad", "spellcheck"]
@@ -38,7 +50,10 @@ deb822-lossless = { version = "0.5.17" }
 lintian-overrides = "0.1.7"
 yaml-edit = { version = "0.2.0" }
 toml_edit = "0.25"
-upstream-ontologist = { version = "0.3.17", default-features = false, features = ["cargo", "debian"] }
+upstream-ontologist = { version = "0.3.17", default-features = false, features = [
+	"cargo",
+	"debian",
+] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 tower-lsp-server = "0.23"
@@ -47,15 +62,24 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-salsa = ">=0.23, <0.28"
+salsa = ">=0.28, <0.29"
 text-size = "1.1"
 patchkit = "0.3.3"
 scip = { version = "0.9", optional = true }
-launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
+launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = [
+	"async",
+	"api-v1_0",
+	"bugs",
+	"packages",
+] }
 lru = ">=0.12,<0.19"
-openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
+openssl = { version = ">=0.10.64, <0.11", features = [
+	"vendored",
+], optional = true }
 lintian-brush = { version = "0.181", optional = true }
-multiarch-hints = { version = "0.182", default-features = false, features = ["async"], optional = true }
+multiarch-hints = { version = "0.182", default-features = false, features = [
+	"async",
+], optional = true }
 debian-workspace = { version = "0.182", optional = true }
 typos = { version = "0.10", optional = true }
 typos-dict = { version = "0.13", optional = true }
