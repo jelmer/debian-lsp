@@ -144,6 +144,8 @@ enum FileType {
     Triggers,
     /// debian/clean or debian/<package>.clean file
     Clean,
+    /// debian/info or debian/<package>.info file
+    Info,
 }
 
 impl FileType {
@@ -187,6 +189,8 @@ impl FileType {
             Some(Self::Triggers)
         } else if debhelper::clean::is_clean_file(uri) {
             Some(Self::Clean)
+        } else if debhelper::info::is_info_file(uri) {
+            Some(Self::Info)
         } else {
             None
         }
@@ -485,7 +489,8 @@ impl Backend {
             | FileType::Docs
             | FileType::Examples
             | FileType::Triggers
-            | FileType::Clean => None,
+            | FileType::Clean
+            | FileType::Info => None,
         }
     }
 
@@ -548,7 +553,8 @@ impl Backend {
             | FileType::Docs
             | FileType::Examples
             | FileType::Triggers
-            | FileType::Clean => Vec::new(),
+            | FileType::Clean
+            | FileType::Info => Vec::new(),
         }
     }
 
@@ -1501,6 +1507,12 @@ impl LanguageServer for Backend {
                 let debian_dir = Self::find_debian_dir(&uri);
                 debhelper::clean::get_completions(&source_text, position, debian_dir.as_deref())
             }
+            Some((FileType::Info, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                let debian_dir = Self::find_debian_dir(&uri);
+                debhelper::info::get_completions(&source_text, position, debian_dir.as_deref())
+            }
             None => Vec::new(),
         };
 
@@ -2110,9 +2122,11 @@ impl LanguageServer for Backend {
                 let source_text = workspace.source_text(file.source_file);
                 conffiles::generate_semantic_tokens(&source_text)
             }
-            FileType::Dirs | FileType::Docs | FileType::Examples | FileType::Clean => {
-                debhelper::semantic::generate_semantic_tokens(src)
-            }
+            FileType::Dirs
+            | FileType::Docs
+            | FileType::Examples
+            | FileType::Clean
+            | FileType::Info => debhelper::semantic::generate_semantic_tokens(src),
             FileType::Triggers => triggers::generate_semantic_tokens(src),
         };
 
