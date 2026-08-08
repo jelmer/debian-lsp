@@ -204,7 +204,7 @@ pub fn watch_action_to_text_edits(
     original_src: crate::position::Source<'_>,
 ) -> Vec<TextEdit> {
     let original_text = original_src.text;
-    use debian_watch::parse::ParsedEntry;
+    use debian_watch::parse::{ParsedEntry, ParsedWatchFile};
 
     let result = match action {
         WatchAction::SetEntryMatchingPattern {
@@ -260,6 +260,25 @@ pub fn watch_action_to_text_edits(
                 ParsedEntry::LineBased(_) => false,
             })
         }
+        WatchAction::SetVersion { version, .. } => {
+            // Only line-based files carry a `version=N` line, and only when
+            // they don't already declare one. Prepending is a plain
+            // insertion, so it bypasses the replace-a-range path below.
+            let ParsedWatchFile::LineBased(wf) = &watch else {
+                return Vec::new();
+            };
+            if wf.version_node().is_some() {
+                return Vec::new();
+            }
+            let pos = original_src.offset_to_position(0.into());
+            return vec![TextEdit {
+                range: Range {
+                    start: pos,
+                    end: pos,
+                },
+                new_text: format!("version={}\n", version),
+            }];
+        }
     };
 
     let Some((range, new_text)) = result else {
@@ -291,6 +310,15 @@ pub(super) fn watch_action_range(
         | WatchAction::SetEntryOption { url, .. }
         | WatchAction::SetEntryUrl { url, .. }
         | WatchAction::ConvertEntryToTemplate { url, .. } => url,
+        // Targets the file's `version=` line rather than an entry; anchor
+        // the code action at the start of the file.
+        WatchAction::SetVersion { .. } => {
+            let pos = anchor_src.offset_to_position(0.into());
+            return Some(Range {
+                start: pos,
+                end: pos,
+            });
+        }
     };
     let range = watch_entry_range_by_url(watch, url)?;
     Some(anchor_src.text_range_to_lsp_range(range))
@@ -578,6 +606,22 @@ pub(super) fn makefile_action_to_text_edits(
             let _ = mf.remove_phony_target(target);
             makefile_diff_edits(makefile, &mf, original_src)
         }
+        MakefileAction::RenameVariable {
+            from_name, to_name, ..
+        } => {
+            // Unlike the other makefile actions we don't re-render the
+            // document here: a rename affects just the name, so edit that
+            // range and leave the rest of the file untouched.
+            let edit = makefile
+                .variable_definitions()
+                .find(|v| v.name().as_deref() == Some(from_name.as_str()))
+                .and_then(|v| v.name_range())
+                .map(|range| TextEdit {
+                    range: original_src.text_range_to_lsp_range(range),
+                    new_text: to_name.clone(),
+                });
+            edit.into_iter().collect()
+        }
         MakefileAction::RenameRuleTarget {
             from_target,
             to_target,
@@ -673,6 +717,9 @@ pub(super) fn makefile_action_range(
         MakefileAction::SetVariable { name, .. }
         | MakefileAction::SetVariableOperator { name, .. }
         | MakefileAction::RemoveVariable { name, .. }
+        | MakefileAction::RenameVariable {
+            from_name: name, ..
+        }
         | MakefileAction::ReplaceVariableWithInclude { name, .. }
         | MakefileAction::InsertIncludeBeforeVariable {
             before_variable: name,
@@ -983,4 +1030,109 @@ pub fn substitute_edits(
         search_from = abs_end;
     }
     edits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::{LineIndex, Source};
+    use std::path::PathBuf;
+
+    fn apply(text: &str, edits: &[TextEdit]) -> String {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        // Apply back-to-front so earlier offsets stay valid.
+        let mut spans: Vec<(usize, usize, String)> = edits
+            .iter()
+            .map(|e| {
+                let start: usize = src.try_position_to_offset(e.range.start).unwrap().into();
+                let end: usize = src.try_position_to_offset(e.range.end).unwrap().into();
+                (start, end, e.new_text.clone())
+            })
+            .collect();
+        spans.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+        let mut out = text.to_string();
+        for (start, end, new_text) in spans {
+            out.replace_range(start..end, &new_text);
+        }
+        out
+    }
+
+    fn watch_edits(text: &str, action: &WatchAction) -> Vec<TextEdit> {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let parsed = debian_watch::parse::parse(text).unwrap();
+        watch_action_to_text_edits(action, parsed, src)
+    }
+
+    fn makefile_edits(text: &str, action: &MakefileAction) -> Vec<TextEdit> {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let mf = makefile_lossless::Makefile::read_relaxed(text.as_bytes()).unwrap();
+        makefile_action_to_text_edits(action, &mf, src)
+    }
+
+    #[test]
+    fn watch_set_version_prepends_line() {
+        let text = "https://example.com/foo foo-(.*)\\.tar\\.gz\n";
+        let action = WatchAction::SetVersion {
+            file: PathBuf::from("debian/watch"),
+            version: 4,
+        };
+        let edits = watch_edits(text, &action);
+        assert_eq!(
+            apply(text, &edits),
+            "version=4\nhttps://example.com/foo foo-(.*)\\.tar\\.gz\n"
+        );
+    }
+
+    #[test]
+    fn watch_set_version_noop_when_already_versioned() {
+        let text = "version=4\nhttps://example.com/foo foo-(.*)\\.tar\\.gz\n";
+        let action = WatchAction::SetVersion {
+            file: PathBuf::from("debian/watch"),
+            version: 4,
+        };
+        assert_eq!(watch_edits(text, &action), Vec::new());
+    }
+
+    #[test]
+    fn makefile_rename_variable_touches_only_the_name() {
+        let text = "export  FOO  :=  nocheck\nBAR = keep\n";
+        let action = MakefileAction::RenameVariable {
+            file: PathBuf::from("debian/rules"),
+            from_name: "FOO".into(),
+            to_name: "RENAMED".into(),
+        };
+        let edits = makefile_edits(text, &action);
+        assert_eq!(edits.len(), 1);
+        // The odd spacing and the export prefix must survive untouched.
+        assert_eq!(
+            apply(text, &edits),
+            "export  RENAMED  :=  nocheck\nBAR = keep\n"
+        );
+    }
+
+    #[test]
+    fn makefile_rename_variable_leaves_value_references_alone() {
+        let text = "FOO := $(FOO) extra\n";
+        let action = MakefileAction::RenameVariable {
+            file: PathBuf::from("debian/rules"),
+            from_name: "FOO".into(),
+            to_name: "BAR".into(),
+        };
+        let edits = makefile_edits(text, &action);
+        assert_eq!(apply(text, &edits), "BAR := $(FOO) extra\n");
+    }
+
+    #[test]
+    fn makefile_rename_variable_noop_when_missing() {
+        let text = "FOO = old\n";
+        let action = MakefileAction::RenameVariable {
+            file: PathBuf::from("debian/rules"),
+            from_name: "MISSING".into(),
+            to_name: "RENAMED".into(),
+        };
+        assert_eq!(makefile_edits(text, &action), Vec::new());
+    }
 }

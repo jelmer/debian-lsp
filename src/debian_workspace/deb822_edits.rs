@@ -123,6 +123,20 @@ pub(super) fn deb822_action_to_text_edits(
             package,
             ..
         } => make_alternative_primary_edits(control, paragraph, field, package, original_src),
+        Deb822Action::AddAlternative {
+            paragraph,
+            field,
+            package,
+            alternative,
+            ..
+        } => add_alternative_edits(
+            control,
+            paragraph,
+            field,
+            package,
+            alternative,
+            original_src,
+        ),
         Deb822Action::DropFieldComments {
             paragraph, field, ..
         } => drop_field_comments_edits(control, paragraph, field, original_src),
@@ -179,6 +193,7 @@ pub fn copyright_action_to_text_edits(
         | Deb822Action::EnsureRelation { .. }
         | Deb822Action::MoveRelation { .. }
         | Deb822Action::MakeAlternativePrimary { .. }
+        | Deb822Action::AddAlternative { .. }
         | Deb822Action::EnsureSubstvar { .. }
         | Deb822Action::DropSubstvar { .. } => return Vec::new(),
         Deb822Action::AppendParagraph { .. } | Deb822Action::ReorderParagraphs { .. } => {
@@ -1090,6 +1105,75 @@ fn make_alternative_primary_edits(
     })
 }
 
+/// `Deb822Action::AddAlternative`: append `alternative` to the first
+/// relation entry naming `package`. Mirrors the applier's
+/// `add_alternative_in_paragraph`, but emits a zero-width insertion at the
+/// end of the target entry rather than rebuilding it: the applier rewrites
+/// whole files, whereas re-rendering an entry here would normalise the
+/// spacing of alternatives the user never asked us to touch. No-op when
+/// `package` isn't named in `field` or the entry already lists one of the
+/// added alternatives.
+fn add_alternative_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    package: &str,
+    alternative: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    use debian_control::lossless::relations::{Entry, Relations};
+    use std::str::FromStr;
+
+    let original_text = original_src.text;
+    let Some(paragraph) = find_paragraph(control, selector) else {
+        return Vec::new();
+    };
+    let Some(field_entry) = find_entry_in_paragraph(&paragraph, field) else {
+        return Vec::new();
+    };
+    let Some(value_range) = field_entry.value_range() else {
+        return Vec::new();
+    };
+    let value_start: usize = value_range.start().into();
+    let value_end: usize = value_range.end().into();
+    if value_end > original_text.len() || value_start > value_end {
+        return Vec::new();
+    }
+
+    let (relations, _errors) =
+        Relations::parse_relaxed(&original_text[value_start..value_end], true);
+    let Some((_, entry)) = relations.iter_relations_for(package).next() else {
+        return Vec::new();
+    };
+    let Ok(added) = Entry::from_str(alternative) else {
+        return Vec::new();
+    };
+
+    let names: Vec<Option<String>> = entry.relations().map(|r| r.try_name()).collect();
+    if added
+        .relations()
+        .map(|r| r.try_name())
+        .any(|n| n.is_some() && names.contains(&n))
+    {
+        return Vec::new();
+    }
+
+    // Entry ranges are relative to the parsed value slice, so shift them
+    // back into buffer coordinates.
+    let insertion = value_start + usize::from(entry.syntax().text_range().end());
+    if insertion > original_text.len() {
+        return Vec::new();
+    }
+    let pos = original_src.offset_to_position((insertion as u32).into());
+    vec![TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text: format!(" | {}", added.to_string().trim()),
+    }]
+}
+
 /// `Deb822Action::DropFieldComments`: rewrite `field` to its comment-free
 /// value, dropping any `#`-prefixed lines the deb822 parser kept embedded
 /// in the value. Mirrors the applier's `drop_paragraph_field_comments`.
@@ -1372,5 +1456,95 @@ fn reorder_paragraphs_edits(
         Vec::new()
     } else {
         edits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::{LineIndex, Source};
+    use std::path::PathBuf;
+
+    fn apply(text: &str, edits: &[TextEdit]) -> String {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let mut spans: Vec<(usize, usize, String)> = edits
+            .iter()
+            .map(|e| {
+                let start: usize = src.try_position_to_offset(e.range.start).unwrap().into();
+                let end: usize = src.try_position_to_offset(e.range.end).unwrap().into();
+                (start, end, e.new_text.clone())
+            })
+            .collect();
+        spans.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+        let mut out = text.to_string();
+        for (start, end, new_text) in spans {
+            out.replace_range(start..end, &new_text);
+        }
+        out
+    }
+
+    fn add_alternative(text: &str, package: &str, alternative: &str) -> Vec<TextEdit> {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let control: Control = text.parse().unwrap();
+        let action = Deb822Action::AddAlternative {
+            file: PathBuf::from("debian/control"),
+            paragraph: ParagraphSelector::Source,
+            field: "Build-Depends".into(),
+            package: package.into(),
+            alternative: alternative.into(),
+        };
+        deb822_action_to_text_edits(&action, &control, src)
+    }
+
+    #[test]
+    fn add_alternative_appends_to_entry() {
+        let text = "Source: foo\nBuild-Depends: debhelper, exim4\n";
+        let edits = add_alternative(text, "exim4", "mail-transport-agent");
+        assert_eq!(
+            apply(text, &edits),
+            "Source: foo\nBuild-Depends: debhelper, exim4 | mail-transport-agent\n"
+        );
+    }
+
+    #[test]
+    fn add_alternative_preserves_existing_spacing() {
+        // The unusual spacing around the existing alternative must survive:
+        // we append rather than re-render the entry.
+        let text = "Source: foo\nBuild-Depends: debhelper,\n exim4|postfix\n";
+        let edits = add_alternative(text, "exim4", "mail-transport-agent");
+        assert_eq!(
+            apply(text, &edits),
+            "Source: foo\nBuild-Depends: debhelper,\n exim4|postfix | mail-transport-agent\n"
+        );
+    }
+
+    #[test]
+    fn add_alternative_preserves_version_constraint() {
+        let text = "Source: foo\nBuild-Depends: debhelper (>= 13), exim4\n";
+        let edits = add_alternative(text, "exim4", "mail-transport-agent");
+        assert_eq!(
+            apply(text, &edits),
+            "Source: foo\nBuild-Depends: debhelper (>= 13), exim4 | mail-transport-agent\n"
+        );
+    }
+
+    #[test]
+    fn add_alternative_noop_when_already_present() {
+        let text = "Source: foo\nBuild-Depends: debhelper, exim4 | mail-transport-agent\n";
+        assert_eq!(
+            add_alternative(text, "exim4", "mail-transport-agent"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn add_alternative_noop_when_package_absent() {
+        let text = "Source: foo\nBuild-Depends: debhelper\n";
+        assert_eq!(
+            add_alternative(text, "exim4", "mail-transport-agent"),
+            Vec::new()
+        );
     }
 }
