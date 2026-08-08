@@ -148,6 +148,8 @@ enum FileType {
     Info,
     /// debian/manpages or debian/<package>.manpages file
     Manpages,
+    /// debian/links or debian/<package>.links file
+    Links,
 }
 
 impl FileType {
@@ -195,6 +197,8 @@ impl FileType {
             Some(Self::Info)
         } else if debhelper::manpages::is_manpages_file(uri) {
             Some(Self::Manpages)
+        } else if debhelper::links::is_links_file(uri) {
+            Some(Self::Links)
         } else {
             None
         }
@@ -495,7 +499,8 @@ impl Backend {
             | FileType::Triggers
             | FileType::Clean
             | FileType::Info
-            | FileType::Manpages => None,
+            | FileType::Manpages
+            | FileType::Links => None,
         }
     }
 
@@ -560,7 +565,8 @@ impl Backend {
             | FileType::Triggers
             | FileType::Clean
             | FileType::Info
-            | FileType::Manpages => Vec::new(),
+            | FileType::Manpages
+            | FileType::Links => Vec::new(),
         }
     }
 
@@ -1525,6 +1531,13 @@ impl LanguageServer for Backend {
                 let debian_dir = Self::find_debian_dir(&uri);
                 debhelper::manpages::get_completions(&source_text, position, debian_dir.as_deref())
             }
+            Some((FileType::Links, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                let package_dir =
+                    Self::find_debian_dir(&uri).map(|d| debhelper::links::package_dir(&d, &uri));
+                debhelper::links::get_completions(&source_text, position, package_dir.as_deref())
+            }
             None => Vec::new(),
         };
 
@@ -2139,7 +2152,8 @@ impl LanguageServer for Backend {
             | FileType::Examples
             | FileType::Clean
             | FileType::Info
-            | FileType::Manpages => debhelper::semantic::generate_semantic_tokens(src),
+            | FileType::Manpages
+            | FileType::Links => debhelper::semantic::generate_semantic_tokens(src),
             FileType::Triggers => triggers::generate_semantic_tokens(src),
         };
 
