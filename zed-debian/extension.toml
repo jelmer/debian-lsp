@@ -1,0 +1,15 @@
+id = "debian"
+name = "Debian Language Support"
+version = "0.0.1"
+schema_version = 1
+authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
+description = "Language Server Protocol support for Debian control, copyright, and watch files"
+repository = "https://github.com/jelmer/debian-lsp/zed-debian"
+
+[language_servers.debian]
+name = "Debian LSP"
+languages = ["debcontrol"]
+
+[grammars.ini]
+repository = "https://github.com/justinmk/tree-sitter-ini"
+commit = "master"
