@@ -33,97 +33,97 @@ pub struct SourceFile {
 }
 
 // Store the Parse type directly - it's thread-safe now!
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_control(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> debian_control::lossless::Parse<debian_control::lossless::Control> {
     let text = file.text(db);
-    debian_control::lossless::Control::parse(&text)
+    debian_control::lossless::Control::parse(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_copyright(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> debian_copyright::lossless::Parse {
     let text = file.text(db);
-    debian_copyright::lossless::Parse::parse_relaxed(&text)
+    debian_copyright::lossless::Parse::parse_relaxed(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_watch(db: &dyn salsa::Database, file: SourceFile) -> debian_watch::parse::Parse {
     let text = file.text(db);
-    debian_watch::parse::Parse::parse(&text)
+    debian_watch::parse::Parse::parse(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_rules(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> makefile_lossless::Parse<makefile_lossless::Makefile> {
     let text = file.text(db);
-    makefile_lossless::Parse::parse_makefile(&text)
+    makefile_lossless::Parse::parse_makefile(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_changelog(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> debian_changelog::Parse<debian_changelog::ChangeLog> {
     let text = file.text(db);
-    debian_changelog::ChangeLog::parse(&text)
+    debian_changelog::ChangeLog::parse(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_deb822(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> deb822_lossless::Parse<deb822_lossless::Deb822> {
     let text = file.text(db);
-    deb822_lossless::Deb822::parse(&text)
+    deb822_lossless::Deb822::parse(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_upstream_metadata(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> yaml_edit::Parse<yaml_edit::YamlFile> {
     let text = file.text(db);
-    yaml_edit::YamlFile::parse(&text)
+    yaml_edit::YamlFile::parse(text)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_patches_series(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
     let text = file.text(db);
-    patchkit::edit::series::parse(&text)
+    patchkit::edit::series::parse(text)
 }
 
 /// Salsa-tracked parse of just the DEP-3 header at the top of a
 /// quilt patch file under debian/patches/. Returns the parsed
 /// deb822 along with the byte offset where the diff body starts —
 /// the diff body is left to diff-lsp.
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_dep3_header(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> (deb822_lossless::Parse<deb822_lossless::Deb822>, usize) {
     let text = file.text(db);
-    let header_end = dep3::lossless::header_end(&text);
+    let header_end = dep3::lossless::header_end(text);
     let parse = deb822_lossless::Deb822::parse(&text[..header_end]);
     (parse, header_end)
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub fn parse_lintian_overrides(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
     let text = file.text(db);
-    lintian_overrides::LintianOverrides::parse(&text)
+    lintian_overrides::LintianOverrides::parse(text)
 }
 
 /// Salsa-tracked line index for a buffer. Walking the full buffer
@@ -132,7 +132,7 @@ pub fn parse_lintian_overrides(
 #[salsa::tracked(returns(clone))]
 pub fn line_index(db: &dyn salsa::Database, file: SourceFile) -> Arc<crate::position::LineIndex> {
     let text = file.text(db);
-    Arc::new(crate::position::LineIndex::new(&text))
+    Arc::new(crate::position::LineIndex::new(text))
 }
 
 /// Salsa-tracked line-by-line parse of a debhelper file. Shared by
