@@ -69,6 +69,7 @@ mod source_options;
 mod source_scan;
 #[cfg(feature = "spellcheck")]
 mod spelling;
+mod templates;
 mod tests;
 mod triggers;
 mod udd;
@@ -152,6 +153,8 @@ enum FileType {
     Install,
     /// debian/not-installed or debian/<package>.not-installed file
     NotInstalled,
+    /// debian/templates or debian/<package>.templates file
+    Templates,
 }
 
 impl FileType {
@@ -203,6 +206,8 @@ impl FileType {
             Some(Self::Install)
         } else if debhelper::not_installed::is_not_installed_file(uri) {
             Some(Self::NotInstalled)
+        } else if templates::is_templates_file(uri) {
+            Some(Self::Templates)
         } else {
             None
         }
@@ -505,7 +510,8 @@ impl Backend {
             | FileType::Info
             | FileType::Manpages
             | FileType::Install
-            | FileType::NotInstalled => None,
+            | FileType::NotInstalled
+            | FileType::Templates => None,
         }
     }
 
@@ -572,7 +578,8 @@ impl Backend {
             | FileType::Info
             | FileType::Manpages
             | FileType::Install
-            | FileType::NotInstalled => Vec::new(),
+            | FileType::NotInstalled
+            | FileType::Templates => Vec::new(),
         }
     }
 
@@ -1553,6 +1560,11 @@ impl LanguageServer for Backend {
                     debian_dir.as_deref(),
                 )
             }
+            Some((FileType::Templates, source_file)) => {
+                let workspace = self.workspace_clone().await;
+                let source_text = workspace.source_text(source_file);
+                templates::get_completions(&source_text, position)
+            }
             None => Vec::new(),
         };
 
@@ -2171,6 +2183,7 @@ impl LanguageServer for Backend {
             | FileType::Install
             | FileType::NotInstalled => debhelper::semantic::generate_semantic_tokens(src),
             FileType::Triggers => triggers::generate_semantic_tokens(src),
+            FileType::Templates => templates::generate_semantic_tokens(&source_text, src),
         };
 
         if tokens.is_empty() {
@@ -2757,6 +2770,7 @@ impl LanguageServer for Backend {
                 Ok(dep3::get_hover(&parsed.tree(), header_end, src, position))
             }
             FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
+            FileType::Templates => Ok(templates::get_hover(&source_text, position)),
             FileType::SourceOptions => Ok(source_options::get_hover(&source_text, position)),
             FileType::Conffiles => {
                 let workspace = self.workspace_clone().await;
