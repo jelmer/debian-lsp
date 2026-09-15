@@ -166,7 +166,7 @@ impl Workspace {
         &self,
         file: SourceFile,
     ) -> debian_control::lossless::Parse<debian_control::lossless::Control> {
-        parse_control(self, file)
+        parse_control(self, file).clone()
     }
 
     /// Return the buffer text of `file`. Cheap — clones an `Arc`,
@@ -178,7 +178,7 @@ impl Workspace {
     }
 
     pub fn get_parsed_copyright(&self, file: SourceFile) -> debian_copyright::lossless::Parse {
-        parse_copyright(self, file)
+        parse_copyright(self, file).clone()
     }
 
     /// Find field casing issues in copyright files, optionally within a specific range
@@ -312,39 +312,39 @@ impl Workspace {
         &self,
         file: SourceFile,
     ) -> makefile_lossless::Parse<makefile_lossless::Makefile> {
-        parse_rules(self, file)
+        parse_rules(self, file).clone()
     }
 
     pub fn get_parsed_watch(&self, file: SourceFile) -> debian_watch::parse::Parse {
-        parse_watch(self, file)
+        parse_watch(self, file).clone()
     }
 
     pub fn get_parsed_deb822(
         &self,
         file: SourceFile,
     ) -> deb822_lossless::Parse<deb822_lossless::Deb822> {
-        parse_deb822(self, file)
+        parse_deb822(self, file).clone()
     }
 
     pub fn get_parsed_upstream_metadata(
         &self,
         file: SourceFile,
     ) -> yaml_edit::Parse<yaml_edit::YamlFile> {
-        parse_upstream_metadata(self, file)
+        parse_upstream_metadata(self, file).clone()
     }
 
     pub fn get_parsed_changelog(
         &self,
         file: SourceFile,
     ) -> debian_changelog::Parse<debian_changelog::ChangeLog> {
-        parse_changelog(self, file)
+        parse_changelog(self, file).clone()
     }
 
     pub fn get_parsed_patches_series(
         &self,
         file: SourceFile,
     ) -> patchkit::edit::Parse<patchkit::edit::series::lossless::SeriesFile> {
-        parse_patches_series(self, file)
+        parse_patches_series(self, file).clone()
     }
 
     /// Salsa-cached deb822 parse of a quilt patch's DEP-3 header.
@@ -354,7 +354,7 @@ impl Workspace {
         &self,
         file: SourceFile,
     ) -> (deb822_lossless::Parse<deb822_lossless::Deb822>, usize) {
-        parse_dep3_header(self, file)
+        parse_dep3_header(self, file).clone()
     }
 
     /// Salsa-cached parse of a `debian/source/lintian-overrides` or
@@ -366,7 +366,7 @@ impl Workspace {
         &self,
         file: SourceFile,
     ) -> lintian_overrides::Parse<lintian_overrides::LintianOverrides> {
-        parse_lintian_overrides(self, file)
+        parse_lintian_overrides(self, file).clone()
     }
 
     /// Salsa-cached line index for `file`. Use the methods on the
