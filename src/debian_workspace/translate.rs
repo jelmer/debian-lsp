@@ -208,6 +208,9 @@ pub(super) fn locate_action_target(
                 | Deb822Action::MakeAlternativePrimary {
                     paragraph, field, ..
                 }
+                | Deb822Action::AddAlternative {
+                    paragraph, field, ..
+                }
                 | Deb822Action::DropFieldComments {
                     paragraph, field, ..
                 } => (paragraph, Some(field.clone())),
@@ -564,6 +567,7 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | Deb822Action::MoveRelation { file, .. }
             | Deb822Action::ReorderParagraphs { file, .. }
             | Deb822Action::MakeAlternativePrimary { file, .. }
+            | Deb822Action::AddAlternative { file, .. }
             | Deb822Action::DropFieldComments { file, .. } => file,
         },
         Action::Filesystem(a) => match a {
@@ -599,7 +603,8 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | WatchAction::RemoveEntryOption { file, .. }
             | WatchAction::SetEntryOption { file, .. }
             | WatchAction::SetEntryUrl { file, .. }
-            | WatchAction::ConvertEntryToTemplate { file, .. } => file,
+            | WatchAction::ConvertEntryToTemplate { file, .. }
+            | WatchAction::SetVersion { file, .. } => file,
         },
         Action::Makefile(a) => match a {
             MakefileAction::ReplaceRecipe { file, .. }
@@ -614,7 +619,8 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | MakefileAction::AddPhonyTarget { file, .. }
             | MakefileAction::AddInclude { file, .. }
             | MakefileAction::ReplaceVariableWithInclude { file, .. }
-            | MakefileAction::InsertIncludeBeforeVariable { file, .. } => file,
+            | MakefileAction::InsertIncludeBeforeVariable { file, .. }
+            | MakefileAction::RenameVariable { file, .. } => file,
         },
         Action::LintianOverrides(a) => match a {
             LintianOverridesAction::AddLine { file, .. }

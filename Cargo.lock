@@ -348,7 +348,7 @@ dependencies = [
  "lazy-regex",
  "lazy_static",
  "log",
- "patchkit 0.2.7",
+ "patchkit",
  "percent-encoding",
  "pyo3",
  "pyo3-filelike",
@@ -970,7 +970,7 @@ dependencies = [
  "makefile-lossless",
  "maplit",
  "merge3",
- "patchkit 0.2.7",
+ "patchkit",
  "pyo3",
  "quote",
  "regex",
@@ -1054,7 +1054,7 @@ dependencies = [
  "makefile-lossless",
  "multiarch-hints",
  "openssl",
- "patchkit 0.3.8",
+ "patchkit",
  "rowan",
  "salsa",
  "scip",
@@ -1100,9 +1100,9 @@ dependencies = [
 
 [[package]]
 name = "debian-workspace"
-version = "0.181.1"
+version = "0.185.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41f3787bd88b7503868a5a9113c8394f875f6209e4b46ca81508c120158e53a6"
+checksum = "e922a59bba4e575b489aa20ebcef17d99d21815f2eac1e3fe89fb3608cc8cdf0"
 dependencies = [
  "chrono",
  "deb822-lossless",
@@ -1117,7 +1117,7 @@ dependencies = [
  "inventory",
  "lintian-overrides",
  "makefile-lossless",
- "patchkit 0.2.7",
+ "patchkit",
  "serde",
  "systemd-unit-edit",
  "tempfile",
@@ -3006,9 +3006,9 @@ dependencies = [
 
 [[package]]
 name = "lintian-brush"
-version = "0.181.1"
+version = "0.185.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e95ddc477913f44356c56d5bf444bbb0c09bda61dabc1048328198e047fa31a"
+checksum = "1d7292f17675f8262ab9d3cafeeea9407696825310331f510db89b2f67894558"
 dependencies = [
  "breezyshim",
  "chrono",
@@ -3035,7 +3035,7 @@ dependencies = [
  "lintian-overrides",
  "makefile-lossless",
  "nu-ansi-term",
- "patchkit 0.2.7",
+ "patchkit",
  "pyo3",
  "quote",
  "regex",
@@ -3047,7 +3047,7 @@ dependencies = [
  "serde_yaml",
  "sha1 0.11.0",
  "shell-words",
- "sqlx 0.8.6",
+ "sqlx 0.9.0",
  "strsim",
  "svp-client",
  "systemd-unit-edit",
@@ -3363,11 +3363,10 @@ dependencies = [
 
 [[package]]
 name = "multiarch-hints"
-version = "0.181.1"
+version = "0.185.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2289ab1bbafbd8f800512eba5f1542de132b05b132a536391fc3df30577ca505"
+checksum = "4b1ac1c51a07ee1a71db253dc7d1b32fd68aa678c37e7240b53a8fe4e67bffd2"
 dependencies = [
- "breezyshim",
  "chrono",
  "configparser",
  "deb822-lossless",
@@ -3650,21 +3649,6 @@ dependencies = [
  "base64ct",
  "rand_core 0.6.4",
  "subtle",
-]
-
-[[package]]
-name = "patchkit"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cb14fe8c3e5ae17fb7ad888c15a3297aebe316e4f0f49d1788318a331b26670"
-dependencies = [
- "chrono",
- "lazy-regex",
- "lazy_static",
- "once_cell",
- "proc-macro2",
- "regex",
- "rowan",
 ]
 
 [[package]]
@@ -5348,8 +5332,6 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
  "tracing",
  "url",
 ]
@@ -5435,7 +5417,6 @@ dependencies = [
  "sqlx-postgres 0.8.6",
  "sqlx-sqlite 0.8.6",
  "syn 2.0.118",
- "tokio",
  "url",
 ]
 
@@ -7189,9 +7170,9 @@ dependencies = [
 
 [[package]]
 name = "yaml-edit"
-version = "0.2.2"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cedf59245d46b241af7c120e20c53f5a4e0249ff5a8cf59095aba0481ffb36fa"
+checksum = "482be37565376de9a5502a56f19b68ecf0d4f85298ac89f3a62e03d7e4ecf9e3"
 dependencies = [
  "base64",
  "rowan",

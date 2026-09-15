@@ -36,7 +36,7 @@ makefile-lossless = "0.3.38"
 deb822-fast = "0.2"
 deb822-lossless = { version = "0.5.17" }
 lintian-overrides = "0.1.7"
-yaml-edit = { version = "0.2.0" }
+yaml-edit = { version = "0.3.1" }
 toml_edit = "0.25"
 upstream-ontologist = { version = "0.3.17", default-features = false, features = ["cargo", "debian"] }
 clap = { version = "4", features = ["derive"] }
@@ -54,9 +54,9 @@ scip = { version = "0.9", optional = true }
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = ">=0.12,<0.19"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
-lintian-brush = { version = "0.181", optional = true }
-multiarch-hints = { version = "0.181", default-features = false, features = ["async"], optional = true }
-debian-workspace = { version = "0.181", optional = true }
+lintian-brush = { version = "0.185", optional = true }
+multiarch-hints = { version = "0.185", default-features = false, features = ["async"], optional = true }
+debian-workspace = { version = "0.185", optional = true }
 typos = { version = "0.10", optional = true }
 typos-dict = { version = "0.14", optional = true }
 unicase = { version = "2.9", optional = true }
