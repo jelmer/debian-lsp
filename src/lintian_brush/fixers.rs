@@ -70,6 +70,7 @@ fn drop_override_action_plan(m: &super::overrides::OverrideMatch) -> ActionPlan 
     ActionPlan {
         label: format!("Remove lintian override for {}", m.tag),
         opinionated: false,
+        certainty: None,
         actions: vec![Action::LintianOverrides(LintianOverridesAction::DropLine {
             file: m.file.clone(),
             selector: OverrideLineSelector {

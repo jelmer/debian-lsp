@@ -126,6 +126,20 @@ pub(super) fn deb822_action_to_text_edits(
         Deb822Action::DropFieldComments {
             paragraph, field, ..
         } => drop_field_comments_edits(control, paragraph, field, original_src),
+        Deb822Action::AddAlternative {
+            paragraph,
+            field,
+            package,
+            alternative,
+            ..
+        } => add_alternative_edits(
+            control,
+            paragraph,
+            field,
+            package,
+            alternative,
+            original_src,
+        ),
     }
 }
 
@@ -179,6 +193,7 @@ pub fn copyright_action_to_text_edits(
         | Deb822Action::EnsureRelation { .. }
         | Deb822Action::MoveRelation { .. }
         | Deb822Action::MakeAlternativePrimary { .. }
+        | Deb822Action::AddAlternative { .. }
         | Deb822Action::EnsureSubstvar { .. }
         | Deb822Action::DropSubstvar { .. } => return Vec::new(),
         Deb822Action::AppendParagraph { .. } | Deb822Action::ReorderParagraphs { .. } => {
@@ -1090,6 +1105,52 @@ fn make_alternative_primary_edits(
     })
 }
 
+/// `Deb822Action::AddAlternative`: append `alternative` as a trailing
+/// alternative to the first relation entry naming `package`, keeping the
+/// existing alternatives and their qualifiers in order. Mirrors the
+/// applier's `add_alternative_in_paragraph`. No-op when `package` isn't
+/// named in `field`, `alternative` doesn't parse, or the entry already
+/// lists one of the alternatives it would add.
+fn add_alternative_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    package: &str,
+    alternative: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    use debian_control::lossless::relations::Entry;
+    use std::str::FromStr;
+
+    relations_field_edits(control, selector, field, original_src, |relations| {
+        let Some((idx, entry)) = relations.iter_relations_for(package).next() else {
+            return false;
+        };
+        let Ok(added) = Entry::from_str(alternative) else {
+            return false;
+        };
+        let added_names: Vec<Option<String>> = added.relations().map(|r| r.try_name()).collect();
+
+        let mut texts: Vec<String> = Vec::new();
+        let mut names: Vec<Option<String>> = Vec::new();
+        for r in entry.relations() {
+            texts.push(r.to_string().trim().to_string());
+            names.push(r.try_name());
+        }
+
+        if added_names.iter().any(|n| n.is_some() && names.contains(n)) {
+            return false;
+        }
+
+        texts.push(added.to_string().trim().to_string());
+        let Ok(new_entry) = Entry::from_str(&texts.join(" | ")) else {
+            return false;
+        };
+        relations.replace(idx, new_entry);
+        true
+    })
+}
+
 /// `Deb822Action::DropFieldComments`: rewrite `field` to its comment-free
 /// value, dropping any `#`-prefixed lines the deb822 parser kept embedded
 /// in the value. Mirrors the applier's `drop_paragraph_field_comments`.
@@ -1372,5 +1433,71 @@ fn reorder_paragraphs_edits(
         Vec::new()
     } else {
         edits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::{LineIndex, Source};
+    use std::path::PathBuf;
+
+    fn apply(text: &str, action: &Deb822Action) -> String {
+        let control: Control = text.parse().unwrap();
+        let idx = LineIndex::new(text);
+        let edits = deb822_action_to_text_edits(action, &control, Source::new(text, &idx));
+        let Some(edit) = edits.first() else {
+            return text.to_string();
+        };
+        let range = Source::new(text, &idx)
+            .try_lsp_range_to_text_range(&edit.range)
+            .unwrap();
+        let (start, end): (usize, usize) = (range.start().into(), range.end().into());
+        format!("{}{}{}", &text[..start], edit.new_text, &text[end..])
+    }
+
+    fn add_alternative(field: &str, package: &str, alternative: &str) -> Deb822Action {
+        Deb822Action::AddAlternative {
+            file: PathBuf::from("debian/control"),
+            paragraph: ParagraphSelector::Binary {
+                package: "foo".into(),
+            },
+            field: field.into(),
+            package: package.into(),
+            alternative: alternative.into(),
+        }
+    }
+
+    const CONTROL: &str =
+        "Source: foo\n\nPackage: foo\nDepends: exim4 | mail-transport-agent, libc6\n";
+
+    #[test]
+    fn add_alternative_appends_to_matching_entry() {
+        let action = add_alternative("Depends", "libc6", "libc6-dev");
+        assert_eq!(
+            apply(CONTROL, &action),
+            "Source: foo\n\nPackage: foo\nDepends: exim4 | mail-transport-agent, libc6 | libc6-dev\n"
+        );
+    }
+
+    #[test]
+    fn add_alternative_keeps_existing_alternatives_in_order() {
+        let action = add_alternative("Depends", "exim4", "postfix");
+        assert_eq!(
+            apply(CONTROL, &action),
+            "Source: foo\n\nPackage: foo\nDepends: exim4 | mail-transport-agent | postfix, libc6\n"
+        );
+    }
+
+    #[test]
+    fn add_alternative_is_noop_for_unknown_package() {
+        let action = add_alternative("Depends", "nosuchpkg", "libc6-dev");
+        assert_eq!(apply(CONTROL, &action), CONTROL);
+    }
+
+    #[test]
+    fn add_alternative_is_noop_when_already_listed() {
+        let action = add_alternative("Depends", "exim4", "mail-transport-agent");
+        assert_eq!(apply(CONTROL, &action), CONTROL);
     }
 }

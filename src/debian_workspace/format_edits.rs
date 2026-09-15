@@ -260,6 +260,19 @@ pub fn watch_action_to_text_edits(
                 ParsedEntry::LineBased(_) => false,
             })
         }
+        // Only line-based files carry a `version=N` line, and only one
+        // that doesn't already declare it: the applier inserts the line
+        // rather than rewriting it, so this is an insertion at offset 0.
+        WatchAction::SetVersion { version, .. } => match &mut watch {
+            debian_watch::parse::ParsedWatchFile::LineBased(wf) if wf.version_node().is_none() => {
+                let start = rowan::TextSize::from(0);
+                Some((
+                    rowan::TextRange::new(start, start),
+                    format!("version={version}\n"),
+                ))
+            }
+            _ => None,
+        },
     };
 
     let Some((range, new_text)) = result else {
@@ -291,6 +304,8 @@ pub(super) fn watch_action_range(
         | WatchAction::SetEntryOption { url, .. }
         | WatchAction::SetEntryUrl { url, .. }
         | WatchAction::ConvertEntryToTemplate { url, .. } => url,
+        // Not entry-scoped; the caller falls back to a whole-document range.
+        WatchAction::SetVersion { .. } => return None,
     };
     let range = watch_entry_range_by_url(watch, url)?;
     Some(anchor_src.text_range_to_lsp_range(range))
@@ -517,7 +532,7 @@ pub(super) fn makefile_action_to_text_edits(
             new_recipe,
             ..
         } => {
-            let mf = makefile.clone();
+            let mf = makefile.snapshot();
             for mut rule in mf.rules_by_target(target) {
                 let recipes: Vec<String> = rule.recipes().collect();
                 if let Some(idx) = recipes.iter().position(|r| r == recipe) {
@@ -529,7 +544,7 @@ pub(super) fn makefile_action_to_text_edits(
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::RemoveRecipe { target, recipe, .. } => {
-            let mf = makefile.clone();
+            let mf = makefile.snapshot();
             for mut rule in mf.rules_by_target(target) {
                 let recipes: Vec<String> = rule.recipes().collect();
                 if let Some(idx) = recipes.iter().position(|r| r == recipe) {
@@ -541,28 +556,37 @@ pub(super) fn makefile_action_to_text_edits(
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::SetVariable { name, value, .. } => {
-            let mf = makefile.clone();
+            let mf = makefile.snapshot();
             if let Some(mut var) = mf.find_variable(name).next() {
                 var.set_value(value);
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::SetVariableOperator { name, operator, .. } => {
-            let mf = makefile.clone();
+            let mf = makefile.snapshot();
             if let Some(mut var) = mf.find_variable(name).next() {
                 var.set_assignment_operator(operator);
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::RemoveVariable { name, .. } => {
-            let mf = makefile.clone();
+            let mf = makefile.snapshot();
             if let Some(mut var) = mf.find_variable(name).next() {
                 var.remove();
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
+        MakefileAction::RenameVariable {
+            from_name, to_name, ..
+        } => {
+            let mf = makefile.snapshot();
+            if let Some(mut var) = mf.find_variable(from_name).next() {
+                var.set_name(to_name);
+            }
+            makefile_diff_edits(makefile, &mf, original_src)
+        }
         MakefileAction::RemoveRule { target, .. } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             let idx = mf
                 .rules()
                 .enumerate()
@@ -574,7 +598,7 @@ pub(super) fn makefile_action_to_text_edits(
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::RemovePhonyTarget { target, .. } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             let _ = mf.remove_phony_target(target);
             makefile_diff_edits(makefile, &mf, original_src)
         }
@@ -583,7 +607,7 @@ pub(super) fn makefile_action_to_text_edits(
             to_target,
             ..
         } => {
-            let mf = makefile.clone();
+            let mf = makefile.snapshot();
             for mut rule in mf.rules().collect::<Vec<_>>() {
                 let _ = rule.rename_target(from_target, to_target);
             }
@@ -594,24 +618,24 @@ pub(super) fn makefile_action_to_text_edits(
             prerequisites,
             ..
         } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             let prereqs: Vec<&str> = prerequisites.iter().map(String::as_str).collect();
             let mut rule = mf.add_rule(target);
             let _ = rule.set_prerequisites(prereqs);
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::AddPhonyTarget { target, .. } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             let _ = mf.add_phony_target(target);
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::AddInclude { path, .. } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             mf.add_include(path);
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::ReplaceVariableWithInclude { name, path, .. } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             let var_idx = mf
                 .variable_definitions()
                 .enumerate()
@@ -628,7 +652,7 @@ pub(super) fn makefile_action_to_text_edits(
             before_variable,
             ..
         } => {
-            let mut mf = makefile.clone();
+            let mut mf = makefile.snapshot();
             let var_idx = mf
                 .variable_definitions()
                 .enumerate()
@@ -677,6 +701,9 @@ pub(super) fn makefile_action_range(
         | MakefileAction::InsertIncludeBeforeVariable {
             before_variable: name,
             ..
+        }
+        | MakefileAction::RenameVariable {
+            from_name: name, ..
         } => {
             use rowan::ast::AstNode as _;
             let var = makefile.find_variable(name).next()?;
@@ -983,4 +1010,105 @@ pub fn substitute_edits(
         search_from = abs_end;
     }
     edits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::{LineIndex, Source};
+    use std::path::PathBuf;
+
+    fn apply(text: &str, edits: &[TextEdit]) -> String {
+        let Some(edit) = edits.first() else {
+            return text.to_string();
+        };
+        let idx = LineIndex::new(text);
+        let range = Source::new(text, &idx)
+            .try_lsp_range_to_text_range(&edit.range)
+            .unwrap();
+        let (start, end): (usize, usize) = (range.start().into(), range.end().into());
+        format!("{}{}{}", &text[..start], edit.new_text, &text[end..])
+    }
+
+    fn rename_variable(from_name: &str, to_name: &str) -> MakefileAction {
+        MakefileAction::RenameVariable {
+            file: PathBuf::from("debian/rules"),
+            from_name: from_name.into(),
+            to_name: to_name.into(),
+        }
+    }
+
+    fn apply_makefile(text: &str, action: &MakefileAction) -> String {
+        let makefile = makefile_lossless::Makefile::read_relaxed(text.as_bytes()).unwrap();
+        let idx = LineIndex::new(text);
+        let edits = makefile_action_to_text_edits(action, &makefile, Source::new(text, &idx));
+        apply(text, &edits)
+    }
+
+    const RULES: &str = "FOO = bar\nBAZ := qux\n";
+
+    #[test]
+    fn set_variable_rewrites_value() {
+        let action = MakefileAction::SetVariable {
+            file: PathBuf::from("debian/rules"),
+            name: "FOO".into(),
+            value: "changed".into(),
+        };
+        assert_eq!(
+            apply_makefile(RULES, &action),
+            "FOO = changed\nBAZ := qux\n"
+        );
+    }
+
+    #[test]
+    fn rename_variable_renames_definition() {
+        assert_eq!(
+            apply_makefile(RULES, &rename_variable("FOO", "RENAMED")),
+            "RENAMED = bar\nBAZ := qux\n"
+        );
+    }
+
+    #[test]
+    fn rename_variable_keeps_assignment_operator() {
+        assert_eq!(
+            apply_makefile(RULES, &rename_variable("BAZ", "QUUX")),
+            "FOO = bar\nQUUX := qux\n"
+        );
+    }
+
+    #[test]
+    fn rename_variable_is_noop_for_unknown_variable() {
+        assert_eq!(apply_makefile(RULES, &rename_variable("NOPE", "X")), RULES);
+    }
+
+    fn set_version(version: u32) -> WatchAction {
+        WatchAction::SetVersion {
+            file: PathBuf::from("debian/watch"),
+            version,
+        }
+    }
+
+    fn apply_watch(text: &str, action: &WatchAction) -> String {
+        let watch = debian_watch::parse::ParsedWatchFile::LineBased(
+            text.parse::<debian_watch::linebased::WatchFile>().unwrap(),
+        );
+        let idx = LineIndex::new(text);
+        let edits = watch_action_to_text_edits(action, watch, Source::new(text, &idx));
+        apply(text, &edits)
+    }
+
+    #[test]
+    fn set_version_inserts_missing_version_line() {
+        let text = "https://example.com/foo foo-(.*)\\.tar\\.gz\n";
+        assert_eq!(
+            apply_watch(text, &set_version(4)),
+            format!("version=4\n{text}")
+        );
+    }
+
+    #[test]
+    fn set_version_is_noop_when_version_already_declared() {
+        let text = "version=3\nhttps://example.com/foo foo-(.*)\\.tar\\.gz\n";
+        assert_eq!(apply_watch(text, &set_version(4)), text);
+    }
 }
