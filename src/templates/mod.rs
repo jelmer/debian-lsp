@@ -1,9 +1,10 @@
 //! Module for debian/templates debconf files.
 //!
 //! `debian/templates` (and `debian/<package>.templates`) hold the debconf
-//! question templates installed by dh_installdebconf. The format is deb822:
-//! one paragraph per template with a fixed set of known fields, plus
-//! localized `Description-<lang>` / `Choices-<lang>` variants.
+//! question templates installed by dh_installdebconf. The format is
+//! described in debconf-devel(7): deb822 with one paragraph per template,
+//! a fixed set of known fields, plus localized `Description-<lang>` /
+//! `Choices-<lang>` variants written by po-debconf.
 
 pub mod completion;
 pub mod detection;

@@ -1563,7 +1563,10 @@ impl LanguageServer for Backend {
             Some((FileType::Templates, source_file)) => {
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
-                templates::get_completions(&source_text, position)
+                let idx = workspace.get_line_index(source_file);
+                let src = Source::new(&source_text, &idx);
+                let parsed = workspace.get_parsed_deb822(source_file);
+                templates::get_completions(&parsed.tree(), src, position)
             }
             None => Vec::new(),
         };
@@ -2183,7 +2186,10 @@ impl LanguageServer for Backend {
             | FileType::Install
             | FileType::NotInstalled => debhelper::semantic::generate_semantic_tokens(src),
             FileType::Triggers => triggers::generate_semantic_tokens(src),
-            FileType::Templates => templates::generate_semantic_tokens(&source_text, src),
+            FileType::Templates => {
+                let parsed = workspace.get_parsed_deb822(file.source_file);
+                templates::generate_semantic_tokens(&parsed.tree(), src)
+            }
         };
 
         if tokens.is_empty() {
@@ -2770,7 +2776,10 @@ impl LanguageServer for Backend {
                 Ok(dep3::get_hover(&parsed.tree(), header_end, src, position))
             }
             FileType::DebcargoToml => Ok(debcargo::get_hover(&source_text, position)),
-            FileType::Templates => Ok(templates::get_hover(&source_text, position)),
+            FileType::Templates => {
+                let parsed = workspace.get_parsed_deb822(file.source_file);
+                Ok(templates::get_hover(&parsed.tree(), src, position))
+            }
             FileType::SourceOptions => Ok(source_options::get_hover(&source_text, position)),
             FileType::Conffiles => {
                 let workspace = self.workspace_clone().await;

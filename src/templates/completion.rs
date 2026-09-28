@@ -1,15 +1,16 @@
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use super::fields::{TEMPLATES_FIELDS, TEMPLATE_TYPES};
-use crate::position::{LineIndex, Source};
+use crate::position::Source;
 
-/// Get completion items for a debconf templates.
-pub fn get_completions(text: &str, position: Position) -> Vec<CompletionItem> {
-    let deb822 = deb822_lossless::Deb822::parse(text).tree();
-    let idx = LineIndex::new(text);
-    let src = Source::new(text, &idx);
+/// Get completion items for a debconf templates file.
+pub fn get_completions(
+    deb822: &deb822_lossless::Deb822,
+    src: Source<'_>,
+    position: Position,
+) -> Vec<CompletionItem> {
     crate::deb822::completion::get_completions(
-        &deb822,
+        deb822,
         src,
         position,
         TEMPLATES_FIELDS,
@@ -22,9 +23,10 @@ fn value_completions(field_name: &str, value_prefix: &str) -> Vec<CompletionItem
     if !field_name.eq_ignore_ascii_case("Type") {
         return Vec::new();
     }
+    let prefix_lower = value_prefix.to_ascii_lowercase();
     TEMPLATE_TYPES
         .iter()
-        .filter(|(label, _)| label.starts_with(value_prefix))
+        .filter(|(label, _)| label.starts_with(&prefix_lower))
         .map(|(label, doc)| CompletionItem {
             label: (*label).to_string(),
             kind: Some(CompletionItemKind::ENUM_MEMBER),
@@ -38,9 +40,12 @@ fn value_completions(field_name: &str, value_prefix: &str) -> Vec<CompletionItem
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::position::LineIndex;
 
     fn labels(text: &str, position: Position) -> Vec<String> {
-        get_completions(text, position)
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let idx = LineIndex::new(text);
+        get_completions(&deb822, Source::new(text, &idx), position)
             .into_iter()
             .map(|c| c.label)
             .collect()
@@ -65,6 +70,12 @@ mod tests {
     #[test]
     fn type_value_filtered_by_prefix() {
         let labels = labels("Type: se\n", Position::new(0, 8));
+        assert_eq!(labels, vec!["select".to_string()]);
+    }
+
+    #[test]
+    fn type_value_filter_case_insensitive() {
+        let labels = labels("Type: SE\n", Position::new(0, 8));
         assert_eq!(labels, vec!["select".to_string()]);
     }
 
