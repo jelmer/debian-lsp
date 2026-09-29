@@ -12,23 +12,30 @@ pub(crate) fn source_candidates(debian_dir: &Path, prefix: &str) -> Vec<Completi
     if let Some(root) = debian_dir.parent() {
         source_scan::record_tracked(root, prefix, &mut found);
     }
-    record_staged(debian_dir, prefix, &mut found);
+    record_dir(&debian_dir.join("tmp"), prefix, &mut found);
     source_scan::shape(found)
 }
 
 /// Staged build output under debian/tmp for a path token.
 pub(crate) fn staged_candidates(debian_dir: &Path, prefix: &str) -> Vec<CompletionItem> {
+    dir_candidates(&debian_dir.join("tmp"), prefix)
+}
+
+/// Entries under `base` that match `prefix`, one directory level at a time.
+/// Shared by the debian/tmp scanners and by callers that walk a specific
+/// package staging directory (e.g. debian/<package> for a links file).
+pub(crate) fn dir_candidates(base: &Path, prefix: &str) -> Vec<CompletionItem> {
     let mut found: BTreeMap<String, bool> = BTreeMap::new();
-    record_staged(debian_dir, prefix, &mut found);
+    record_dir(base, prefix, &mut found);
     source_scan::shape(found)
 }
 
-/// Record entries directly under debian/tmp/<dir> that match `prefix`.
+/// Record entries directly under `base/<dir-of-prefix>` that match `prefix`.
 // FIXME: debian/tmp is only a convention; a package can install to a
 // different directory (e.g. dh_auto_install --destdir).
-fn record_staged(debian_dir: &Path, prefix: &str, out: &mut BTreeMap<String, bool>) {
+fn record_dir(base: &Path, prefix: &str, out: &mut BTreeMap<String, bool>) {
     let dir = source_scan::dir_prefix(prefix);
-    if let Ok(entries) = std::fs::read_dir(debian_dir.join("tmp").join(dir)) {
+    if let Ok(entries) = std::fs::read_dir(base.join(dir)) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let candidate = format!("{dir}{}", name.to_string_lossy());
@@ -66,5 +73,13 @@ mod tests {
             labels(&staged_candidates(&debian, "usr/bin/")).contains(&"usr/bin/prog".to_string())
         );
         assert!(!labels(&staged_candidates(&debian, "")).contains(&"README".to_string()));
+    }
+
+    #[test]
+    fn dir_candidates_walks_the_given_base() {
+        let dir = git_tree(&["debian/mypkg/usr/bin/prog"], &[]);
+        let base = dir.path().join("debian").join("mypkg");
+        assert!(labels(&dir_candidates(&base, "")).contains(&"usr/".to_string()));
+        assert!(labels(&dir_candidates(&base, "usr/bin/")).contains(&"usr/bin/prog".to_string()));
     }
 }

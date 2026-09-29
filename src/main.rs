@@ -1577,8 +1577,8 @@ impl LanguageServer for Backend {
             Some((FileType::Links, source_file)) => {
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
-                let package_dir =
-                    Self::find_debian_dir(&uri).map(|d| debhelper::links::package_dir(&d, &uri));
+                let package_dir = Self::find_debian_dir(&uri)
+                    .and_then(|d| debhelper::links::package_dir(&d, &uri));
                 debhelper::links::get_completions(&source_text, position, package_dir.as_deref())
             }
             None => Vec::new(),
