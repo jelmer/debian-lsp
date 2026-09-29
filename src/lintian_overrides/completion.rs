@@ -22,7 +22,9 @@ pub fn get_completions(
     let col = (position.character as usize).min(current_line.len());
     let before_cursor = &current_line[..col];
 
-    let offset = TextSize::from(offset_at(src.text, position) as u32);
+    let Some(offset) = src.try_position_to_offset(position) else {
+        return Vec::new();
+    };
     let tree = parsed.tree();
 
     let Some(line) = tree.lines().find(|l| {
@@ -145,9 +147,10 @@ fn package_items(packages: &[String], prefix: &str) -> Vec<CompletionItem> {
 
 /// Build architecture items filtered by `prefix`.
 fn arch_items(architectures: &[String], prefix: &str) -> Vec<CompletionItem> {
+    let p = prefix.to_ascii_lowercase();
     architectures
         .iter()
-        .filter(|arch| arch.as_str().starts_with(prefix))
+        .filter(|arch| arch.to_ascii_lowercase().starts_with(&p))
         .map(|arch| CompletionItem {
             label: arch.clone(),
             kind: Some(CompletionItemKind::VALUE),
@@ -183,7 +186,9 @@ fn punct(label: &str, detail: &str) -> CompletionItem {
 }
 
 /// The partial word immediately before the cursor. Used only to filter
-/// candidates, never to derive structure.
+/// candidates, never to derive structure. Splits on whitespace only, so
+/// punctuation like `[` or `!` stays attached to the word; callers that
+/// need a bare architecture name should use [`pending_arch`].
 fn pending_word(before_cursor: &str) -> &str {
     before_cursor
         .rsplit(char::is_whitespace)
@@ -207,19 +212,6 @@ fn split_committed(before_cursor: &str) -> (&str, &str) {
         Some(i) => (trimmed[..i].trim_end(), trimmed[i..].trim_start()),
         None => ("", trimmed),
     }
-}
-
-/// Byte offset into `text` for an LSP position. Columns are treated as byte
-/// offsets (lintian-overrides content is ASCII).
-fn offset_at(text: &str, position: Position) -> usize {
-    let mut offset = 0;
-    for (row, line) in text.split_inclusive('\n').enumerate() {
-        if row as u32 == position.line {
-            return offset + (position.character as usize).min(line.len());
-        }
-        offset += line.len();
-    }
-    offset + position.character as usize
 }
 
 #[cfg(test)]
@@ -343,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn bracket_offered_after_package() {
+    fn bracket_offered_before_type() {
         let items = complete("foo binary: x", 4);
         let l = labels(&items);
         assert!(l.contains(&"["));

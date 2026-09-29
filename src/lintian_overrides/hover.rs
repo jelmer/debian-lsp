@@ -42,7 +42,7 @@ pub fn get_hover(
             let desc = match text {
                 "source" => "Applies to the source package.",
                 "binary" => "Applies to binary packages.",
-                "udeb" => "Applies to udeb (micro-deb) packages.",
+                "udeb" => "Applies to udeb (installer) packages.",
                 _ => return None,
             };
             format!("**{}**\n\nPackage type\n\n{}", text, desc)
@@ -58,6 +58,7 @@ pub fn get_hover(
         range: None,
     })
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
