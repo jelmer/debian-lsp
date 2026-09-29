@@ -7,6 +7,7 @@ pub mod docs;
 pub mod examples;
 pub mod info;
 pub mod install;
+pub mod links;
 pub mod manpages;
 pub mod not_installed;
 pub mod parser;
