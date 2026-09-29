@@ -1460,9 +1460,8 @@ impl LanguageServer for Backend {
             }
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
-                let workspace = self.workspace_clone().await;
-                let packages =
-                    Self::get_local_package_names(&uri, &files_snapshot, &mut workspace.clone());
+                let mut workspace = self.workspace_clone().await;
+                let packages = Self::get_local_package_names(&uri, &files_snapshot, &mut workspace);
                 let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -2756,7 +2755,7 @@ impl LanguageServer for Backend {
         let files_snapshot = files.clone();
         drop(files);
 
-        let workspace = self.workspace_clone().await;
+        let mut workspace = self.workspace_clone().await;
         let source_text = workspace.source_text(file.source_file);
         let idx = workspace.get_line_index(file.source_file);
         let src = Source::new(&source_text, &idx);
@@ -2788,27 +2787,28 @@ impl LanguageServer for Backend {
                 }
             }
             FileType::LintianOverrides => {
-                let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
-                let token = src.try_position_to_offset(position).and_then(|offset| {
-                    use ::lintian_overrides::{AstNode, SyntaxKind};
-                    // The cursor's package-name / arch / type / tag token, if any.
-                    let line = parsed.tree().line_at_offset(offset)?;
-                    line.syntax()
-                        .descendants_with_tokens()
-                        .filter_map(|it| it.into_token())
-                        .find(|tok| {
-                            matches!(
-                                tok.kind(),
-                                SyntaxKind::PACKAGE_NAME
-                                    | SyntaxKind::ARCH
-                                    | SyntaxKind::PACKAGE_TYPE
-                                    | SyntaxKind::TAG
-                            ) && tok.text_range().contains(offset)
-                        })
-                        .map(|tok| (tok.kind(), tok.text().to_string()))
-                });
-                let packages =
-                    Self::get_local_package_names(uri, &files_snapshot, &mut workspace.clone());
+                let token = {
+                    let parsed = workspace.get_parsed_lintian_overrides(file.source_file);
+                    src.try_position_to_offset(position).and_then(|offset| {
+                        use ::lintian_overrides::{AstNode, SyntaxKind};
+                        // The cursor's package-name / arch / type / tag token, if any.
+                        let line = parsed.tree().line_at_offset(offset)?;
+                        line.syntax()
+                            .descendants_with_tokens()
+                            .filter_map(|it| it.into_token())
+                            .find(|tok| {
+                                matches!(
+                                    tok.kind(),
+                                    SyntaxKind::PACKAGE_NAME
+                                        | SyntaxKind::ARCH
+                                        | SyntaxKind::PACKAGE_TYPE
+                                        | SyntaxKind::TAG
+                                ) && tok.text_range().contains(offset)
+                            })
+                            .map(|tok| (tok.kind(), tok.text().to_string()))
+                    })
+                };
+                let packages = Self::get_local_package_names(uri, &files_snapshot, &mut workspace);
                 drop(workspace);
 
                 let Some((kind, text)) = token else {
