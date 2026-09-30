@@ -30,11 +30,18 @@ pub fn get_completions(
 
     let tree = parsed.tree();
 
-    let Some(line) = tree.lines().find(|l| {
+    let line = tree.lines().find(|l| {
         let r = l.syntax().text_range();
         r.start() <= offset && offset <= r.end()
-    }) else {
-        return Vec::new();
+    });
+
+    let Some(line) = line else {
+        // Position is past every parsed line, typically because the user just
+        // pressed Enter and the cursor is on an unparsed blank line. Treat it
+        // like the empty-line case: offer packages and tags.
+        let mut out = package_items(packages, "");
+        out.extend(tag_items("", tags));
+        return out;
     };
 
     if line.is_comment() {
@@ -376,5 +383,40 @@ mod tests {
     fn after_colon_no_tag_offers_all_tags() {
         let items = complete("foo: ", 5);
         assert_eq!(labels(&items).len(), 3); // the full tag list
+    }
+
+    fn complete_multiline(
+        text: &str,
+        line: u32,
+        ch: u32,
+        packages: &[String],
+    ) -> Vec<CompletionItem> {
+        let idx = LineIndex::new(text);
+        let src = Source::new(text, &idx);
+        let parsed = LintianOverrides::parse(text);
+        get_completions(
+            &parsed,
+            src,
+            Position::new(line, ch),
+            &tags(),
+            packages,
+            &archs(),
+        )
+    }
+
+    #[test]
+    fn empty_file_offers_completions() {
+        let items = complete_with("", 0, &pkgs());
+        let l = labels(&items);
+        assert!(l.contains(&"libcurl4"));
+        assert!(l.contains(&"missing-systemd-service"));
+    }
+
+    #[test]
+    fn fresh_blank_line_after_override_offers_completions() {
+        let items = complete_multiline("foo: some-tag\n", 1, 0, &pkgs());
+        let l = labels(&items);
+        assert!(l.contains(&"libcurl4"));
+        assert!(l.contains(&"missing-systemd-service"));
     }
 }
