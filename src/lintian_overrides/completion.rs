@@ -18,13 +18,16 @@ pub fn get_completions(
     packages: &[String],
     architectures: &[String],
 ) -> Vec<CompletionItem> {
-    let current_line = src.text.lines().nth(position.line as usize).unwrap_or("");
-    let col = (position.character as usize).min(current_line.len());
-    let before_cursor = &current_line[..col];
-
     let Some(offset) = src.try_position_to_offset(position) else {
         return Vec::new();
     };
+    let raw_offset: usize = offset.into();
+    let line_start = src.text[..raw_offset]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let before_cursor = &src.text[line_start..raw_offset];
+
     let tree = parsed.tree();
 
     let Some(line) = tree.lines().find(|l| {
@@ -323,6 +326,14 @@ mod tests {
         assert!(l.contains(&"arm64"));
         assert!(l.contains(&"armhf"));
         assert!(!l.contains(&"amd64"));
+    }
+
+    #[test]
+    fn inside_brackets_filters_negated_arch() {
+        let items = complete("libcurl4 [!am]: hardening-no-pie", 13);
+        let l = labels(&items);
+        assert!(l.contains(&"amd64"));
+        assert!(!l.contains(&"arm64"));
     }
 
     #[test]
