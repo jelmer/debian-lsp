@@ -1334,7 +1334,6 @@ impl LanguageServer for Backend {
         let file_info = files
             .get(&uri)
             .map(|info| (info.file_type, info.source_file));
-        let files_snapshot = files.clone();
         drop(files); // Release the lock
 
         let completions = match file_info {
@@ -1471,7 +1470,10 @@ impl LanguageServer for Backend {
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
                 let mut workspace = self.workspace_clone().await;
-                let packages = Self::get_local_package_names(&uri, &files_snapshot, &mut workspace);
+                let packages = {
+                    let files = self.files.lock().await;
+                    Self::get_local_package_names(&uri, &files, &mut workspace)
+                };
                 let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -2770,7 +2772,6 @@ impl LanguageServer for Backend {
             Some(f) => *f,
             None => return Ok(None),
         };
-        let files_snapshot = files.clone();
         drop(files);
 
         let mut workspace = self.workspace_clone().await;
@@ -2826,7 +2827,10 @@ impl LanguageServer for Backend {
                             .map(|tok| (tok.kind(), tok.text().to_string()))
                     })
                 };
-                let packages = Self::get_local_package_names(uri, &files_snapshot, &mut workspace);
+                let packages = {
+                    let files = self.files.lock().await;
+                    Self::get_local_package_names(uri, &files, &mut workspace)
+                };
                 drop(workspace);
 
                 let Some((kind, text)) = token else {
