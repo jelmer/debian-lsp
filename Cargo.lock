@@ -992,7 +992,7 @@ checksum = "45bfeac719b1f3441c6f8c29652c60376e11eabbdbd99c53b3f14e0e8585d053"
 dependencies = [
  "pyo3",
  "regex",
- "rowan",
+ "rowan 0.16.1",
  "serde",
 ]
 
@@ -1063,7 +1063,7 @@ dependencies = [
  "debversion",
  "lazy-regex",
  "log",
- "rowan",
+ "rowan 0.16.1",
  "textwrap",
  "whoami 1.6.1",
 ]
@@ -1080,7 +1080,7 @@ dependencies = [
  "debversion",
  "pyo3",
  "regex",
- "rowan",
+ "rowan 0.16.1",
  "serde",
  "url",
 ]
@@ -1122,7 +1122,7 @@ dependencies = [
  "multiarch-hints",
  "openssl",
  "patchkit",
- "rowan",
+ "rowan 0.17.0",
  "salsa",
  "scip",
  "serde",
@@ -1159,7 +1159,7 @@ dependencies = [
  "m_lexer",
  "regex",
  "reqwest",
- "rowan",
+ "rowan 0.16.1",
  "scraper",
  "sequoia-openpgp",
  "url",
@@ -1286,7 +1286,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8cbd24ecd7f640176cfd5f18e990dc53413870e98ed2c638ef4f98c131628d7"
 dependencies = [
- "rowan",
+ "rowan 0.16.1",
 ]
 
 [[package]]
@@ -3095,7 +3095,7 @@ dependencies = [
  "quote",
  "regex",
  "reqwest",
- "rowan",
+ "rowan 0.16.1",
  "sequoia-openpgp",
  "serde",
  "serde_json",
@@ -3127,7 +3127,7 @@ checksum = "1f04c7e46f4b8d5639149a62a494b0668f3c65e20f7edba3449c3af00f821d8c"
 dependencies = [
  "lazy_static",
  "regex",
- "rowan",
+ "rowan 0.16.1",
 ]
 
 [[package]]
@@ -3229,7 +3229,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8544910ac6727155f2938ec28e59ca9f7f1e7d7a7697de99dced6837f62d9771"
 dependencies = [
  "log",
- "rowan",
+ "rowan 0.16.1",
 ]
 
 [[package]]
@@ -3319,6 +3319,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]
@@ -3702,7 +3711,7 @@ dependencies = [
  "once_cell",
  "proc-macro2",
  "regex",
- "rowan",
+ "rowan 0.16.1",
 ]
 
 [[package]]
@@ -4307,7 +4316,7 @@ dependencies = [
  "deb822-derive",
  "deb822-fast",
  "deb822-lossless",
- "rowan",
+ "rowan 0.16.1",
  "url",
 ]
 
@@ -4592,6 +4601,19 @@ checksum = "417a3a9f582e349834051b8a10c8d71ca88da4211e4093528e36b9845f6b5f21"
 dependencies = [
  "countme",
  "hashbrown 0.14.5",
+ "rustc-hash 1.1.0",
+ "text-size",
+]
+
+[[package]]
+name = "rowan"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14b574c58582fa59fa43a2feb6608b8744184659f08a2e0117e4b8224d95ed61"
+dependencies = [
+ "countme",
+ "hashbrown 0.14.5",
+ "memoffset",
  "rustc-hash 1.1.0",
  "text-size",
 ]
@@ -5602,7 +5624,7 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3645239b79b5f516e3f4799b9d915689f5477d2a7fbe222acd6ffe5a64b5916d"
 dependencies = [
- "rowan",
+ "rowan 0.16.1",
 ]
 
 [[package]]
@@ -6870,7 +6892,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79e531de3d80075e0a2dc8246ca46c9167211297f8b9d513130880c2ef98d0b8"
 dependencies = [
  "base64 0.22.1",
- "rowan",
+ "rowan 0.16.1",
 ]
 
 [[package]]
