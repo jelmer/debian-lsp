@@ -766,9 +766,9 @@ impl Backend {
         }
     }
 
-    /// Read package names (Source: and Package:) from the control file
-    /// for the debian directory containing the given URI.
-    /// Checks open files first, falls back to reading from disk.
+    /// Read package names (source and binaries) from the control file for the
+    /// debian directory containing the given URI. Checks open files first,
+    /// falls back to reading from disk.
     fn get_local_package_names(
         uri: &Uri,
         files: &HashMap<Uri, FileInfo>,
@@ -777,11 +777,15 @@ impl Backend {
         let Some((control_sf, _)) = Self::get_control_for_uri(uri, files, workspace) else {
             return Vec::new();
         };
-        // Lintian override specs name binary packages, so complete from the
-        // binary paragraphs via the high-level control API rather than the
-        // source name or an ad-hoc reparse.
         let parsed = workspace.get_parsed_control(control_sf);
-        parsed.tree().binaries().filter_map(|b| b.name()).collect()
+        let control = parsed.tree();
+        let mut names: Vec<String> = control
+            .source()
+            .and_then(|s| s.name())
+            .into_iter()
+            .collect();
+        names.extend(control.binaries().filter_map(|b| b.name()));
+        names
     }
 
     /// Get or load the control source file for the debian directory
