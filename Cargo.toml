@@ -30,7 +30,7 @@ debian-copyright = { version = "0.1.53", features = ["lossless"] }
 debian-watch = { version = "0.4.12", features = ["linebased", "deb822"] }
 dep3 = "0.2.3"
 distro-info = "0.4"
-rowan = "0.16.1"
+rowan = "0.17.0"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres"] }
 makefile-lossless = "0.3.38"
 deb822-fast = "0.2"
