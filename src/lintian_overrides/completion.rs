@@ -3,7 +3,7 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::position::Source;
 use lintian_overrides::{
-    AstNode, LintianOverrides, OverrideLine, PackageSpec, Parse, PACKAGE_TYPES,
+    AstNode, LintianOverrides, OverrideLine, PackageSpec, Parse, SyntaxKind, PACKAGE_TYPES,
 };
 
 /// Get completion items for a lintian-overrides file.
@@ -62,8 +62,8 @@ pub fn get_completions(
 
     match spec {
         Some(spec) if offset < spec.syntax().text_range().end() => {
-            // Inside the spec: architecture list or type slot.
-            spec_region_completions(&spec, offset, before_cursor, architectures)
+            // Inside the spec: package name, architecture list, or type slot.
+            spec_region_completions(&spec, offset, before_cursor, packages, architectures)
         }
         _ => {
             // At or past the colon: the lintian tag, then free-form context.
@@ -91,16 +91,22 @@ fn tag_region_completions(
     }
 }
 
-/// Completions inside a package spec: architecture names within the bracket
-/// list, or the opening `[` / type keywords elsewhere.
+/// Completions inside a package spec: package name when the cursor is on the
+/// name token, architecture names within the bracket list, or the opening `[`
+/// / type keywords elsewhere.
 fn spec_region_completions(
     spec: &PackageSpec,
     offset: TextSize,
     before_cursor: &str,
+    packages: &[String],
     architectures: &[String],
 ) -> Vec<CompletionItem> {
     if spec.arch_list_contains_offset(offset) {
         return arch_items(architectures, pending_arch(before_cursor));
+    }
+
+    if cursor_on_package_name(spec, offset) {
+        return package_items(packages, pending_word(before_cursor));
     }
 
     let pending = pending_word(before_cursor);
@@ -110,6 +116,19 @@ fn spec_region_completions(
     }
     out.extend(type_items(pending));
     out
+}
+
+/// Whether `offset` falls on (or at the end of) the PACKAGE_NAME token.
+fn cursor_on_package_name(spec: &PackageSpec, offset: TextSize) -> bool {
+    spec.syntax()
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .find(|t| t.kind() == SyntaxKind::PACKAGE_NAME)
+        .map(|t| {
+            let r = t.text_range();
+            r.start() <= offset && offset <= r.end()
+        })
+        .unwrap_or(false)
 }
 
 /// Whether `[` can be inserted at `offset` without reordering components
@@ -418,5 +437,24 @@ mod tests {
         let l = labels(&items);
         assert!(l.contains(&"libcurl4"));
         assert!(l.contains(&"missing-systemd-service"));
+    }
+
+    #[test]
+    fn editing_package_name_offers_packages() {
+        // Cursor at the start of a parsed spec: pending word is empty, all
+        // packages are offered.
+        let items = complete_with("libcurl4: some-tag", 0, &pkgs());
+        let l = labels(&items);
+        assert!(l.contains(&"libcurl4"));
+        assert!(l.contains(&"libfoo-dev"));
+    }
+
+    #[test]
+    fn editing_package_name_filters_by_prefix() {
+        // "libf" filters libcurl4 out.
+        let items = complete_with("libf: some-tag", 4, &pkgs());
+        let l = labels(&items);
+        assert!(l.contains(&"libfoo-dev"));
+        assert!(!l.contains(&"libcurl4"));
     }
 }
