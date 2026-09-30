@@ -766,9 +766,9 @@ impl Backend {
         }
     }
 
-    /// Read package names (Source: and Package:) from the control file
-    /// for the debian directory containing the given URI.
-    /// Checks open files first, falls back to reading from disk.
+    /// Read package names (source and binaries) from the control file for the
+    /// debian directory containing the given URI. Checks open files first,
+    /// falls back to reading from disk.
     fn get_local_package_names(
         uri: &Uri,
         files: &HashMap<Uri, FileInfo>,
@@ -777,11 +777,15 @@ impl Backend {
         let Some((control_sf, _)) = Self::get_control_for_uri(uri, files, workspace) else {
             return Vec::new();
         };
-        // Lintian override specs name binary packages, so complete from the
-        // binary paragraphs via the high-level control API rather than the
-        // source name or an ad-hoc reparse.
         let parsed = workspace.get_parsed_control(control_sf);
-        parsed.tree().binaries().filter_map(|b| b.name()).collect()
+        let control = parsed.tree();
+        let mut names: Vec<String> = control
+            .source()
+            .and_then(|s| s.name())
+            .into_iter()
+            .collect();
+        names.extend(control.binaries().filter_map(|b| b.name()));
+        names
     }
 
     /// Get or load the control source file for the debian directory
@@ -1330,7 +1334,6 @@ impl LanguageServer for Backend {
         let file_info = files
             .get(&uri)
             .map(|info| (info.file_type, info.source_file));
-        let files_snapshot = files.clone();
         drop(files); // Release the lock
 
         let completions = match file_info {
@@ -1467,7 +1470,10 @@ impl LanguageServer for Backend {
             Some((FileType::SourceFormat, _)) => source_format::get_completions(&uri, position),
             Some((FileType::LintianOverrides, source_file)) => {
                 let mut workspace = self.workspace_clone().await;
-                let packages = Self::get_local_package_names(&uri, &files_snapshot, &mut workspace);
+                let packages = {
+                    let files = self.files.lock().await;
+                    Self::get_local_package_names(&uri, &files, &mut workspace)
+                };
                 let parsed = workspace.get_parsed_lintian_overrides(source_file);
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -2766,7 +2772,6 @@ impl LanguageServer for Backend {
             Some(f) => *f,
             None => return Ok(None),
         };
-        let files_snapshot = files.clone();
         drop(files);
 
         let mut workspace = self.workspace_clone().await;
@@ -2822,7 +2827,10 @@ impl LanguageServer for Backend {
                             .map(|tok| (tok.kind(), tok.text().to_string()))
                     })
                 };
-                let packages = Self::get_local_package_names(uri, &files_snapshot, &mut workspace);
+                let packages = {
+                    let files = self.files.lock().await;
+                    Self::get_local_package_names(uri, &files, &mut workspace)
+                };
                 drop(workspace);
 
                 let Some((kind, text)) = token else {
