@@ -1,5 +1,5 @@
 use crate::debhelper::parser::parse_line;
-use crate::position::Source;
+use crate::position::utf16_len;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
 /// How a file's lines map to the entries it declares.
@@ -24,15 +24,18 @@ pub enum DiagnosticIssue {
 }
 
 /// Find entries that repeat an earlier one.
+///
+/// `normalize` is applied to both the source and destination halves of an
+/// entry when computing the collision key.
 pub fn find_duplicate_entries(
-    src: Source<'_>,
+    text: &str,
     shape: LineShape,
     normalize: impl Fn(&str) -> String,
 ) -> Vec<DiagnosticIssue> {
     let mut issues = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for (line_num, line) in src.text.lines().enumerate() {
+    for (line_num, line) in text.lines().enumerate() {
         // Take the words straight from the parser so the notion of a comment,
         // a blank line, and where the tokens are lives in one place.
         let parsed = parse_line(line);
@@ -53,7 +56,7 @@ pub fn find_duplicate_entries(
                         Some(destination) => format!("{path} {destination}"),
                         None => path.to_string(),
                     },
-                    range: line_range(src, line_num),
+                    range: line_range(line, line_num),
                 });
             }
         }
@@ -63,21 +66,25 @@ pub fn find_duplicate_entries(
 }
 
 /// The entries a line declares.
-fn entries<'a>(words: &[&'a str], shape: LineShape) -> Vec<(&'a str, Option<&'a str>)> {
-    match shape {
-        LineShape::WordsWithDestination if words.len() > 1 => {
-            let (destination, sources) = words.split_last().unwrap();
-            sources.iter().map(|&s| (s, Some(*destination))).collect()
-        }
-        _ => words.iter().map(|&word| (word, None)).collect(),
-    }
+fn entries<'a>(
+    words: &'a [&'a str],
+    shape: LineShape,
+) -> impl Iterator<Item = (&'a str, Option<&'a str>)> + 'a {
+    let split = match shape {
+        LineShape::WordsWithDestination => words.split_last().filter(|(_, s)| !s.is_empty()),
+        LineShape::Words => None,
+    };
+    let (sources, destination) = match split {
+        Some((dest, sources)) => (sources, Some(*dest)),
+        None => (words, None),
+    };
+    sources.iter().map(move |&s| (s, destination))
 }
 
 /// Build the LSP range spanning an entire line.
-fn line_range(src: Source<'_>, line_num: usize) -> Range {
-    let line = src.text.lines().nth(line_num).unwrap_or("");
+fn line_range(line: &str, line_num: usize) -> Range {
     let start = Position::new(line_num as u32, 0);
-    let end = Position::new(line_num as u32, crate::position::utf16_len(line));
+    let end = Position::new(line_num as u32, utf16_len(line));
     Range::new(start, end)
 }
 
@@ -97,11 +104,11 @@ pub fn issue_to_diagnostic(issue: DiagnosticIssue) -> Diagnostic {
 
 /// All LSP diagnostics for a line-oriented debhelper file, keyed by `normalize`.
 pub fn get_diagnostics(
-    src: Source<'_>,
+    text: &str,
     shape: LineShape,
     normalize: impl Fn(&str) -> String,
 ) -> Vec<Diagnostic> {
-    find_duplicate_entries(src, shape, normalize)
+    find_duplicate_entries(text, shape, normalize)
         .into_iter()
         .map(issue_to_diagnostic)
         .collect()
@@ -110,12 +117,9 @@ pub fn get_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::position::LineIndex;
 
     fn issues_with(text: &str, shape: LineShape) -> Vec<DiagnosticIssue> {
-        let idx = LineIndex::new(text);
-        let src = Source::new(text, &idx);
-        find_duplicate_entries(src, shape, |e| e.to_string())
+        find_duplicate_entries(text, shape, |e| e.to_string())
     }
 
     fn issues(text: &str) -> Vec<DiagnosticIssue> {
@@ -184,10 +188,7 @@ mod tests {
 
     #[test]
     fn normalize_key_controls_what_collides() {
-        let text = "Foo\nfoo\n";
-        let idx = LineIndex::new(text);
-        let src = Source::new(text, &idx);
-        let diags = find_duplicate_entries(src, LineShape::Words, |e| e.to_lowercase());
+        let diags = find_duplicate_entries("Foo\nfoo\n", LineShape::Words, |e| e.to_lowercase());
         assert_eq!(diags.len(), 1);
     }
 }
