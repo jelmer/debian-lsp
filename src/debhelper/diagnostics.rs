@@ -1,4 +1,4 @@
-use crate::debhelper::parser::parse_line;
+use crate::debhelper::parser::ParsedLine;
 use crate::position::utf16_len;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
@@ -25,24 +25,25 @@ pub enum DiagnosticIssue {
 
 /// Find entries that repeat an earlier one.
 ///
-/// `normalize` is applied to both the source and destination halves of an
-/// entry when computing the collision key.
+/// `text` must be the buffer the parse was taken from. `normalize` is applied
+/// to both the source and destination halves of an entry when computing the
+/// collision key.
 pub fn find_duplicate_entries(
     text: &str,
+    parsed: &[ParsedLine],
     shape: LineShape,
     normalize: impl Fn(&str) -> String,
 ) -> Vec<DiagnosticIssue> {
     let mut issues = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for (line_num, line) in text.lines().enumerate() {
-        // Take the words straight from the parser so the notion of a comment,
-        // a blank line, and where the tokens are lives in one place.
-        let parsed = parse_line(line);
-        if parsed.comment.is_some() || parsed.words.is_empty() {
+    for (line_num, parsed_line) in parsed.iter().enumerate() {
+        if parsed_line.line.comment.is_some() || parsed_line.line.words.is_empty() {
             continue;
         }
-        let words: Vec<&str> = parsed
+        let line = &text[parsed_line.range.clone()];
+        let words: Vec<&str> = parsed_line
+            .line
             .words
             .iter()
             .map(|word| &line[word.range.clone()])
@@ -105,10 +106,11 @@ pub fn issue_to_diagnostic(issue: DiagnosticIssue) -> Diagnostic {
 /// All LSP diagnostics for a line-oriented debhelper file, keyed by `normalize`.
 pub fn get_diagnostics(
     text: &str,
+    parsed: &[ParsedLine],
     shape: LineShape,
     normalize: impl Fn(&str) -> String,
 ) -> Vec<Diagnostic> {
-    find_duplicate_entries(text, shape, normalize)
+    find_duplicate_entries(text, parsed, shape, normalize)
         .into_iter()
         .map(issue_to_diagnostic)
         .collect()
@@ -117,9 +119,11 @@ pub fn get_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debhelper::parser::parse_buffer;
 
     fn issues_with(text: &str, shape: LineShape) -> Vec<DiagnosticIssue> {
-        find_duplicate_entries(text, shape, |e| e.to_string())
+        let parsed = parse_buffer(text);
+        find_duplicate_entries(text, &parsed, shape, |e| e.to_string())
     }
 
     fn issues(text: &str) -> Vec<DiagnosticIssue> {
@@ -188,7 +192,9 @@ mod tests {
 
     #[test]
     fn normalize_key_controls_what_collides() {
-        let diags = find_duplicate_entries("Foo\nfoo\n", LineShape::Words, |e| e.to_lowercase());
+        let text = "Foo\nfoo\n";
+        let parsed = parse_buffer(text);
+        let diags = find_duplicate_entries(text, &parsed, LineShape::Words, |e| e.to_lowercase());
         assert_eq!(diags.len(), 1);
     }
 }
