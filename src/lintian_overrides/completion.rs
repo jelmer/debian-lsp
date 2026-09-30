@@ -3,7 +3,8 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::position::Source;
 use lintian_overrides::{
-    AstNode, LintianOverrides, OverrideLine, PackageSpec, Parse, SyntaxKind, PACKAGE_TYPES,
+    AstNode, LintianOverrides, OverrideLine, PackageSpec, Parse, SpecSlot, SyntaxToken,
+    PACKAGE_TYPES,
 };
 
 /// Get completion items for a lintian-overrides file.
@@ -21,12 +22,6 @@ pub fn get_completions(
     let Some(offset) = src.try_position_to_offset(position) else {
         return Vec::new();
     };
-    let raw_offset: usize = offset.into();
-    let line_start = src.text[..raw_offset]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let before_cursor = &src.text[line_start..raw_offset];
 
     let tree = parsed.tree();
 
@@ -48,26 +43,35 @@ pub fn get_completions(
         return Vec::new();
     }
 
-    let spec = line.package_spec();
-
-    if spec.is_none() {
-        let (committed, pending) = split_committed(before_cursor);
-        if committed.is_empty() {
-            let mut out = package_items(packages, pending);
-            out.extend(tag_items(pending, tags));
-            return out;
-        }
-        return Vec::new();
-    }
-
-    match spec {
+    match line.package_spec() {
+        None => no_spec_completions(&line, offset, packages, tags),
         Some(spec) if offset < spec.syntax().text_range().end() => {
-            // Inside the spec: package name, architecture list, or type slot.
-            spec_region_completions(&spec, offset, before_cursor, packages, architectures)
+            spec_region_completions(&spec, offset, packages, architectures)
         }
-        _ => {
-            // At or past the colon: the lintian tag, then free-form context.
-            tag_region_completions(&line, offset, before_cursor, tags)
+        Some(_) => tag_region_completions(&line, offset, tags),
+    }
+}
+
+/// A line with no `PACKAGE_SPEC` node: either empty (offer packages and tags)
+/// or a bare tag being typed as the first token.
+fn no_spec_completions(
+    line: &OverrideLine,
+    offset: TextSize,
+    packages: &[String],
+    tags: &[(String, String)],
+) -> Vec<CompletionItem> {
+    match line.tag() {
+        Some(tag) if offset <= tag.text_range().end() => {
+            let prefix = token_prefix(&tag, offset);
+            let mut out = package_items(packages, prefix);
+            out.extend(tag_items(prefix, tags));
+            out
+        }
+        Some(_) => Vec::new(),
+        None => {
+            let mut out = package_items(packages, "");
+            out.extend(tag_items("", tags));
+            out
         }
     }
 }
@@ -76,59 +80,68 @@ pub fn get_completions(
 fn tag_region_completions(
     line: &OverrideLine,
     offset: TextSize,
-    before_cursor: &str,
     tags: &[(String, String)],
 ) -> Vec<CompletionItem> {
     match line.tag() {
-        // Cursor is on (or right at the end of) the tag word -> filter tags.
         Some(tag) if offset <= tag.text_range().end() => {
-            tag_items(pending_word(before_cursor), tags)
+            tag_items(token_prefix(&tag, offset), tags)
         }
         // Cursor is past the tag, in the context -> nothing to suggest.
         Some(_) => Vec::new(),
         // Colon but no tag yet -> offer the full tag list.
-        None => tag_items(pending_word(before_cursor), tags),
+        None => tag_items("", tags),
     }
 }
 
-/// Completions inside a package spec: package name when the cursor is on the
-/// name token, architecture names within the bracket list, or the opening `[`
-/// / type keywords elsewhere.
+/// Completions inside a package spec: routes on which named slot the cursor
+/// sits on, per [`PackageSpec::slot_at_offset`].
 fn spec_region_completions(
     spec: &PackageSpec,
     offset: TextSize,
-    before_cursor: &str,
     packages: &[String],
     architectures: &[String],
 ) -> Vec<CompletionItem> {
+    // The arch-list region covers empty brackets ("[]") too, where no ARCH
+    // token exists; check it first so the user still gets arch completions.
     if spec.arch_list_contains_offset(offset) {
-        return arch_items(architectures, pending_arch(before_cursor));
+        let prefix = match spec.slot_at_offset(offset) {
+            SpecSlot::Arch { text, range } => slot_prefix(&text, range.start(), offset)
+                .trim_start_matches('!')
+                .to_string(),
+            _ => String::new(),
+        };
+        return arch_items(architectures, &prefix);
     }
 
-    if cursor_on_package_name(spec, offset) {
-        return package_items(packages, pending_word(before_cursor));
+    match spec.slot_at_offset(offset) {
+        SpecSlot::PackageName { text, range } => {
+            package_items(packages, slot_prefix(&text, range.start(), offset))
+        }
+        // The cursor at the start of a type keyword is ambiguous: it could be
+        // "on the type" or "in the gap before it". Treat an empty prefix as
+        // the latter so `[` is still offered.
+        SpecSlot::PackageType { text, range } => {
+            let prefix = slot_prefix(&text, range.start(), offset).to_string();
+            if prefix.is_empty() {
+                blank_slot_completions(spec, offset)
+            } else {
+                type_items(&prefix)
+            }
+        }
+        SpecSlot::Arch { .. } => Vec::new(),
+        SpecSlot::Blank => blank_slot_completions(spec, offset),
     }
-
-    let pending = pending_word(before_cursor);
-    let mut out = Vec::new();
-    if pending.is_empty() && bracket_allowed(spec, offset) {
-        out.push(punct("[", "Architecture restriction list"));
-    }
-    out.extend(type_items(pending));
-    out
 }
 
-/// Whether `offset` falls on (or at the end of) the PACKAGE_NAME token.
-fn cursor_on_package_name(spec: &PackageSpec, offset: TextSize) -> bool {
-    spec.syntax()
-        .children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .find(|t| t.kind() == SyntaxKind::PACKAGE_NAME)
-        .map(|t| {
-            let r = t.text_range();
-            r.start() <= offset && offset <= r.end()
-        })
-        .unwrap_or(false)
+/// Completions when the cursor is not on any named spec token: the opening
+/// `[` (when position allows) plus the full type-keyword list.
+fn blank_slot_completions(spec: &PackageSpec, offset: TextSize) -> Vec<CompletionItem> {
+    let mut out = Vec::new();
+    if bracket_allowed(spec, offset) {
+        out.push(punct("[", "Architecture restriction list"));
+    }
+    out.extend(type_items(""));
+    out
 }
 
 /// Whether `[` can be inserted at `offset` without reordering components
@@ -142,6 +155,18 @@ fn bracket_allowed(spec: &PackageSpec, offset: TextSize) -> bool {
         Some(r) => offset <= r.start(),
         None => true,
     }
+}
+
+/// The token text from `start` up to `offset`, used as the completion filter
+/// prefix. `start` must be the token's start offset (from the AST).
+fn slot_prefix(text: &str, start: TextSize, offset: TextSize) -> &str {
+    let end = usize::from(offset.min(start + TextSize::of(text)) - start);
+    &text[..end]
+}
+
+/// Like [`slot_prefix`] but for a `SyntaxToken` in-hand.
+fn token_prefix(token: &SyntaxToken, offset: TextSize) -> &str {
+    slot_prefix(token.text(), token.text_range().start(), offset)
 }
 
 /// Build tag items filtered by `prefix`.
@@ -211,35 +236,6 @@ fn punct(label: &str, detail: &str) -> CompletionItem {
         detail: Some(detail.to_string()),
         insert_text: Some(label.to_string()),
         ..Default::default()
-    }
-}
-
-/// The partial word immediately before the cursor. Used only to filter
-/// candidates, never to derive structure. Splits on whitespace only, so
-/// punctuation like `[` or `!` stays attached to the word; callers that
-/// need a bare architecture name should use [`pending_arch`].
-fn pending_word(before_cursor: &str) -> &str {
-    before_cursor
-        .rsplit(char::is_whitespace)
-        .next()
-        .unwrap_or("")
-}
-
-/// Like [`pending_word`] but strips the leading `[` / `!` that precede an
-/// architecture inside a bracket list.
-fn pending_arch(before_cursor: &str) -> &str {
-    pending_word(before_cursor)
-        .trim_start_matches('[')
-        .trim_start_matches('!')
-}
-
-/// Split `before_cursor` into the already-committed text and the word currently
-/// being typed.
-fn split_committed(before_cursor: &str) -> (&str, &str) {
-    let trimmed = before_cursor.trim_start();
-    match trimmed.rfind(char::is_whitespace) {
-        Some(i) => (trimmed[..i].trim_end(), trimmed[i..].trim_start()),
-        None => ("", trimmed),
     }
 }
 
