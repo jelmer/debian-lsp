@@ -135,6 +135,18 @@ pub fn line_index(db: &dyn salsa::Database, file: SourceFile) -> Arc<crate::posi
     Arc::new(crate::position::LineIndex::new(&text))
 }
 
+/// Salsa-tracked line-by-line parse of a debhelper file. Shared by
+/// diagnostics and semantic tokens so a single buffer is only walked
+/// once per edit.
+#[salsa::tracked(returns(clone))]
+pub fn parse_debhelper(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> Arc<[crate::debhelper::parser::ParsedLine]> {
+    let text = file.text(db);
+    Arc::from(crate::debhelper::parser::parse_buffer(&text))
+}
+
 // The actual database implementation
 #[salsa::db]
 #[derive(Clone, Default)]
@@ -374,6 +386,15 @@ impl Workspace {
     /// offsets to LSP positions and back.
     pub fn get_line_index(&self, file: SourceFile) -> Arc<crate::position::LineIndex> {
         line_index(self, file)
+    }
+
+    /// Salsa-cached line-by-line parse of a debhelper file. See
+    /// [`parse_debhelper`].
+    pub fn get_parsed_debhelper(
+        &self,
+        file: SourceFile,
+    ) -> Arc<[crate::debhelper::parser::ParsedLine]> {
+        parse_debhelper(self, file)
     }
 
     /// Find UNRELEASED entries in the given range that can be marked for upload

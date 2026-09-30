@@ -1,18 +1,20 @@
 use tower_lsp_server::ls_types::SemanticToken;
 
 use crate::deb822::semantic::{SemanticTokensBuilder, TokenType};
-use crate::debhelper::parser::{parse_line, Part};
-use crate::position::{utf16_len, Source};
+use crate::debhelper::parser::{ParsedLine, Part};
+use crate::position::utf16_len;
 
 /// Semantic tokens for a line-oriented debhelper file.
-pub fn generate_semantic_tokens(src: Source<'_>) -> Vec<SemanticToken> {
+///
+/// `text` must be the buffer `parsed` was taken from.
+pub fn generate_semantic_tokens(text: &str, parsed: &[ParsedLine]) -> Vec<SemanticToken> {
     let mut builder = SemanticTokensBuilder::new();
 
-    for (line_num, line) in src.text.lines().enumerate() {
+    for (line_num, parsed_line) in parsed.iter().enumerate() {
         let line_num = line_num as u32;
-        let parsed = parse_line(line);
+        let line = &text[parsed_line.range.clone()];
 
-        if let Some(comment) = parsed.comment {
+        if let Some(comment) = &parsed_line.line.comment {
             push(
                 &mut builder,
                 line,
@@ -24,7 +26,7 @@ pub fn generate_semantic_tokens(src: Source<'_>) -> Vec<SemanticToken> {
             continue;
         }
 
-        for word in &parsed.words {
+        for word in &parsed_line.line.words {
             for part in &word.parts {
                 let (range, token_type) = match part {
                     Part::Literal(range) => (range, TokenType::Value),
@@ -62,11 +64,11 @@ fn push(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::position::LineIndex;
+    use crate::debhelper::parser::parse_buffer;
 
     fn tokens(text: &str) -> Vec<SemanticToken> {
-        let idx = LineIndex::new(text);
-        generate_semantic_tokens(Source::new(text, &idx))
+        let parsed = parse_buffer(text);
+        generate_semantic_tokens(text, &parsed)
     }
 
     #[test]

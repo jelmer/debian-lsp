@@ -6,12 +6,47 @@
 //! one place lets completion, semantic tokens, and diagnostics agree on token
 //! boundaries instead of each helper re-slicing the raw string.
 //!
-//! All ranges are byte offsets into the line that was parsed.
+//! All ranges inside a [`Line`] are byte offsets into the line that was parsed.
+//! [`ParsedLine`] adds the line's byte range within the whole buffer so a
+//! salsa-cached parse can be shared across callers without re-slicing.
 
 use std::ops::Range;
 
+/// One line of a parsed debhelper buffer.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ParsedLine {
+    /// Byte range of this line within the whole buffer, excluding the newline.
+    pub range: Range<usize>,
+    /// The parsed line. Byte ranges inside are relative to the line, not the
+    /// buffer — combine with `range.start` to get absolute offsets.
+    pub line: Line,
+}
+
+/// Parse every line of a debhelper buffer.
+///
+/// Iterating the buffer and calling [`parse_line`] once per line lets
+/// diagnostics, semantic tokens, and completion share a single parse via the
+/// salsa cache in [`crate::workspace`].
+pub fn parse_buffer(text: &str) -> Vec<ParsedLine> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let stripped = line
+            .strip_suffix('\n')
+            .map(|s| s.strip_suffix('\r').unwrap_or(s))
+            .unwrap_or(line);
+        let end = offset + stripped.len();
+        out.push(ParsedLine {
+            range: offset..end,
+            line: parse_line(stripped),
+        });
+        offset += line.len();
+    }
+    out
+}
+
 /// A debhelper config line broken into its lexical pieces.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Line {
     /// Range of the comment, including the leading `#`, when the whole line is
     /// a comment. `None` for a path line.
@@ -21,7 +56,7 @@ pub struct Line {
 }
 
 /// A single whitespace-separated path token.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Word {
     /// Range of the whole token within the line.
     pub range: Range<usize>,
@@ -30,14 +65,14 @@ pub struct Word {
 }
 
 /// A piece of a token: plain text or a `${...}` substitution.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Part {
     Literal(Range<usize>),
     Substitution(Substitution),
 }
 
 /// A `${...}` substitution variable inside a token.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Substitution {
     /// Range of the whole substitution, including `${` and the closing `}`.
     pub range: Range<usize>,
@@ -500,5 +535,37 @@ mod tests {
     #[test]
     fn wrap_and_sort_of_nothing_is_empty() {
         assert_eq!(wrap_and_sort("\n\n"), "");
+    }
+
+    #[test]
+    fn parse_buffer_records_absolute_line_ranges() {
+        let parsed = parse_buffer("usr/bin\nusr/lib\n");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].range, 0..7);
+        assert_eq!(parsed[1].range, 8..15);
+    }
+
+    #[test]
+    fn parse_buffer_handles_missing_trailing_newline() {
+        let parsed = parse_buffer("usr/bin");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].range, 0..7);
+    }
+
+    #[test]
+    fn parse_buffer_strips_crlf() {
+        let parsed = parse_buffer("usr/bin\r\nusr/lib\r\n");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].range, 0..7);
+        assert_eq!(parsed[1].range, 9..16);
+    }
+
+    #[test]
+    fn parse_buffer_keeps_blank_and_comment_lines() {
+        let parsed = parse_buffer("\n# note\nusr/bin\n");
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed[0].line.comment.is_none() && parsed[0].line.words.is_empty());
+        assert!(parsed[1].line.comment.is_some());
+        assert_eq!(parsed[2].line.words.len(), 1);
     }
 }

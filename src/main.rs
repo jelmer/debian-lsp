@@ -2234,7 +2234,10 @@ impl LanguageServer for Backend {
             | FileType::Manpages
             | FileType::Install
             | FileType::NotInstalled
-            | FileType::Links => debhelper::semantic::generate_semantic_tokens(src),
+            | FileType::Links => {
+                let parsed = workspace.get_parsed_debhelper(file.source_file);
+                debhelper::semantic::generate_semantic_tokens(&source_text, &parsed)
+            }
             FileType::Triggers => triggers::generate_semantic_tokens(src),
             FileType::Templates => {
                 let parsed = workspace.get_parsed_deb822(file.source_file);
