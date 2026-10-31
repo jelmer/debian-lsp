@@ -276,7 +276,8 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
             return Ok(self.workspace.get_parsed_rules(sf).tree());
         }
         let bytes = self.read_file(rel)?.ok_or(FixerError::NotFound)?;
-        Makefile::read_relaxed(&bytes[..])
+        Makefile::from_reader_relaxed(&bytes[..])
+            .map(|(mf, _)| mf)
             .map_err(|e| FixerError::Other(format!("Failed to parse {}: {}", rel.display(), e)))
     }
 
@@ -311,6 +312,14 @@ impl<'a> FixerWorkspace for LspDebianWorkspace<'a> {
         match std::fs::metadata(&abs) {
             Ok(m) => Ok(Some(m.permissions().mode())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(FixerError::Io(e)),
+        }
+    }
+
+    fn is_dir(&self, rel: &Path) -> Result<bool, FixerError> {
+        match std::fs::metadata(self.base_path.join(rel)) {
+            Ok(m) => Ok(m.is_dir()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(FixerError::Io(e)),
         }
     }
