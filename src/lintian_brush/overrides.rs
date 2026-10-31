@@ -51,10 +51,11 @@ pub enum OverrideStatus {
 /// open buffers as well as on-disk override files.
 pub fn override_status(ws: &LspDebianWorkspace<'_>, issue: &LintianIssue) -> OverrideStatus {
     use ::lintian_brush::lintian_overrides::OverrideLineMatch as _;
-    use lintian_overrides::find_override_files;
+    use lintian_overrides::try_find_override_files;
 
     let base_path = ws.base_path();
-    for path in find_override_files(base_path) {
+    let files = try_find_override_files(base_path).unwrap_or_default();
+    for path in files {
         let Ok(rel) = path.strip_prefix(base_path) else {
             continue;
         };

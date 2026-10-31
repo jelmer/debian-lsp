@@ -46,13 +46,6 @@ fn offset_in_node_exclusive(node: &impl AstNode<Language = yaml_edit::Lang>, off
     offset >= start && offset < end
 }
 
-/// Find the top-level mapping entry whose range contains the cursor offset.
-fn find_entry_at_offset(mapping: &Mapping, offset: u32) -> Option<yaml_edit::MappingEntry> {
-    mapping
-        .entries()
-        .find(|entry| offset_in_node_exclusive(entry, offset))
-}
-
 /// Compute the column (0-indexed) at which sub-field keys start in a mapping.
 fn subfield_indent(mapping: &Mapping, src: Source<'_>) -> Option<u32> {
     mapping
@@ -122,22 +115,7 @@ fn determine_context(doc: &Document, src: Source<'_>, offset: u32) -> CursorCont
         None => return CursorContext::TopLevelKey,
     };
 
-    // Check if cursor falls within an existing top-level entry (exclusive end).
-    // If not found, check if the cursor is right at the boundary of the last
-    // entry. This handles cases like "Reference:\n" where the entry range is
-    // 0..11 and offset is 11.
-    let entry = find_entry_at_offset(&mapping, offset).or_else(|| {
-        mapping
-            .entries()
-            .filter(|e| {
-                let range = e.syntax().text_range();
-                let end: u32 = range.end().into();
-                offset == end
-            })
-            .last()
-    });
-
-    let entry = match entry {
+    let entry = match mapping.find_entry_by_offset(src.text, offset as usize) {
         Some(e) => e,
         None => return CursorContext::TopLevelKey,
     };

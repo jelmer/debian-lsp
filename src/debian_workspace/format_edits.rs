@@ -557,21 +557,21 @@ pub(super) fn makefile_action_to_text_edits(
         }
         MakefileAction::SetVariable { name, value, .. } => {
             let mf = makefile.snapshot();
-            if let Some(mut var) = mf.find_variable(name).next() {
+            if let Some(mut var) = mf.variable_definitions_by_name(name).next() {
                 var.set_value(value);
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::SetVariableOperator { name, operator, .. } => {
             let mf = makefile.snapshot();
-            if let Some(mut var) = mf.find_variable(name).next() {
+            if let Some(mut var) = mf.variable_definitions_by_name(name).next() {
                 var.set_assignment_operator(operator);
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::RemoveVariable { name, .. } => {
             let mf = makefile.snapshot();
-            if let Some(mut var) = mf.find_variable(name).next() {
+            if let Some(mut var) = mf.variable_definitions_by_name(name).next() {
                 var.remove();
             }
             makefile_diff_edits(makefile, &mf, original_src)
@@ -580,7 +580,7 @@ pub(super) fn makefile_action_to_text_edits(
             from_name, to_name, ..
         } => {
             let mf = makefile.snapshot();
-            if let Some(mut var) = mf.find_variable(from_name).next() {
+            if let Some(mut var) = mf.variable_definitions_by_name(from_name).next() {
                 var.set_name(to_name);
             }
             makefile_diff_edits(makefile, &mf, original_src)
@@ -631,7 +631,7 @@ pub(super) fn makefile_action_to_text_edits(
         }
         MakefileAction::AddInclude { path, .. } => {
             let mut mf = makefile.snapshot();
-            mf.add_include(path);
+            let _ = mf.add_include(path);
             makefile_diff_edits(makefile, &mf, original_src)
         }
         MakefileAction::ReplaceVariableWithInclude { name, path, .. } => {
@@ -643,7 +643,10 @@ pub(super) fn makefile_action_to_text_edits(
                 .map(|(i, _)| i);
             if let Some(idx) = var_idx {
                 let _ = mf.insert_include(idx, path);
-                let _ = mf.find_variable(name).next().map(|mut v| v.remove());
+                let _ = mf
+                    .variable_definitions_by_name(name)
+                    .next()
+                    .map(|mut v| v.remove());
             }
             makefile_diff_edits(makefile, &mf, original_src)
         }
@@ -706,7 +709,7 @@ pub(super) fn makefile_action_range(
             from_name: name, ..
         } => {
             use rowan::ast::AstNode as _;
-            let var = makefile.find_variable(name).next()?;
+            let var = makefile.variable_definitions_by_name(name).next()?;
             Some(anchor_src.text_range_to_lsp_range(var.syntax().text_range()))
         }
         MakefileAction::RemoveRule { target, .. }
@@ -832,6 +835,33 @@ pub(super) fn lintian_overrides_action_to_text_edits(
                 }]
             }
         }
+        LintianOverridesAction::SetJustification {
+            selector,
+            new_bodies,
+            ..
+        } => {
+            let Some(line) = find_override_line(&parsed, selector) else {
+                return Vec::new();
+            };
+            let comments = line.preceding_comments();
+            let mut edits = Vec::new();
+            for (comment, new_body) in comments.iter().zip(new_bodies.iter()) {
+                let body_range = comment.body_range();
+                let start: usize = body_range.start().into();
+                let end: usize = body_range.end().into();
+                if end > text.len() || start > end {
+                    continue;
+                }
+                if &text[start..end] == new_body.as_str() {
+                    continue;
+                }
+                edits.push(TextEdit {
+                    range: original_src.text_range_to_lsp_range(body_range),
+                    new_text: new_body.clone(),
+                });
+            }
+            edits
+        }
     }
 }
 
@@ -867,7 +897,8 @@ pub(super) fn lintian_overrides_action_range(
     match action {
         LintianOverridesAction::AddLine { .. } => None,
         LintianOverridesAction::DropLine { selector, .. }
-        | LintianOverridesAction::SetLineInfo { selector, .. } => {
+        | LintianOverridesAction::SetLineInfo { selector, .. }
+        | LintianOverridesAction::SetJustification { selector, .. } => {
             let line = find_override_line(&parsed, selector)?;
             Some(anchor_src.text_range_to_lsp_range(line.text_range()))
         }
@@ -1039,7 +1070,8 @@ mod tests {
     }
 
     fn apply_makefile(text: &str, action: &MakefileAction) -> String {
-        let makefile = makefile_lossless::Makefile::read_relaxed(text.as_bytes()).unwrap();
+        let (makefile, _) =
+            makefile_lossless::Makefile::from_reader_relaxed(text.as_bytes()).unwrap();
         let idx = LineIndex::new(text);
         let edits = makefile_action_to_text_edits(action, &makefile, Source::new(text, &idx));
         apply(text, &edits)
