@@ -211,6 +211,9 @@ pub(super) fn locate_action_target(
                 | Deb822Action::AddAlternative {
                     paragraph, field, ..
                 }
+                | Deb822Action::DropAlternative {
+                    paragraph, field, ..
+                }
                 | Deb822Action::DropFieldComments {
                     paragraph, field, ..
                 } => (paragraph, Some(field.clone())),
@@ -568,6 +571,7 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             | Deb822Action::ReorderParagraphs { file, .. }
             | Deb822Action::MakeAlternativePrimary { file, .. }
             | Deb822Action::AddAlternative { file, .. }
+            | Deb822Action::DropAlternative { file, .. }
             | Deb822Action::DropFieldComments { file, .. } => file,
         },
         Action::Filesystem(a) => match a {
@@ -626,7 +630,8 @@ pub(super) fn action_file(action: &Action) -> Option<&Path> {
             LintianOverridesAction::AddLine { file, .. }
             | LintianOverridesAction::DropLine { file, .. }
             | LintianOverridesAction::RenameTag { file, .. }
-            | LintianOverridesAction::SetLineInfo { file, .. } => file,
+            | LintianOverridesAction::SetLineInfo { file, .. }
+            | LintianOverridesAction::SetJustification { file, .. } => file,
         },
         Action::Maintscript(a) => match a {
             MaintscriptAction::DropEntry { file, .. } => file,

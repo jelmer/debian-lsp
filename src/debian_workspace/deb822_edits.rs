@@ -140,6 +140,12 @@ pub(super) fn deb822_action_to_text_edits(
             alternative,
             original_src,
         ),
+        Deb822Action::DropAlternative {
+            paragraph,
+            field,
+            package,
+            ..
+        } => drop_alternative_edits(control, paragraph, field, package, original_src),
     }
 }
 
@@ -194,6 +200,7 @@ pub fn copyright_action_to_text_edits(
         | Deb822Action::MoveRelation { .. }
         | Deb822Action::MakeAlternativePrimary { .. }
         | Deb822Action::AddAlternative { .. }
+        | Deb822Action::DropAlternative { .. }
         | Deb822Action::EnsureSubstvar { .. }
         | Deb822Action::DropSubstvar { .. } => return Vec::new(),
         Deb822Action::AppendParagraph { .. } | Deb822Action::ReorderParagraphs { .. } => {
@@ -1147,6 +1154,54 @@ fn add_alternative_edits(
             return false;
         };
         relations.replace(idx, new_entry);
+        true
+    })
+}
+
+/// `Deb822Action::DropAlternative`: remove the alternative naming `package`
+/// from the first relation entry that lists it. If dropping it empties the
+/// entry, the entry is removed; if the field then becomes empty, the field
+/// is removed. No-op when `package` isn't named in `field`.
+fn drop_alternative_edits(
+    control: &Control,
+    selector: &ParagraphSelector,
+    field: &str,
+    package: &str,
+    original_src: crate::position::Source<'_>,
+) -> Vec<TextEdit> {
+    use debian_control::lossless::relations::Entry;
+    use std::str::FromStr;
+
+    relations_field_edits(control, selector, field, original_src, |relations| {
+        let target_idx = relations.entries().position(|entry| {
+            entry
+                .relations()
+                .any(|r| r.try_name().as_deref() == Some(package))
+        });
+        let Some(idx) = target_idx else {
+            return false;
+        };
+        let entry = relations.entries().nth(idx).expect("index valid");
+        let alternatives: Vec<(Option<String>, String)> = entry
+            .relations()
+            .map(|r| (r.try_name(), r.to_string().trim().to_string()))
+            .collect();
+        let kept: Vec<String> = alternatives
+            .iter()
+            .filter(|(name, _)| name.as_deref() != Some(package))
+            .map(|(_, text)| text.clone())
+            .collect();
+        if kept.len() == alternatives.len() {
+            return false;
+        }
+        if kept.is_empty() {
+            relations.remove_entry(idx);
+        } else {
+            let Ok(new_entry) = Entry::from_str(&kept.join(" | ")) else {
+                return false;
+            };
+            relations.replace(idx, new_entry);
+        }
         true
     })
 }

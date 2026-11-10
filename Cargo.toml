@@ -24,21 +24,21 @@ scip = ["dep:scip"]
 # debian-analyzer = "0.159.0"
 async-trait = "0.1"
 chrono = "0.4"
-debian-changelog = "0.2.24"
-debian-control = { version = "0.3.12" }
-debian-copyright = { version = "0.1.53", features = ["lossless"] }
-debian-watch = { version = "0.4.12", features = ["linebased", "deb822"] }
-dep3 = "0.2.3"
+debian-changelog = "0.2.25"
+debian-control = { version = "0.3.20" }
+debian-copyright = { version = "0.1.56", features = ["lossless"] }
+debian-watch = { version = "0.4.13", features = ["linebased", "deb822"] }
+dep3 = "0.2.4"
 distro-info = "0.4"
 rowan = "0.16.1"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres"] }
-makefile-lossless = "0.3.38"
-deb822-fast = "0.2"
-deb822-lossless = { version = "0.5.17" }
-lintian-overrides = "0.1.9"
-yaml-edit = { version = "0.3.1" }
+makefile-lossless = "0.4.8"
+deb822-fast = "0.2.3"
+deb822-lossless = { version = "0.5.20" }
+lintian-overrides = "0.1.10"
+yaml-edit = { version = "0.3.6" }
 toml_edit = "0.25"
-upstream-ontologist = { version = "0.3.17", default-features = false, features = ["cargo", "debian"] }
+upstream-ontologist = { version = "0.3.24", default-features = false, features = ["cargo", "debian"] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 tower-lsp-server = "0.23"
@@ -49,14 +49,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 salsa = ">=0.23, <0.29"
 text-size = "1.1"
-patchkit = "0.3.3"
+patchkit = "0.3.9"
 scip = { version = ">=0.9, <0.11", optional = true }
 launchpadlib = { version = "0.5.7", optional = true, default-features = false, features = ["async", "api-v1_0", "bugs", "packages"] }
 lru = ">=0.12,<0.19"
 openssl = { version = ">=0.10.64, <0.11", features = ["vendored"], optional = true }
-lintian-brush = { version = "0.185", optional = true }
-multiarch-hints = { version = "0.185", default-features = false, features = ["async"], optional = true }
-debian-workspace = { version = "0.185", optional = true }
+lintian-brush = { version = "0.189", optional = true }
+multiarch-hints = { version = "0.189", default-features = false, features = ["async"], optional = true }
+debian-workspace = { version = "0.189", optional = true }
 typos = { version = "0.10", optional = true }
 typos-dict = { version = "0.14", optional = true }
 unicase = { version = "2.9", optional = true }
