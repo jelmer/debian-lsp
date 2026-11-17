@@ -61,6 +61,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     #[test]
     fn source_root_strips_debian_file() {
         let uri = Uri::from_file_path("/home/x/pkg/debian/copyright").unwrap();
@@ -111,6 +112,8 @@ mod tests {
         assert_eq!(file_link_target(dir.path(), "../inside.txt"), None);
     }
 
+    // Windows filenames can't contain `*`, so this test only runs on Unix.
+    #[cfg(unix)]
     #[test]
     fn decodes_escaped_literal() {
         let dir = write_tree(&[("*.txt", "x")]);
