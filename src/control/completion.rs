@@ -457,6 +457,27 @@ mod tests {
     }
 
     #[test]
+    fn test_field_completions_omit_existing_fields_in_paragraph() {
+        // Fields already present in the current paragraph should not be
+        // offered again: Debian policy allows each field at most once per
+        // paragraph.
+        let text = "Source: hello\nMaintainer: Alice <alice@example.com>\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(&deb822, Source::new(text, &idx), Position::new(2, 0));
+        let field_labels: Vec<_> = completions
+            .iter()
+            .filter(|c| c.kind == Some(CompletionItemKind::FIELD))
+            .map(|c| c.label.as_str())
+            .collect();
+
+        assert!(!field_labels.contains(&"Source"));
+        assert!(!field_labels.contains(&"Maintainer"));
+        assert!(field_labels.contains(&"Section"));
+        assert!(field_labels.contains(&"Priority"));
+    }
+
+    #[test]
     fn test_get_completions_on_section_value() {
         let text = "Source: test\nSection: py\n";
         let deb822 = deb822_lossless::Deb822::parse(text).to_result().unwrap();
