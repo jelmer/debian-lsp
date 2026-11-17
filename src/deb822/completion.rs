@@ -93,8 +93,24 @@ pub fn field_description(
 
 /// Generate field name completions from a list of field definitions.
 pub fn get_field_completions(fields: &[FieldInfo]) -> Vec<CompletionItem> {
+    get_field_completions_excluding(fields, |_| false)
+}
+
+/// Generate field name completions, skipping any field for which
+/// `is_already_present` returns true.
+///
+/// Each deb822 field may appear at most once per paragraph, so the caller
+/// passes a predicate that answers, for a candidate field name, whether the
+/// paragraph already contains it. The field list is walked once and the
+/// predicate is invoked only for fields we are about to emit, so no list of
+/// existing names is collected up front.
+pub fn get_field_completions_excluding(
+    fields: &[FieldInfo],
+    is_already_present: impl Fn(&str) -> bool,
+) -> Vec<CompletionItem> {
     fields
         .iter()
+        .filter(|field| !is_already_present(field.name))
         .map(|field| CompletionItem {
             label: field.name.to_string(),
             kind: Some(CompletionItemKind::FIELD),
@@ -104,6 +120,53 @@ pub fn get_field_completions(fields: &[FieldInfo]) -> Vec<CompletionItem> {
             ..Default::default()
         })
         .collect()
+}
+
+/// Locate the paragraph whose existing fields should be excluded from field
+/// completions at `position`, together with the range of the entry the cursor
+/// is currently inside (so it can be preserved as a completion candidate).
+///
+/// A paragraph counts as "containing" the cursor when the cursor lies within
+/// the paragraph's text range *or* immediately at its end - the latter covers
+/// the typical case of typing a new field directly after the last entry, with
+/// no intervening blank line. A blank-line separator between the paragraph
+/// and the cursor disqualifies it.
+///
+/// Returns `None` when the cursor is not inside any paragraph, e.g. on a
+/// blank line between paragraphs: the next field typed there would start a
+/// brand new paragraph, so nothing should be filtered out.
+fn paragraph_context_at(
+    deb822: &deb822_lossless::Deb822,
+    src: Source<'_>,
+    position: Position,
+) -> Option<(deb822_lossless::Paragraph, Option<text_size::TextRange>)> {
+    let offset = src.try_position_to_offset(position)?;
+    let paragraph = deb822
+        .paragraph_at_position(offset)
+        .or_else(|| deb822.paragraphs().find(|p| p.text_range().end() == offset))?;
+    let current_entry_range = paragraph.entry_at_position(offset).map(|e| e.text_range());
+    Some((paragraph, current_entry_range))
+}
+
+/// Return true if `paragraph` contains an entry with field name `field_name`
+/// (case-insensitive), ignoring the entry at `exclude_range` (the one the
+/// user is currently editing). Compares against the source text in `text`
+/// via key ranges, so no `String` is allocated per entry.
+fn paragraph_has_field(
+    paragraph: &deb822_lossless::Paragraph,
+    text: &str,
+    field_name: &str,
+    exclude_range: Option<text_size::TextRange>,
+) -> bool {
+    paragraph
+        .entries()
+        .filter(|e| Some(e.text_range()) != exclude_range)
+        .filter_map(|e| e.key_range())
+        .any(|r| {
+            let start: usize = r.start().into();
+            let end: usize = r.end().into();
+            text[start..end].eq_ignore_ascii_case(field_name)
+        })
 }
 
 /// Determine what kind of completion context the cursor is in.
@@ -222,7 +285,15 @@ pub fn get_completions(
             field_name,
             value_prefix,
         }) => value_completer(&field_name, &value_prefix),
-        Some(CursorContext::FieldKey | CursorContext::StartOfLine) => get_field_completions(fields),
+        Some(CursorContext::FieldKey | CursorContext::StartOfLine) => {
+            let (paragraph, current_entry_range) =
+                paragraph_context_at(deb822, src, position).unzip();
+            let current_entry_range = current_entry_range.flatten();
+            get_field_completions_excluding(fields, |name| match &paragraph {
+                Some(p) => paragraph_has_field(p, src.text, name, current_entry_range),
+                None => false,
+            })
+        }
         None => vec![],
     }
 }
@@ -506,5 +577,63 @@ mod tests {
         let ctx = get_cursor_context(&deb822, Source::new(text, &idx), Position::new(2, 6));
         assert!(ctx.is_some(), "Should have context");
         assert_eq!(ctx.unwrap(), CursorContext::FieldKey);
+    }
+
+    #[test]
+    fn test_field_completions_omit_existing_fields_in_paragraph() {
+        let text = "Source: hello\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let idx = crate::position::LineIndex::new(text);
+        // Cursor on the blank line following "Source: hello\n" where the next
+        // field in the same paragraph would be typed.
+        let completions = get_completions(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(1, 0),
+            TEST_FIELDS,
+            |_, _| vec![],
+        );
+
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Package"]);
+    }
+
+    #[test]
+    fn test_field_completions_include_current_entry_being_edited() {
+        // User is partway through editing a field name that happens to match
+        // an existing field name in the fields list - it should still be
+        // offered (we only filter *other* entries in the paragraph).
+        let text = "Sou\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(0, 3),
+            TEST_FIELDS,
+            |_, _| vec![],
+        );
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"Source"));
+        assert!(labels.contains(&"Package"));
+    }
+
+    #[test]
+    fn test_field_completions_not_filtered_across_paragraphs() {
+        // A blank line separates paragraphs; fields from the previous
+        // paragraph must not be filtered out of completions for a new one.
+        let text = "Source: hello\n\n";
+        let deb822 = deb822_lossless::Deb822::parse(text).tree();
+        let idx = crate::position::LineIndex::new(text);
+        let completions = get_completions(
+            &deb822,
+            Source::new(text, &idx),
+            Position::new(2, 0),
+            TEST_FIELDS,
+            |_, _| vec![],
+        );
+        let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"Source"));
+        assert!(labels.contains(&"Package"));
     }
 }
