@@ -117,6 +117,9 @@ enum FileType {
     TestsControl,
     /// debian/changelog file
     Changelog,
+    /// debian/NEWS or debian/<package>.NEWS file. Shares the syntax of
+    /// debian/changelog and is parsed with the same parser.
+    News,
     /// debian/source/format file
     SourceFormat,
     /// debian/source/options or debian/source/local-options file
@@ -173,6 +176,8 @@ impl FileType {
             Some(Self::Watch)
         } else if changelog::is_changelog_file(uri) {
             Some(Self::Changelog)
+        } else if changelog::is_news_file(uri) {
+            Some(Self::News)
         } else if source_format::is_source_format_file(uri) {
             Some(Self::SourceFormat)
         } else if source_options::is_source_options_or_local_options_file(uri) {
@@ -481,7 +486,7 @@ impl Backend {
                     &uri, src, &parsed,
                 ))
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 #[cfg(feature = "spellcheck")]
                 {
                     let source_text = workspace.source_text(source_file);
@@ -551,7 +556,7 @@ impl Backend {
                 let parsed = workspace.get_parsed_watch(source_file);
                 comments::watch_comment_findings(&parsed, src)
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(source_file);
                 comments::changelog_comment_findings(&parsed, src)
             }
@@ -1120,7 +1125,7 @@ impl LanguageServer for Backend {
             },
         );
 
-        if file_type == FileType::Changelog {
+        if matches!(file_type, FileType::Changelog | FileType::News) {
             self.prefetch_changelog_bugs(source_file, &workspace);
         }
 
@@ -1300,7 +1305,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        if file_info.file_type != FileType::Changelog {
+        if !matches!(file_info.file_type, FileType::Changelog | FileType::News) {
             return Ok(None);
         }
 
@@ -1447,7 +1452,7 @@ impl LanguageServer for Backend {
                     tests::get_completions(&parsed.tree(), src, position, source_root.as_deref())
                 }
             }
-            Some((FileType::Changelog, source_file)) => {
+            Some((FileType::Changelog | FileType::News, source_file)) => {
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(source_file);
                 let idx = workspace.get_line_index(source_file);
@@ -1645,6 +1650,7 @@ impl LanguageServer for Backend {
             FileType::Control
             | FileType::Copyright
             | FileType::Changelog
+            | FileType::News
             | FileType::Watch
             | FileType::UpstreamMetadata
             | FileType::TestsControl
@@ -1806,37 +1812,40 @@ impl LanguageServer for Backend {
                     &params.context.diagnostics,
                 ));
             }
-            FileType::Changelog => {
-                // Check for UNRELEASED entries in the requested range and offer "Mark for upload"
-                if let Some(text_range) = text_range {
-                    let unreleased_entries = workspace
-                        .find_unreleased_entries_in_range(file_info.source_file, text_range);
+            FileType::Changelog | FileType::News => {
+                // "Mark for upload" only makes sense for debian/changelog —
+                // NEWS files aren't uploaded independently of changelog.
+                if file_info.file_type == FileType::Changelog {
+                    if let Some(text_range) = text_range {
+                        let unreleased_entries = workspace
+                            .find_unreleased_entries_in_range(file_info.source_file, text_range);
 
-                    for info in unreleased_entries {
-                        let lsp_range = src.text_range_to_lsp_range(info.unreleased_range);
+                        for info in unreleased_entries {
+                            let lsp_range = src.text_range_to_lsp_range(info.unreleased_range);
 
-                        let edit = TextEdit {
-                            range: lsp_range,
-                            new_text: info.target_distribution.clone(),
-                        };
+                            let edit = TextEdit {
+                                range: lsp_range,
+                                new_text: info.target_distribution.clone(),
+                            };
 
-                        let workspace_edit = WorkspaceEdit {
-                            changes: Some(
-                                vec![(params.text_document.uri.clone(), vec![edit])]
-                                    .into_iter()
-                                    .collect(),
-                            ),
-                            ..Default::default()
-                        };
+                            let workspace_edit = WorkspaceEdit {
+                                changes: Some(
+                                    vec![(params.text_document.uri.clone(), vec![edit])]
+                                        .into_iter()
+                                        .collect(),
+                                ),
+                                ..Default::default()
+                            };
 
-                        let action = CodeAction {
-                            title: format!("Mark for upload to {}", info.target_distribution),
-                            kind: Some(CodeActionKind::REFACTOR),
-                            edit: Some(workspace_edit),
-                            ..Default::default()
-                        };
+                            let action = CodeAction {
+                                title: format!("Mark for upload to {}", info.target_distribution),
+                                kind: Some(CodeActionKind::REFACTOR),
+                                edit: Some(workspace_edit),
+                                ..Default::default()
+                            };
 
-                        actions.push(CodeActionOrCommand::CodeAction(action));
+                            actions.push(CodeActionOrCommand::CodeAction(action));
+                        }
                     }
                 }
 
@@ -2172,7 +2181,7 @@ impl LanguageServer for Backend {
                 let copyright = parsed.tree();
                 copyright::generate_semantic_tokens(&copyright, src)
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_semantic_tokens(&parsed, src)
             }
@@ -2275,7 +2284,7 @@ impl LanguageServer for Backend {
         let src = Source::new(&source_text, &idx);
 
         let symbols = match file.file_type {
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_document_symbols(&parsed, src)
             }
@@ -2325,7 +2334,7 @@ impl LanguageServer for Backend {
                 let parsed = workspace.get_parsed_copyright(file.source_file);
                 deb822::folding::generate_folding_ranges(parsed.tree().as_deb822(), src)
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_folding_ranges(&parsed, src)
             }
@@ -2385,7 +2394,7 @@ impl LanguageServer for Backend {
                     &params.positions,
                 )
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 changelog::generate_selection_ranges(&parsed, src, &params.positions)
             }
@@ -2478,7 +2487,7 @@ impl LanguageServer for Backend {
                     _ => Ok(None),
                 }
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 Ok(changelog::on_type_formatting::on_type_formatting(
                     &parsed,
@@ -2703,7 +2712,7 @@ impl LanguageServer for Backend {
         drop(files);
 
         match file.file_type {
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
@@ -2860,7 +2869,7 @@ impl LanguageServer for Backend {
                 };
                 Ok(lintian_overrides::get_hover(kind, &text, &tags, &packages))
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let parsed = workspace.get_parsed_changelog(file.source_file);
                 drop(workspace);
                 Ok(
@@ -2946,7 +2955,7 @@ impl LanguageServer for Backend {
                     uri,
                 )))
             }
-            FileType::Changelog => {
+            FileType::Changelog | FileType::News => {
                 let workspace = self.workspace_clone().await;
                 let source_text = workspace.source_text(file.source_file);
                 let idx = workspace.get_line_index(file.source_file);
@@ -3896,9 +3905,13 @@ mod main_tests {
         // Test that we correctly detect changelog files
         let changelog_uri: Uri = str::parse("file:///path/to/debian/changelog").unwrap();
         let control_uri: Uri = str::parse("file:///path/to/debian/control").unwrap();
+        let news_uri: Uri = str::parse("file:///path/to/debian/NEWS").unwrap();
+        let pkg_news_uri: Uri = str::parse("file:///path/to/debian/libfoo.NEWS").unwrap();
 
         assert_eq!(FileType::detect(&changelog_uri), Some(FileType::Changelog));
         assert_eq!(FileType::detect(&control_uri), Some(FileType::Control));
+        assert_eq!(FileType::detect(&news_uri), Some(FileType::News));
+        assert_eq!(FileType::detect(&pkg_news_uri), Some(FileType::News));
     }
 
     #[test]
