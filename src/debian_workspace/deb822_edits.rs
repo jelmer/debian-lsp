@@ -123,9 +123,6 @@ pub(super) fn deb822_action_to_text_edits(
             package,
             ..
         } => make_alternative_primary_edits(control, paragraph, field, package, original_src),
-        Deb822Action::DropFieldComments {
-            paragraph, field, ..
-        } => drop_field_comments_edits(control, paragraph, field, original_src),
         Deb822Action::AddAlternative {
             paragraph,
             field,
@@ -140,6 +137,9 @@ pub(super) fn deb822_action_to_text_edits(
             alternative,
             original_src,
         ),
+        Deb822Action::DropFieldComments {
+            paragraph, field, ..
+        } => drop_field_comments_edits(control, paragraph, field, original_src),
         Deb822Action::DropAlternative {
             paragraph,
             field,
