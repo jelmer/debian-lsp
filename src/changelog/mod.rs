@@ -16,7 +16,7 @@ pub mod symbols;
 
 pub use actions::*;
 pub use completion::*;
-pub use detection::is_changelog_file;
+pub use detection::{is_changelog_file, is_news_file};
 pub use document_link::get_document_links;
 pub use folding::generate_folding_ranges;
 pub use hover::get_hover;
